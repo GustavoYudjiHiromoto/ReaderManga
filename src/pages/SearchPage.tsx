@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, X, Filter, BookOpen, RefreshCw, Layers } from 'lucide-react';
-import { Manga } from '../types/manga.js';
+import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
 
@@ -17,6 +17,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
 }) => {
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState<Manga[]>([]);
+  const [sources, setSources] = useState<MangaSourceInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
@@ -24,6 +25,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
+    MangaApi.getSources().then(setSources).catch(console.error);
     executeSearch(initialQuery);
   }, [initialQuery]);
 
@@ -114,7 +116,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
 
           {/* Source and Quick Filters */}
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-            <div className="flex items-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800 text-xs">
+            <div className="flex flex-wrap items-center justify-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800 text-xs">
               <button
                 onClick={() => handleSourceSelect('all')}
                 className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
@@ -123,22 +125,30 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               >
                 Todas as Fontes
               </button>
-              <button
-                onClick={() => handleSourceSelect('openmanga')}
-                className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                  selectedSource === 'openmanga' ? 'bg-zinc-800 text-white font-medium' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                OpenManga (Curado)
-              </button>
-              <button
-                onClick={() => handleSourceSelect('mangadex')}
-                className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                  selectedSource === 'mangadex' ? 'bg-zinc-800 text-white font-medium' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                MangaDex (Live API)
-              </button>
+              {sources.map((src) => {
+                const isSelected = selectedSource === src.id;
+                const isMock = src.type === 'mock';
+                return (
+                  <button
+                    key={src.id}
+                    onClick={() => handleSourceSelect(src.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
+                      isSelected ? 'bg-zinc-800 text-white font-medium' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span>{src.name}</span>
+                    <span
+                      className={`text-[9px] uppercase px-1 py-0.5 rounded font-mono ${
+                        isMock
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {isMock ? 'Demo' : 'Live'}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 

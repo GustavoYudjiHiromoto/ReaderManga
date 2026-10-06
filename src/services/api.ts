@@ -56,8 +56,8 @@ export const MangaApi = {
   async getMangaDetails(internalId: string): Promise<Manga> {
     const res = await fetch(`/api/manga/${encodeURIComponent(internalId)}`);
     if (!res.ok) {
-      if (res.status === 404) throw new Error('Mangá não encontrado');
-      throw new Error('Falha ao carregar detalhes do mangá');
+      const errJson = await res.json().catch(() => null);
+      throw new Error(errJson?.error || (res.status === 404 ? 'Mangá não encontrado' : `Falha ao carregar detalhes (código ${res.status})`));
     }
     const json = await res.json();
     return json.data;
@@ -69,14 +69,20 @@ export const MangaApi = {
     if (options?.order) params.set('order', options.order);
 
     const res = await fetch(`/api/manga/${encodeURIComponent(internalMangaId)}/chapters?${params.toString()}`);
-    if (!res.ok) throw new Error('Falha ao carregar capítulos');
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      throw new Error(errJson?.error || `Falha ao carregar capítulos (código ${res.status})`);
+    }
     const json = await res.json();
     return json.data || [];
   },
 
   async getChapterPages(internalChapterId: string): Promise<MangaPage[]> {
     const res = await fetch(`/api/chapters/${encodeURIComponent(internalChapterId)}/pages`);
-    if (!res.ok) throw new Error('Falha ao carregar páginas do capítulo');
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      throw new Error(errJson?.error || `Falha ao carregar páginas do capítulo (código ${res.status})`);
+    }
     const json = await res.json();
     return json.data || [];
   },

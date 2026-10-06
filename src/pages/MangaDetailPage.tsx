@@ -34,6 +34,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [chaptersLoading, setChaptersLoading] = useState(true);
+  const [chaptersError, setChaptersError] = useState<string | null>(null);
   const [chapterOrder, setChapterOrder] = useState<'asc' | 'desc'>('asc');
   const [chapterSearch, setChapterSearch] = useState('');
   const [isBookmarked, setIsBookmarked] = useState(false);
@@ -45,22 +47,35 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setIsBookmarked(HistoryService.isBookmarked(mangaId));
   }, [mangaId]);
 
+  const loadChapters = async () => {
+    setChaptersLoading(true);
+    setChaptersError(null);
+    try {
+      const chaptersData = await MangaApi.getChapters(mangaId, { order: chapterOrder });
+      setChapters(chaptersData);
+    } catch (err) {
+      console.error(err);
+      setChaptersError((err as Error).message || 'Erro ao carregar capítulos da fonte.');
+      setChapters([]);
+    } finally {
+      setChaptersLoading(false);
+    }
+  };
+
   const loadMangaDetails = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [mangaData, chaptersData] = await Promise.all([
-        MangaApi.getMangaDetails(mangaId),
-        MangaApi.getChapters(mangaId, { order: chapterOrder })
-      ]);
+      const mangaData = await MangaApi.getMangaDetails(mangaId);
       setManga(mangaData);
-      setChapters(chaptersData);
     } catch (err) {
       console.error(err);
       setError((err as Error).message || 'Erro ao carregar detalhes do mangá.');
     } finally {
       setLoading(false);
     }
+
+    loadChapters();
   };
 
   const toggleSort = () => {
@@ -368,9 +383,29 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           </div>
 
           {/* Chapters List */}
-          {filteredChapters.length === 0 ? (
+          {chaptersLoading ? (
+            <div className="p-8 text-center text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60 flex flex-col items-center justify-center gap-2">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-rose-500 border-t-transparent" />
+              <p className="text-xs">Consultando capítulos na fonte responsável...</p>
+            </div>
+          ) : chaptersError ? (
+            <div className="p-8 text-center text-zinc-400 bg-zinc-900/40 rounded-xl border border-rose-900/40 flex flex-col items-center justify-center gap-2">
+              <p className="text-sm font-medium text-rose-300">Não foi possível carregar os capítulos da fonte externa</p>
+              <p className="text-xs text-zinc-500 max-w-md">{chaptersError}</p>
+              <button
+                onClick={loadChapters}
+                className="mt-2 px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+              >
+                Tentar novamente
+              </button>
+            </div>
+          ) : filteredChapters.length === 0 ? (
             <div className="p-8 text-center text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60">
-              <p className="text-sm">Nenhum capítulo encontrado correspondente à busca.</p>
+              <p className="text-sm">
+                {chapterSearch
+                  ? 'Nenhum capítulo encontrado correspondente à busca.'
+                  : 'Nenhum capítulo disponível nesta obra.'}
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

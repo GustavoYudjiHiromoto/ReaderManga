@@ -11,7 +11,7 @@ interface MangaCardProps {
 export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRead }) => {
   const [imageError, setImageError] = useState(false);
 
-  const primarySource = manga.sources[0]?.sourceName || (manga.id.includes('mangadex') ? 'MangaDex' : 'OpenManga');
+  const primarySource = manga.sources[0]?.sourceName || (manga.id.includes('mangadex') ? 'MangaDex' : 'Mock');
   const releaseYear = manga.publicationInfo?.releaseYear;
   const demographic = manga.publicationInfo?.demographic;
 

@@ -1,13 +1,14 @@
 import { IMangaSource, SourceSearchOptions } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
-import { OpenMangaProvider } from './OpenMangaProvider.js';
+import { MockMangaProvider } from './MockMangaProvider.js';
 import { MangaDexProvider } from './MangaDexProvider.js';
+import { HttpError } from '../errors/HttpError.js';
 
 export class SourceRegistry {
   private sources: Map<string, IMangaSource> = new Map();
 
   constructor() {
-    this.registerSource(new OpenMangaProvider());
+    this.registerSource(new MockMangaProvider());
     this.registerSource(new MangaDexProvider());
   }
 
@@ -83,10 +84,14 @@ export class SourceRegistry {
   /**
    * Parse internal Manga ID: format "mr_<sourceId>_<externalId>"
    */
-  public parseInternalMangaId(internalId: string): { sourceId: string; externalId: string } | null {
-    if (!internalId.startsWith('mr_')) return null;
+  public parseInternalMangaId(internalId: string): { sourceId: string; externalId: string } {
+    if (!internalId || !internalId.startsWith('mr_')) {
+      throw new HttpError(400, `Formato de identificador de mangá inválido: '${internalId}'. O formato esperado é 'mr_<source>_<id>'.`);
+    }
     const parts = internalId.split('_');
-    if (parts.length < 3) return null;
+    if (parts.length < 3 || !parts[1] || !parts.slice(2).join('_')) {
+      throw new HttpError(400, `Formato de identificador de mangá inválido: '${internalId}'. O formato esperado é 'mr_<source>_<id>'.`);
+    }
     const sourceId = parts[1];
     const externalId = parts.slice(2).join('_');
     return { sourceId, externalId };
@@ -99,10 +104,14 @@ export class SourceRegistry {
     sourceId: string;
     externalMangaId: string;
     externalChapterId: string;
-  } | null {
-    if (!internalChapterId.startsWith('ch_')) return null;
+  } {
+    if (!internalChapterId || !internalChapterId.startsWith('ch_')) {
+      throw new HttpError(400, `Formato de identificador de capítulo inválido: '${internalChapterId}'. O formato esperado é 'ch_<source>_<mangaId>_<chapterId>'.`);
+    }
     const parts = internalChapterId.split('_');
-    if (parts.length < 4) return null;
+    if (parts.length < 4 || !parts[1] || !parts[2] || !parts.slice(3).join('_')) {
+      throw new HttpError(400, `Formato de identificador de capítulo inválido: '${internalChapterId}'. O formato esperado é 'ch_<source>_<mangaId>_<chapterId>'.`);
+    }
     const sourceId = parts[1];
     const externalMangaId = parts[2];
     const externalChapterId = parts.slice(3).join('_');
@@ -114,10 +123,10 @@ export class SourceRegistry {
    */
   public async getMangaById(internalId: string): Promise<Manga | null> {
     const parsed = this.parseInternalMangaId(internalId);
-    if (!parsed) return null;
-
     const source = this.sources.get(parsed.sourceId);
-    if (!source) return null;
+    if (!source) {
+      throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o mangá '${internalId}'.`);
+    }
 
     return await source.getMangaDetails(parsed.externalId);
   }
@@ -127,10 +136,10 @@ export class SourceRegistry {
    */
   public async getChapters(internalMangaId: string, language?: string): Promise<Chapter[]> {
     const parsed = this.parseInternalMangaId(internalMangaId);
-    if (!parsed) return [];
-
     const source = this.sources.get(parsed.sourceId);
-    if (!source) return [];
+    if (!source) {
+      throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o mangá '${internalMangaId}'.`);
+    }
 
     return await source.getChapters(parsed.externalId, language);
   }
@@ -140,10 +149,10 @@ export class SourceRegistry {
    */
   public async getChapterPages(internalChapterId: string): Promise<MangaPage[]> {
     const parsed = this.parseInternalChapterId(internalChapterId);
-    if (!parsed) return [];
-
     const source = this.sources.get(parsed.sourceId);
-    if (!source) return [];
+    if (!source) {
+      throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o capítulo '${internalChapterId}'.`);
+    }
 
     return await source.getChapterPages(parsed.externalChapterId);
   }

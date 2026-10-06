@@ -63,7 +63,7 @@ export interface MangaSourceInfo {
   description: string;
   version: string;
   isAvailable: boolean;
-  type: 'live_api' | 'curated_catalog';
+  type: 'live_api' | 'mock';
   websiteUrl?: string;
   supportedFeatures: {
     search: boolean;

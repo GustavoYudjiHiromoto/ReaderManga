@@ -1,7 +1,22 @@
 import { Router, Request, Response } from 'express';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
+import { HttpError } from '../errors/HttpError.js';
 
 export const apiRouter = Router();
+
+function sendApiError(res: Response, err: unknown) {
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({
+      success: false,
+      error: err.message
+    });
+  }
+  const message = (err as Error)?.message || 'Erro inesperado do servidor.';
+  return res.status(500).json({
+    success: false,
+    error: message
+  });
+}
 
 // 1. Sources endpoint
 apiRouter.get('/sources', (req: Request, res: Response) => {
@@ -38,7 +53,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       data: searchResult.results
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: (err as Error).message });
+    sendApiError(res, err);
   }
 });
 
@@ -78,7 +93,7 @@ apiRouter.get('/manga/:id', async (req: Request, res: Response) => {
     if (!manga) {
       return res.status(404).json({
         success: false,
-        error: `Manga with internal ID '${internalId}' was not found.`
+        error: `Mangá com identificador '${internalId}' não foi encontrado.`
       });
     }
 
@@ -87,7 +102,7 @@ apiRouter.get('/manga/:id', async (req: Request, res: Response) => {
       data: manga
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: (err as Error).message });
+    sendApiError(res, err);
   }
 });
 
@@ -114,7 +129,7 @@ apiRouter.get('/manga/:id/chapters', async (req: Request, res: Response) => {
       data: chapters
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: (err as Error).message });
+    sendApiError(res, err);
   }
 });
 
@@ -131,7 +146,7 @@ apiRouter.get('/chapters/:id/pages', async (req: Request, res: Response) => {
       data: pages
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: (err as Error).message });
+    sendApiError(res, err);
   }
 });
 

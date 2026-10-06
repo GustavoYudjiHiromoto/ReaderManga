@@ -1,5 +1,6 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
+import { HttpError } from '../errors/HttpError.js';
 
 export class MangaDexProvider implements IMangaSource {
   private readonly baseUrl = 'https://api.mangadex.org';
@@ -35,9 +36,27 @@ export class MangaDexProvider implements IMangaSource {
         }
       });
       if (!response.ok) {
-        throw new Error(`MangaDex HTTP Error: ${response.status} ${response.statusText}`);
+        if (response.status === 404) {
+          throw new HttpError(404, `Recurso não encontrado na API MangaDex (HTTP 404).`);
+        }
+        if (response.status === 429) {
+          throw new HttpError(429, `Limite de requisições excedido na API MangaDex (Rate limit 429). Aguarde alguns instantes.`);
+        }
+        if (response.status === 503) {
+          throw new HttpError(503, `Serviço MangaDex temporariamente indisponível (HTTP 503).`);
+        }
+        if (response.status === 502 || response.status >= 500) {
+          throw new HttpError(502, `Falha no provedor externo MangaDex: HTTP ${response.status} ${response.statusText}`);
+        }
+        throw new HttpError(502, `Falha de comunicação com a API MangaDex: HTTP ${response.status}`);
       }
       return await response.json();
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      if ((err as Error).name === 'AbortError') {
+        throw new HttpError(504, 'Tempo limite de comunicação esgotado com a API MangaDex (Gateway Timeout).');
+      }
+      throw new HttpError(502, `Erro ao conectar com a API MangaDex: ${(err as Error).message}`);
     } finally {
       clearTimeout(timeout);
     }
@@ -172,6 +191,8 @@ export class MangaDexProvider implements IMangaSource {
       if (!res.data) return null;
       return this.normalizeMangaDexItem(res.data);
     } catch (err) {
+      if (err instanceof HttpError && err.status === 404) return null;
+      if (err instanceof HttpError) throw err;
       console.warn(`[MangaDexProvider] getMangaDetails failed for ${externalId}:`, (err as Error).message);
       return null;
     }
@@ -179,13 +200,27 @@ export class MangaDexProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     try {
-      let langParam = 'translatedLanguage[]=pt-br&translatedLanguage[]=en';
+      const buildUrl = (langQuery: string) =>
+        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica${langQuery}`;
+
+      let langQuery = '';
       if (language) {
-        langParam = `translatedLanguage[]=${encodeURIComponent(language)}`;
+        langQuery = `&translatedLanguage[]=${encodeURIComponent(language)}`;
+      } else {
+        langQuery = '&translatedLanguage[]=pt-br&translatedLanguage[]=en';
       }
-      const url = `${this.baseUrl}/manga/${externalMangaId}/feed?${langParam}&order[chapter]=desc&limit=100&contentRating[]=safe&contentRating[]=suggestive`;
-      const res = await this.fetchWithTimeout(url);
-      const list = Array.isArray(res.data) ? res.data : [];
+
+      let res = await this.fetchWithTimeout(buildUrl(langQuery));
+      let list = Array.isArray(res.data) ? res.data : [];
+
+      // Fallback: If no language was explicitly requested and preferred languages (pt-br, en) returned no chapters,
+      // fetch chapters without language restriction so available translations are displayed instead of empty list
+      if (!language && list.length === 0) {
+        const fallbackRes = await this.fetchWithTimeout(buildUrl(''));
+        if (Array.isArray(fallbackRes.data) && fallbackRes.data.length > 0) {
+          list = fallbackRes.data;
+        }
+      }
 
       return list.map((item: any) => {
         const attrs = item.attributes || {};
@@ -203,8 +238,9 @@ export class MangaDexProvider implements IMangaSource {
         };
       });
     } catch (err) {
-      console.warn(`[MangaDexProvider] getChapters failed for ${externalMangaId}:`, (err as Error).message);
-      return [];
+      if (err instanceof HttpError) throw err;
+      console.error(`[MangaDexProvider] Erro ao buscar capítulos para ${externalMangaId}:`, (err as Error).message);
+      throw new HttpError(502, `Falha ao obter capítulos da fonte MangaDex: ${(err as Error).message}`);
     }
   }
 
@@ -213,7 +249,7 @@ export class MangaDexProvider implements IMangaSource {
       const url = `${this.baseUrl}/at-home/server/${externalChapterId}`;
       const res = await this.fetchWithTimeout(url);
       if (!res.baseUrl || !res.chapter?.hash) {
-        throw new Error('Invalid at-home server response');
+        throw new HttpError(502, 'Resposta inválida do servidor at-home do MangaDex.');
       }
 
       const { baseUrl, chapter } = res;
@@ -228,8 +264,9 @@ export class MangaDexProvider implements IMangaSource {
         imageUrl: `${baseUrl}/${subDir}/${chapter.hash}/${fileName}`
       }));
     } catch (err) {
+      if (err instanceof HttpError) throw err;
       console.warn(`[MangaDexProvider] getChapterPages failed for ${externalChapterId}:`, (err as Error).message);
-      return [];
+      throw new HttpError(502, `Falha ao obter páginas do capítulo no MangaDex: ${(err as Error).message}`);
     }
   }
 }

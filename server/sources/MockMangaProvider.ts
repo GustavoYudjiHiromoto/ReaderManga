@@ -1,5 +1,6 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
+import { HttpError } from '../errors/HttpError.js';
 
 interface RawMangaEntry {
   externalId: string;
@@ -331,19 +332,18 @@ const OPEN_MANGA_CATALOG: RawMangaEntry[] = [
   }
 ];
 
-export class OpenMangaProvider implements IMangaSource {
-  private readonly sourceId = 'openmanga';
-  private readonly sourceName = 'OpenManga Archive';
+export class MockMangaProvider implements IMangaSource {
+  private readonly sourceId = 'mock';
+  private readonly sourceName = 'Mock Manga (Demonstração)';
 
   getInfo(): MangaSourceInfo {
     return {
       id: this.sourceId,
       name: this.sourceName,
-      description: 'Catálogo curado de alta disponibilidade com edições completas e capítulos ilustrados verificados.',
+      description: 'Catálogo mock local em memória para testes e demonstração offline.',
       version: '1.2.0',
       isAvailable: true,
-      type: 'curated_catalog',
-      websiteUrl: 'https://openmanga.org',
+      type: 'mock',
       supportedFeatures: {
         search: true,
         filters: true,
@@ -374,8 +374,7 @@ export class OpenMangaProvider implements IMangaSource {
         {
           sourceId: this.sourceId,
           sourceName: this.sourceName,
-          externalId: entry.externalId,
-          url: `https://openmanga.org/manga/${entry.externalId}`
+          externalId: entry.externalId
         }
       ],
       latestChapter: entry.chapters.length > 0 ? entry.chapters[entry.chapters.length - 1].chapterNumber : undefined,
@@ -422,7 +421,9 @@ export class OpenMangaProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     const manga = OPEN_MANGA_CATALOG.find(entry => entry.externalId === externalMangaId);
-    if (!manga) return [];
+    if (!manga) {
+      throw new HttpError(404, `Mangá com identificador '${externalMangaId}' não encontrado no catálogo Mock.`);
+    }
 
     let chapters = manga.chapters;
     if (language) {
@@ -454,6 +455,6 @@ export class OpenMangaProvider implements IMangaSource {
         }));
       }
     }
-    return [];
+    throw new HttpError(404, `Capítulo com identificador '${externalChapterId}' não encontrado no catálogo Mock.`);
   }
 }

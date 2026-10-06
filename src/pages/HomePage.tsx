@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BookOpen, Sparkles, Flame, Clock, Search, ArrowRight, Star, RefreshCw } from 'lucide-react';
-import { Manga } from '../types/manga.js';
+import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
@@ -19,6 +19,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 }) => {
   const [featuredManga, setFeaturedManga] = useState<Manga[]>([]);
   const [catalogManga, setCatalogManga] = useState<Manga[]>([]);
+  const [sources, setSources] = useState<MangaSourceInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
@@ -32,12 +33,14 @@ export const HomePage: React.FC<HomePageProps> = ({
   const loadData = async () => {
     setLoading(true);
     try {
-      const [featured, initialSearch] = await Promise.all([
+      const [featured, initialSearch, sourcesList] = await Promise.all([
         MangaApi.getFeatured(),
-        MangaApi.search('', { limit: 24 })
+        MangaApi.search('', { limit: 24 }),
+        MangaApi.getSources()
       ]);
       setFeaturedManga(featured);
       setCatalogManga(initialSearch.data || featured);
+      setSources(sourcesList);
     } catch (err) {
       console.error('Failed to load manga:', err);
     } finally {
@@ -269,7 +272,7 @@ export const HomePage: React.FC<HomePageProps> = ({
             </div>
 
             {/* Source Segmented Control */}
-            <div className="flex items-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800">
+            <div className="flex flex-wrap items-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800">
               <button
                 onClick={() => handleSourceChange('all')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
@@ -280,26 +283,32 @@ export const HomePage: React.FC<HomePageProps> = ({
               >
                 Todas as Fontes
               </button>
-              <button
-                onClick={() => handleSourceChange('openmanga')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  selectedSource === 'openmanga'
-                    ? 'bg-zinc-800 text-white shadow-sm'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                OpenManga (Curado)
-              </button>
-              <button
-                onClick={() => handleSourceChange('mangadex')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                  selectedSource === 'mangadex'
-                    ? 'bg-zinc-800 text-white shadow-sm'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                MangaDex (Live)
-              </button>
+              {sources.map(src => {
+                const isSelected = selectedSource === src.id;
+                const isMock = src.type === 'mock';
+                return (
+                  <button
+                    key={src.id}
+                    onClick={() => handleSourceChange(src.id)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-zinc-800 text-white shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    <span>{src.name}</span>
+                    <span
+                      className={`text-[9px] uppercase px-1 py-0.5 rounded font-mono ${
+                        isMock
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {isMock ? 'Demo' : 'Live'}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
