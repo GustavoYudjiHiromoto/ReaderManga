@@ -1,0 +1,6 @@
+{
+  "name": "MangaReader",
+  "description": "Aplicação para descoberta e leitura de mangás com suporte a múltiplas fontes, catálogo unificado e leitor avançado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
