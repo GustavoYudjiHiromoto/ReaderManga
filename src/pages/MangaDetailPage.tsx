@@ -131,6 +131,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   }
 
   const primarySource = manga.sources[0];
+  const isMock = manga.id.includes('_mock_') || primarySource?.sourceId === 'mock';
   const firstChapter = chapters.length > 0 ? (chapterOrder === 'asc' ? chapters[0] : chapters[chapters.length - 1]) : null;
 
   return (
@@ -316,21 +317,30 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   </code>
                 </div>
                 <div>
-                  <span className="text-zinc-500 block">Vínculo de Origem (Provedor Externo):</span>
-                  <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="text-zinc-500 block">Provedor de Origem:</span>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                     <span className="text-zinc-300 font-medium">
-                      {primarySource?.sourceName || primarySource?.sourceId}
+                      {isMock ? 'Mock Manga (Demonstração Local)' : (primarySource?.sourceName || primarySource?.sourceId)}
+                    </span>
+                    <span
+                      className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-mono font-semibold ${
+                        isMock
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                    >
+                      {isMock ? 'Mock / Demo' : 'Live API'}
                     </span>
                     <span className="text-zinc-500 font-mono text-[11px]">
                       (extId: {primarySource?.externalId})
                     </span>
-                    {primarySource?.url && (
+                    {!isMock && primarySource?.url && (
                       <a
                         href={primarySource.url}
                         target="_blank"
                         rel="noreferrer"
                         className="text-rose-400 hover:text-rose-300"
-                        title="Ver na fonte externa"
+                        title="Ver no provedor oficial externo"
                       >
                         <ExternalLink className="h-3 w-3 inline" />
                       </a>
@@ -386,11 +396,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           {chaptersLoading ? (
             <div className="p-8 text-center text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60 flex flex-col items-center justify-center gap-2">
               <div className="h-6 w-6 animate-spin rounded-full border-2 border-rose-500 border-t-transparent" />
-              <p className="text-xs">Consultando capítulos na fonte responsável...</p>
+              <p className="text-xs">
+                {isMock ? 'Carregando capítulos do catálogo de demonstração...' : 'Consultando capítulos no provedor externo...'}
+              </p>
             </div>
           ) : chaptersError ? (
             <div className="p-8 text-center text-zinc-400 bg-zinc-900/40 rounded-xl border border-rose-900/40 flex flex-col items-center justify-center gap-2">
-              <p className="text-sm font-medium text-rose-300">Não foi possível carregar os capítulos da fonte externa</p>
+              <p className="text-sm font-medium text-rose-300">
+                {isMock ? 'Não foi possível carregar os capítulos do catálogo mock' : 'Não foi possível carregar os capítulos do provedor externo'}
+              </p>
               <p className="text-xs text-zinc-500 max-w-md">{chaptersError}</p>
               <button
                 onClick={loadChapters}
