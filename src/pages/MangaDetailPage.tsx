@@ -23,12 +23,14 @@ interface MangaDetailPageProps {
   mangaId: string;
   onBack: () => void;
   onReadChapter: (mangaId: string, chapterId: string) => void;
+  onSelectManga?: (mangaId: string) => void;
 }
 
 export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   mangaId,
   onBack,
-  onReadChapter
+  onReadChapter,
+  onSelectManga
 }) => {
   const [manga, setManga] = useState<Manga | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -355,6 +357,70 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
         {/* Chapters Section */}
         <section className="mt-14 pt-8 border-t border-zinc-800">
+          {/* Mock Catalog Notification & Quick Switcher */}
+          {isMock && (
+            <div className="mb-6 p-4 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200">
+              <div className="flex items-start sm:items-center justify-between flex-col sm:flex-row gap-4">
+                <div>
+                  <div className="flex items-center gap-2 font-semibold text-amber-300 text-sm mb-1">
+                    <Info className="h-4 w-4" />
+                    <span>Catálogo de Demonstração (Mock Local)</span>
+                  </div>
+                  <p className="text-zinc-300 leading-relaxed">
+                    Esta versão contém apenas <strong>capítulos e páginas de demonstração (placeholders)</strong> para testes locais.
+                    Para ler a obra completa com páginas oficiais e fallback integrado, abra a versão dos provedores ao vivo (Comick / MangaDex).
+                  </p>
+                </div>
+                {manga.id === 'mr_mock_berserk' && onSelectManga && (
+                  <button
+                    onClick={() => onSelectManga('mr_comick_udwf1dTf')}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    <span>Abrir Berserk Oficial (Comick)</span>
+                  </button>
+                )}
+                {manga.id === 'mr_mock_solo-leveling' && onSelectManga && (
+                  <button
+                    onClick={() => onSelectManga('mr_comick_71gMd0vF')}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    <span>Abrir Solo Leveling Oficial (Comick)</span>
+                  </button>
+                )}
+                {manga.id === 'mr_mock_one-piece' && onSelectManga && (
+                  <button
+                    onClick={() => onSelectManga('mr_comick_CzcseUMi')}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    <span>Abrir One Piece Oficial (Comick)</span>
+                  </button>
+                )}
+                {manga.id === 'mr_mock_frieren-journey' && onSelectManga && (
+                  <button
+                    onClick={() => onSelectManga('mr_comick_0FiLFYD1')}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    <span>Abrir Frieren Oficial (Comick)</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Live Provider status indicator */}
+          {!isMock && primarySource?.sourceId === 'comick' && (
+            <div className="mb-6 p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-xs text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+              <span>
+                <strong>Obra do Comick (Ao Vivo):</strong> capítulos conectados diretamente à CDN e integrados com fallback automático via MangaDex.
+              </span>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <div>
               <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">

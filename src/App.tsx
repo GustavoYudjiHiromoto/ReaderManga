@@ -101,6 +101,7 @@ export default function App() {
             mangaId={selectedMangaId}
             onBack={() => setCurrentTab('home')}
             onReadChapter={handleReadChapter}
+            onSelectManga={handleSelectManga}
           />
         )}
 

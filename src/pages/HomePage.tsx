@@ -21,6 +21,9 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [catalogManga, setCatalogManga] = useState<Manga[]>([]);
   const [sources, setSources] = useState<MangaSourceInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
   const [history, setHistory] = useState<ReadingProgress[]>([]);
@@ -32,15 +35,20 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const loadData = async () => {
     setLoading(true);
+    setCatalogPage(1);
+    setHasMore(true);
     try {
       const [featured, initialSearch, sourcesList] = await Promise.all([
         MangaApi.getFeatured(),
-        MangaApi.search('', { limit: 24 }),
+        MangaApi.search('', { limit: 24, page: 1 }),
         MangaApi.getSources()
       ]);
       setFeaturedManga(featured);
-      setCatalogManga(initialSearch.data || featured);
+      setCatalogManga(initialSearch.data && initialSearch.data.length > 0 ? initialSearch.data : featured);
       setSources(sourcesList);
+      if (initialSearch.data && initialSearch.data.length < 24) {
+        setHasMore(false);
+      }
     } catch (err) {
       console.error('Failed to load manga:', err);
     } finally {
@@ -50,14 +58,18 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const handleSourceChange = async (source: string) => {
     setSelectedSource(source);
+    setCatalogPage(1);
+    setHasMore(true);
     setLoading(true);
     try {
       const res = await MangaApi.search('', {
         source: source === 'all' ? undefined : source,
         genre: selectedGenre === 'all' ? undefined : selectedGenre,
-        limit: 24
+        limit: 24,
+        page: 1
       });
       setCatalogManga(res.data);
+      if (res.data.length < 24) setHasMore(false);
     } catch (err) {
       console.error(err);
     } finally {
@@ -67,18 +79,51 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const handleGenreChange = async (genre: string) => {
     setSelectedGenre(genre);
+    setCatalogPage(1);
+    setHasMore(true);
     setLoading(true);
     try {
       const res = await MangaApi.search('', {
         source: selectedSource === 'all' ? undefined : selectedSource,
         genre: genre === 'all' ? undefined : genre,
-        limit: 24
+        limit: 24,
+        page: 1
       });
       setCatalogManga(res.data);
+      if (res.data.length < 24) setHasMore(false);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const nextPage = catalogPage + 1;
+    try {
+      const res = await MangaApi.search('', {
+        source: selectedSource === 'all' ? undefined : selectedSource,
+        genre: selectedGenre === 'all' ? undefined : selectedGenre,
+        limit: 24,
+        page: nextPage
+      });
+      const newItems = res.data || [];
+      if (newItems.length === 0 || newItems.length < 24) {
+        setHasMore(false);
+      }
+      // Deduplicate against existing catalogManga
+      setCatalogManga(prev => {
+        const existingIds = new Set(prev.map(m => m.id));
+        const filteredNew = newItems.filter(m => !existingIds.has(m.id));
+        return [...prev, ...filteredNew];
+      });
+      setCatalogPage(nextPage);
+    } catch (err) {
+      console.error('Failed to load more manga:', err);
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -95,10 +140,10 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
-  // Dominant spotlight manga
-  const heroManga = featuredManga[0];
+  // Dominant spotlight manga: always prioritize live real manga over mock demo
+  const heroManga = featuredManga.find(m => !m.id.includes('_mock_')) || featuredManga[0];
 
-  const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico'];
+  const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi', 'Romance', 'Mistério'];
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-20">
@@ -351,16 +396,40 @@ export const HomePage: React.FC<HomePageProps> = ({
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
-              {catalogManga.map((manga) => (
-                <MangaCard
-                  key={manga.id}
-                  manga={manga}
-                  onSelect={onSelectManga}
-                  onQuickRead={() => handleHeroQuickRead(manga)}
-                />
-              ))}
-            </div>
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
+                {catalogManga.map((manga) => (
+                  <MangaCard
+                    key={manga.id}
+                    manga={manga}
+                    onSelect={onSelectManga}
+                    onQuickRead={() => handleHeroQuickRead(manga)}
+                  />
+                ))}
+              </div>
+
+              {hasMore && catalogManga.length > 0 && (
+                <div className="mt-10 flex justify-center">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={loadingMore}
+                    className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white rounded-lg text-xs font-semibold border border-zinc-700/80 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 shadow-md"
+                  >
+                    {loadingMore ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-rose-500" />
+                        <span>Carregando mais mangás...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Carregar Mais Mangás</span>
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
       </div>

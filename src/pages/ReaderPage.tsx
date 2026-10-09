@@ -14,7 +14,10 @@ import {
   Eye,
   RefreshCw,
   Sliders,
-  Check
+  Check,
+  AlertCircle,
+  RotateCcw,
+  FileX
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -30,6 +33,106 @@ interface ReaderPageProps {
 type ReaderMode = 'webtoon' | 'single' | 'double';
 type ReaderTheme = 'dark' | 'black' | 'sepia' | 'light';
 type PageFit = 'width' | 'height' | 'original';
+
+interface ReaderPageImageProps {
+  pageNumber: number;
+  imageUrl: string;
+  className?: string;
+  alt?: string;
+  loading?: 'eager' | 'lazy';
+  onLoad?: () => void;
+}
+
+const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
+  pageNumber,
+  imageUrl,
+  className = '',
+  alt,
+  loading = 'lazy',
+  onLoad
+}) => {
+  const [currentSrc, setCurrentSrc] = useState(imageUrl);
+  const [attempt, setAttempt] = useState(0);
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+
+  useEffect(() => {
+    setCurrentSrc(imageUrl);
+    setAttempt(0);
+    setStatus('loading');
+  }, [imageUrl]);
+
+  const handleError = () => {
+    // Attempt 1: If URL is from mangadex.network volunteer node, try official uploads.mangadex.org CDN
+    if (attempt === 0 && currentSrc.includes('mangadex.network')) {
+      const uploadFallback = currentSrc.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
+      if (uploadFallback !== currentSrc) {
+        setAttempt(1);
+        setCurrentSrc(uploadFallback);
+        return;
+      }
+    }
+
+    // Attempt 2: Try through local backend image proxy with appropriate CDN referrers
+    if (attempt <= 1 && !currentSrc.startsWith('/api/proxy/image')) {
+      setAttempt(2);
+      setCurrentSrc(`/api/proxy/image?url=${encodeURIComponent(currentSrc)}`);
+      return;
+    }
+
+    // Final failure: show clear, understandable error state on this specific page
+    setStatus('error');
+  };
+
+  const handleRetry = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAttempt(0);
+    setStatus('loading');
+    setCurrentSrc(imageUrl);
+  };
+
+  return (
+    <div className="relative flex flex-col items-center justify-center w-full min-h-[320px]">
+      {status === 'loading' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/40 rounded-lg text-zinc-500 py-16">
+          <RefreshCw className="h-6 w-6 animate-spin text-zinc-400 mb-2" />
+          <span className="text-xs">Carregando página {pageNumber}...</span>
+        </div>
+      )}
+
+      {status === 'error' ? (
+        <div className="flex flex-col items-center justify-center p-8 my-6 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center max-w-md w-full shadow-lg">
+          <AlertCircle className="h-8 w-8 text-amber-500 mb-2" />
+          <h4 className="text-sm font-semibold text-zinc-200 mb-1">
+            Falha ao carregar a página {pageNumber}
+          </h4>
+          <p className="text-xs text-zinc-400 mb-4 leading-relaxed">
+            O servidor da fonte externa não entregou a imagem para esta página ou o scan está temporariamente indisponível.
+          </p>
+          <button
+            onClick={handleRetry}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Tentar recarregar página
+          </button>
+        </div>
+      ) : (
+        <img
+          src={currentSrc}
+          alt={alt || `Página ${pageNumber}`}
+          referrerPolicy="no-referrer"
+          className={`${className} ${status === 'loading' ? 'opacity-0' : 'opacity-100 transition-opacity duration-200'}`}
+          loading={loading}
+          onLoad={() => {
+            setStatus('loaded');
+            onLoad?.();
+          }}
+          onError={handleError}
+        />
+      )}
+    </div>
+  );
+};
 
 export const ReaderPage: React.FC<ReaderPageProps> = ({
   mangaId,
@@ -234,20 +337,22 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     return (
       <div className={`min-h-screen flex flex-col items-center justify-center p-6 text-center ${themeClasses[readerTheme]}`}>
         <BookOpen className="h-10 w-10 text-rose-500 mb-3" />
-        <h2 className="text-lg font-bold text-zinc-200 mb-1">Não foi possível carregar as páginas</h2>
-        <p className="text-xs text-zinc-400 max-w-md mb-6">
-          {error || 'O provedor externo não retornou imagens para este capítulo.'}
+        <h2 className="text-lg font-bold text-zinc-200 mb-1">
+          {error ? 'Não foi possível carregar as páginas' : 'Capítulo indisponível na fonte externa'}
+        </h2>
+        <p className="text-xs text-zinc-400 max-w-md mb-6 leading-relaxed">
+          {error || 'O provedor externo não retornou imagens para este capítulo (nem na fonte principal nem no serviço de fallback). Tente selecionar outro capítulo ou outra fonte.'}
         </p>
         <div className="flex gap-3">
           <button
             onClick={onBackToManga}
-            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors"
+            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
           >
             Voltar ao Mangá
           </button>
           <button
             onClick={loadReaderData}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-medium transition-colors"
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
           >
             Tentar Novamente
           </button>
@@ -277,7 +382,14 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             </button>
 
             <div className="overflow-hidden">
-              <h2 className="font-semibold text-xs sm:text-sm line-clamp-1">{manga?.title}</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-xs sm:text-sm line-clamp-1">{manga?.title}</h2>
+                {manga?.id.includes('_mock_') && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase font-mono font-semibold shrink-0">
+                    Demonstração Mock
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2 text-[11px] text-zinc-400">
                 <span className="font-mono tabular-nums">
                   Capítulo {currentChapter?.chapterNumber}
@@ -429,19 +541,18 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       >
         {/* Webtoon / Vertical Cascade Mode */}
         {readerMode === 'webtoon' && (
-          <div ref={pagesContainerRef} className="w-full flex flex-col items-center max-w-4xl space-y-1">
+          <div ref={pagesContainerRef} className="w-full flex flex-col items-center max-w-4xl space-y-2">
             {pages.map((page, idx) => (
               <div
                 key={idx}
                 ref={(el) => {
                   pageRefs.current[idx] = el;
                 }}
-                className="relative flex justify-center w-full min-h-[400px] bg-zinc-900/20"
+                className="relative flex justify-center w-full"
               >
-                <img
-                  src={page.imageUrl}
-                  alt={`Página ${page.pageNumber}`}
-                  referrerPolicy="no-referrer"
+                <ReaderPageImage
+                  pageNumber={page.pageNumber}
+                  imageUrl={page.imageUrl}
                   className={`block object-contain transition-all ${
                     pageFit === 'width' ? 'w-full' : pageFit === 'height' ? 'h-screen' : 'max-w-full'
                   }`}
@@ -460,14 +571,16 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 pageFit === 'height' ? 'h-[85vh]' : 'w-full'
               }`}
             >
-              <img
-                src={pages[currentPageIndex]?.imageUrl}
-                alt={`Página ${currentPageIndex + 1}`}
-                referrerPolicy="no-referrer"
-                className={`object-contain transition-all shadow-2xl ${
-                  pageFit === 'height' ? 'h-full max-w-full' : 'max-h-[90vh] w-auto max-w-full'
-                }`}
-              />
+              {pages[currentPageIndex] && (
+                <ReaderPageImage
+                  pageNumber={currentPageIndex + 1}
+                  imageUrl={pages[currentPageIndex].imageUrl}
+                  className={`object-contain transition-all shadow-2xl ${
+                    pageFit === 'height' ? 'h-full max-w-full' : 'max-h-[90vh] w-auto max-w-full'
+                  }`}
+                  loading="eager"
+                />
+              )}
 
               {/* Click zones for easy flipping on touch or mouse */}
               <div
@@ -497,11 +610,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               {/* Right page (Manga reading right to left) */}
               <div className="flex justify-end h-full">
                 {pages[currentPageIndex + 1] ? (
-                  <img
-                    src={pages[currentPageIndex + 1].imageUrl}
-                    alt={`Página ${currentPageIndex + 2}`}
-                    referrerPolicy="no-referrer"
+                  <ReaderPageImage
+                    pageNumber={currentPageIndex + 2}
+                    imageUrl={pages[currentPageIndex + 1].imageUrl}
                     className="max-h-[85vh] w-auto object-contain"
+                    loading="eager"
                   />
                 ) : (
                   <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
@@ -512,12 +625,14 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
               {/* Left page */}
               <div className="flex justify-start h-full">
-                <img
-                  src={pages[currentPageIndex]?.imageUrl}
-                  alt={`Página ${currentPageIndex + 1}`}
-                  referrerPolicy="no-referrer"
-                  className="max-h-[85vh] w-auto object-contain"
-                />
+                {pages[currentPageIndex] && (
+                  <ReaderPageImage
+                    pageNumber={currentPageIndex + 1}
+                    imageUrl={pages[currentPageIndex].imageUrl}
+                    className="max-h-[85vh] w-auto object-contain"
+                    loading="eager"
+                  />
+                )}
               </div>
             </div>
 

@@ -3,6 +3,7 @@ import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/mang
 export interface SourceSearchOptions {
   limit?: number;
   offset?: number;
+  page?: number;
   genre?: string;
   language?: string;
 }

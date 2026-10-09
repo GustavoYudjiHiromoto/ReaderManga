@@ -11,14 +11,17 @@ interface MangaCardProps {
 export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRead }) => {
   const [imageError, setImageError] = useState(false);
 
-  const primarySource = manga.sources[0]?.sourceName || (manga.id.includes('mangadex') ? 'MangaDex' : 'Mock');
+  const isMock = manga.id.includes('_mock_') || manga.sources[0]?.sourceId === 'mock';
+  const primarySource = manga.sources[0]?.sourceName || (manga.id.includes('mangadex') ? 'MangaDex' : manga.id.includes('comick') ? 'Comick' : 'Mock');
   const releaseYear = manga.publicationInfo?.releaseYear;
   const demographic = manga.publicationInfo?.demographic;
 
   return (
     <div
       onClick={() => onSelect(manga.id)}
-      className="group relative flex flex-col cursor-pointer bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700/80 rounded-xl overflow-hidden transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+      className={`group relative flex flex-col cursor-pointer bg-zinc-900/60 hover:bg-zinc-900 border rounded-xl overflow-hidden transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl ${
+        isMock ? 'border-amber-500/30 hover:border-amber-500/60' : 'border-zinc-800/80 hover:border-zinc-700/80'
+      }`}
     >
       {/* Cover Image Container */}
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-950">
@@ -43,8 +46,14 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
 
         {/* Source and Rating Overlay */}
         <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between text-xs">
-          <span className="bg-zinc-950/80 backdrop-blur-md px-2 py-0.5 rounded text-[11px] font-medium text-zinc-300 border border-zinc-800">
-            {primarySource}
+          <span
+            className={`backdrop-blur-md px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${
+              isMock
+                ? 'bg-amber-950/90 text-amber-300 border-amber-500/50'
+                : 'bg-zinc-950/90 text-emerald-300 border-emerald-500/40'
+            }`}
+          >
+            {isMock ? 'Demo Mock' : (manga.sources[0]?.sourceId === 'comick' ? 'Comick (Ao Vivo)' : manga.sources[0]?.sourceId === 'mangadex' ? 'MangaDex (Ao Vivo)' : primarySource)}
           </span>
           {manga.rating && (
             <span className="flex items-center gap-1 bg-zinc-950/80 backdrop-blur-md px-2 py-0.5 rounded text-[11px] font-mono font-medium text-amber-300 border border-zinc-800 tabular-nums">

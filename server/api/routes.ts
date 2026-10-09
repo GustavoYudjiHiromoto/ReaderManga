@@ -37,12 +37,16 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const q = (req.query.q as string) || '';
     const sourceId = req.query.source as string;
     const genre = req.query.genre as string;
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 24;
+    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
+    const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
 
     const searchResult = await sourceRegistry.search(q, {
       sourceId,
       genre,
-      limit
+      limit,
+      offset,
+      page
     });
 
     res.json({
@@ -150,7 +154,7 @@ apiRouter.get('/chapters/:id/pages', async (req: Request, res: Response) => {
   }
 });
 
-// 8. Image proxy to prevent CORS or hotlinking issues on remote hosts
+// 8. Image proxy to prevent CORS, expired nodes, or hotlinking issues on remote hosts
 apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
   try {
     const imageUrl = req.query.url as string;
@@ -158,12 +162,28 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
       return res.status(400).send('Missing url parameter');
     }
 
-    const response = await fetch(imageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': imageUrl
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    };
+
+    if (imageUrl.includes('comick.pictures') || imageUrl.includes('comick.io')) {
+      headers['Referer'] = 'https://comick.io/';
+    }
+
+    let response = await fetch(imageUrl, { headers });
+
+    // Fallback if ephemeral MangaDex@Home node returned 404 or failed
+    if (!response.ok && imageUrl.includes('mangadex.network')) {
+      const fallbackUrl = imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
+      try {
+        const fallbackRes = await fetch(fallbackUrl, { headers });
+        if (fallbackRes.ok) {
+          response = fallbackRes;
+        }
+      } catch {
+        // keep original response
       }
-    });
+    }
 
     if (!response.ok) {
       return res.status(response.status).send('Failed to fetch upstream image');
@@ -172,6 +192,7 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
     const arrayBuffer = await response.arrayBuffer();
     res.send(Buffer.from(arrayBuffer));

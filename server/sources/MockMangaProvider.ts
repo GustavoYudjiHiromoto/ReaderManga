@@ -334,7 +334,7 @@ const OPEN_MANGA_CATALOG: RawMangaEntry[] = [
 
 export class MockMangaProvider implements IMangaSource {
   private readonly sourceId = 'mock';
-  private readonly sourceName = 'Mock Manga (Demonstração)';
+  private readonly sourceName = 'Mock Manga (Demonstração Local)';
 
   getInfo(): MangaSourceInfo {
     return {
@@ -356,7 +356,7 @@ export class MockMangaProvider implements IMangaSource {
   private normalizeToManga(entry: RawMangaEntry): Manga {
     return {
       id: `mr_${this.sourceId}_${entry.externalId}`,
-      title: entry.title,
+      title: `${entry.title} (Demonstração Mock)`,
       altTitles: entry.altTitles,
       coverUrl: entry.coverUrl,
       synopsis: entry.synopsis,
@@ -434,7 +434,7 @@ export class MockMangaProvider implements IMangaSource {
       id: `ch_${this.sourceId}_${externalMangaId}_${ch.externalChapterId}`,
       mangaId: `mr_${this.sourceId}_${externalMangaId}`,
       chapterNumber: ch.chapterNumber,
-      title: ch.title,
+      title: `${ch.title} [Placeholder Mock]`,
       releaseDate: ch.releaseDate,
       language: ch.language,
       sourceId: this.sourceId,

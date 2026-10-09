@@ -39,11 +39,14 @@ async function runDeterministicTests() {
     
     const mockSource = sourcesJson.data.find(s => s.id === 'mock');
     const dexSource = sourcesJson.data.find(s => s.id === 'mangadex');
+    const comickSource = sourcesJson.data.find(s => s.id === 'comick');
     assert(!!mockSource, 'Fonte "mock" está registrada em /api/sources');
     assert(mockSource?.type === 'mock', 'Fonte "mock" possui type === "mock"');
     assert(!!dexSource, 'Fonte "mangadex" está registrada em /api/sources');
     assert(dexSource?.type === 'live_api', 'Fonte "mangadex" possui type === "live_api"');
-    assert(sourcesJson.data.length >= 2, 'Coexistência: pelo menos 2 fontes estão ativas');
+    assert(!!comickSource, 'Fonte "comick" está registrada em /api/sources');
+    assert(comickSource?.type === 'live_api', 'Fonte "comick" possui type === "live_api"');
+    assert(sourcesJson.data.length >= 3, 'Coexistência: 3 fontes estão ativas (Mock, MangaDex, Comick)');
 
     // -------------------------------------------------------------------------
     // 2. BUSCA E FILTROS DO MOCK
@@ -87,9 +90,9 @@ async function runDeterministicTests() {
     assert(typeof pagesJson.data[0]?.imageUrl === 'string', 'Páginas possuem URL de imagem válida');
 
     // -------------------------------------------------------------------------
-    // 4. TRATAMENTO DE ERROS SEMÂNTICOS (400 vs 404)
+    // 4. TRATAMENTO DE ERROS SEMÂNTICOS (400 vs 404) E PARSER DE CAPÍTULOS
     // -------------------------------------------------------------------------
-    console.log('\n[4/4] Testando Semântica de Erros (400 vs 404)...');
+    console.log('\n[4/4] Testando Semântica de Erros (400 vs 404) e Formato de IDs...');
     
     // 4.1 Erro 400: Formato de ID inválido
     const r400Manga = await fetch(`${BASE_URL}/api/manga/id_sem_prefixo_valido`);
@@ -102,7 +105,41 @@ async function runDeterministicTests() {
     const r400ChJson = await r400Ch.json();
     assert(r400ChJson.error.includes('Formato de identificador de capítulo inválido'), 'Mensagem explicativa de formato de capítulo inválido');
 
-    // 4.2 Erro 404: Recurso bem-formatado, mas inexistente
+    // 4.2 Verificação determinística do parser de IDs de capítulo (SourceRegistry)
+    // Usando SourceRegistry diretamente para validar os formatos canônicos e fallback
+    const { SourceRegistry } = await import('../sources/SourceRegistry.js');
+    const registry = new SourceRegistry();
+
+    // ID canônico Mock sem fallback
+    const parsedMock = registry.parseInternalChapterId('ch_mock_frieren-journey_frieren-ch-01');
+    assert(parsedMock.sourceId === 'mock', 'Parser extrai sourceId "mock"');
+    assert(parsedMock.externalMangaId === 'frieren-journey', 'Parser extrai externalMangaId do mock');
+    assert(parsedMock.externalChapterId === 'frieren-ch-01', 'Parser extrai externalChapterId do mock');
+    assert(parsedMock.fallbackChapterId === undefined, 'Mock sem fallback não possui fallbackChapterId');
+
+    // ID canônico MangaDex sem fallback
+    const parsedMd = registry.parseInternalChapterId('ch_mangadex_a77742b1_e7c4d0c9-cec9-4116-aba1-178b2a5d4cc3');
+    assert(parsedMd.sourceId === 'mangadex', 'Parser extrai sourceId "mangadex"');
+    assert(parsedMd.externalMangaId === 'a77742b1', 'Parser extrai externalMangaId do mangadex');
+    assert(parsedMd.externalChapterId === 'e7c4d0c9-cec9-4116-aba1-178b2a5d4cc3', 'Parser extrai externalChapterId do mangadex');
+    assert(parsedMd.fallbackChapterId === undefined, 'MangaDex sem fallback não possui fallbackChapterId');
+
+    // ID Comick sem mdid (mantém formato canônico atual)
+    const parsedComickStandard = registry.parseInternalChapterId('ch_comick_71gMd0vF_Tggg2nmZ');
+    assert(parsedComickStandard.sourceId === 'comick', 'Parser extrai sourceId "comick"');
+    assert(parsedComickStandard.externalMangaId === '71gMd0vF', 'Parser extrai externalMangaId "71gMd0vF"');
+    assert(parsedComickStandard.externalChapterId === 'Tggg2nmZ', 'Parser extrai externalChapterId "Tggg2nmZ"');
+    assert(parsedComickStandard.fallbackChapterId === undefined, 'Capítulo Comick sem sufixo não possui fallbackChapterId');
+
+    // ID Comick com mdid (recebe sufixo __md_<mdid>)
+    const sampleMdid = 'e7c4d0c9-cec9-4116-aba1-178b2a5d4cc3';
+    const parsedComickWithFallback = registry.parseInternalChapterId(`ch_comick_71gMd0vF_Tggg2nmZ__md_${sampleMdid}`);
+    assert(parsedComickWithFallback.sourceId === 'comick', 'Parser com fallback extrai sourceId "comick"');
+    assert(parsedComickWithFallback.externalMangaId === '71gMd0vF', 'Parser com fallback extrai externalMangaId');
+    assert(parsedComickWithFallback.externalChapterId === 'Tggg2nmZ', 'Parser com fallback extrai externalChapterId limpo');
+    assert(parsedComickWithFallback.fallbackChapterId === sampleMdid, 'Parser extrai fallbackChapterId com o UUID correto do MangaDex');
+
+    // 4.3 Erro 404: Recurso bem-formatado, mas inexistente
     const r404Manga = await fetch(`${BASE_URL}/api/manga/mr_mock_obra-inexistente-123`);
     assert(r404Manga.status === 404, 'Mangá inexistente no catálogo mock retorna HTTP 404');
 

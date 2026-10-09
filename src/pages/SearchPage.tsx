@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Layers } from 'lucide-react';
+import { Search, X, Filter, BookOpen, RefreshCw, Layers, ArrowRight } from 'lucide-react';
 import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
@@ -19,6 +19,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const [results, setResults] = useState<Manga[]>([]);
   const [sources, setSources] = useState<MangaSourceInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [searchPage, setSearchPage] = useState(1);
+  const [hasMore, setHasMore] = useState(true);
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
@@ -32,19 +35,54 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const executeSearch = async (searchQuery: string, source = selectedSource, genre = selectedGenre) => {
     setLoading(true);
     setHasSearched(true);
+    setSearchPage(1);
+    setHasMore(true);
     try {
       const res = await MangaApi.search(searchQuery, {
         source: source === 'all' ? undefined : source,
         genre: genre === 'all' ? undefined : genre,
-        limit: 30
+        limit: 24,
+        page: 1
       });
-      setResults(res.data || []);
+      const data = res.data || [];
+      setResults(data);
       setSourcesQueried(res.sourcesQueried || []);
+      if (data.length < 24) {
+        setHasMore(false);
+      }
     } catch (err) {
       console.error('Search failed:', err);
       setResults([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const nextPage = searchPage + 1;
+    try {
+      const res = await MangaApi.search(query, {
+        source: selectedSource === 'all' ? undefined : selectedSource,
+        genre: selectedGenre === 'all' ? undefined : selectedGenre,
+        limit: 24,
+        page: nextPage
+      });
+      const newItems = res.data || [];
+      if (newItems.length === 0 || newItems.length < 24) {
+        setHasMore(false);
+      }
+      setResults(prev => {
+        const existingIds = new Set(prev.map(m => m.id));
+        const filteredNew = newItems.filter(m => !existingIds.has(m.id));
+        return [...prev, ...filteredNew];
+      });
+      setSearchPage(nextPage);
+    } catch (err) {
+      console.error('Failed to load more search results:', err);
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -69,7 +107,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   };
 
   const POPULAR_SEARCH_TERMS = ['Frieren', 'Chainsaw Man', 'One-Punch Man', 'Solo Leveling', 'Berserk', 'Spy x Family', 'Jujutsu', 'One Piece'];
-  const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi'];
+  const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi', 'Romance', 'Mistério'];
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
@@ -226,15 +264,39 @@ export const SearchPage: React.FC<SearchPageProps> = ({
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
-            {results.map((manga) => (
-              <MangaCard
-                key={manga.id}
-                manga={manga}
-                onSelect={onSelectManga}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
+              {results.map((manga) => (
+                <MangaCard
+                  key={manga.id}
+                  manga={manga}
+                  onSelect={onSelectManga}
+                />
+              ))}
+            </div>
+
+            {hasMore && results.length > 0 && (
+              <div className="mt-10 flex justify-center">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white rounded-lg text-xs font-semibold border border-zinc-700/80 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 shadow-md"
+                >
+                  {loadingMore ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-rose-500" />
+                      <span>Carregando mais resultados...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Carregar Mais Resultados</span>
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

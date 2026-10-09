@@ -146,14 +146,47 @@ export class MangaDexProvider implements IMangaSource {
     };
   }
 
+  private static readonly GENRE_MAP: Record<string, string> = {
+    'ação': '391b0423-d847-456f-aff0-8b0cfc03066b',
+    'acao': '391b0423-d847-456f-aff0-8b0cfc03066b',
+    'action': '391b0423-d847-456f-aff0-8b0cfc03066b',
+    'fantasia': 'cdc58593-87dd-415e-bbc0-2ec27bf404cc',
+    'fantasy': 'cdc58593-87dd-415e-bbc0-2ec27bf404cc',
+    'comédia': '4d32cc48-9f00-4cca-9b5a-a839f0764984',
+    'comedia': '4d32cc48-9f00-4cca-9b5a-a839f0764984',
+    'comedy': '4d32cc48-9f00-4cca-9b5a-a839f0764984',
+    'aventura': '87cc87cd-a395-47af-b27a-93258283bbc6',
+    'adventure': '87cc87cd-a395-47af-b27a-93258283bbc6',
+    'drama': 'b9af3a63-f058-46de-a9a0-e0c13906197a',
+    'sobrenatural': 'eabc5b4c-6aff-42f3-b657-3e90cbd00b75',
+    'supernatural': 'eabc5b4c-6aff-42f3-b657-3e90cbd00b75',
+    'histórico': '33771934-028e-4cb3-8744-691e866a923e',
+    'historico': '33771934-028e-4cb3-8744-691e866a923e',
+    'historical': '33771934-028e-4cb3-8744-691e866a923e',
+    'horror': 'cdad7e68-1419-41dd-bdce-27753074a640',
+    'sci-fi': '256c8bd9-4904-4360-bf4f-508a76d67183',
+    'romance': '423e2eae-a7a2-4a8b-ac03-a8351462d71d',
+    'mistério': 'ee968100-4191-4968-93d3-f82d72be7e46',
+    'misterio': 'ee968100-4191-4968-93d3-f82d72be7e46',
+    'mystery': 'ee968100-4191-4968-93d3-f82d72be7e46'
+  };
+
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
-      const limit = Math.min(options?.limit || 20, 30);
-      const offset = options?.offset || 0;
-      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&order[relevance]=desc`;
+      const limit = Math.min(options?.limit || 24, 60);
+      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+      const orderParam = query.trim() ? 'order[relevance]=desc' : 'order[followedCount]=desc';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&${orderParam}`;
       
       if (query.trim()) {
         url += `&title=${encodeURIComponent(query.trim())}`;
+      }
+
+      if (options?.genre && options.genre !== 'all') {
+        const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
+        if (tagId) {
+          url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+        }
       }
 
       const res = await this.fetchWithTimeout(url);
@@ -173,8 +206,17 @@ export class MangaDexProvider implements IMangaSource {
 
   async getPopular(options?: SourceSearchOptions): Promise<Manga[]> {
     try {
-      const limit = options?.limit || 10;
-      const url = `${this.baseUrl}/manga?limit=${limit}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc`;
+      const limit = Math.min(options?.limit || 24, 60);
+      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc`;
+
+      if (options?.genre && options.genre !== 'all') {
+        const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
+        if (tagId) {
+          url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+        }
+      }
+
       const res = await this.fetchWithTimeout(url);
       const list = Array.isArray(res.data) ? res.data : [];
       return list.map((item: any) => this.normalizeMangaDexItem(item));
@@ -200,8 +242,8 @@ export class MangaDexProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     try {
-      const buildUrl = (langQuery: string) =>
-        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica${langQuery}`;
+      const buildUrl = (langQuery: string, offset = 0) =>
+        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&offset=${offset}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica${langQuery}`;
 
       let langQuery = '';
       if (language) {
@@ -210,15 +252,29 @@ export class MangaDexProvider implements IMangaSource {
         langQuery = '&translatedLanguage[]=pt-br&translatedLanguage[]=en';
       }
 
-      let res = await this.fetchWithTimeout(buildUrl(langQuery));
+      let res = await this.fetchWithTimeout(buildUrl(langQuery, 0));
       let list = Array.isArray(res.data) ? res.data : [];
+
+      // If more chapters exist (> 100), fetch next 100 to expand chapters available
+      if (res.total > 100 && list.length === 100) {
+        const resOffset100 = await this.fetchWithTimeout(buildUrl(langQuery, 100)).catch(() => ({ data: [] }));
+        if (Array.isArray(resOffset100.data) && resOffset100.data.length > 0) {
+          list = [...list, ...resOffset100.data];
+        }
+      }
 
       // Fallback: If no language was explicitly requested and preferred languages (pt-br, en) returned no chapters,
       // fetch chapters without language restriction so available translations are displayed instead of empty list
       if (!language && list.length === 0) {
-        const fallbackRes = await this.fetchWithTimeout(buildUrl(''));
+        const fallbackRes = await this.fetchWithTimeout(buildUrl('', 0));
         if (Array.isArray(fallbackRes.data) && fallbackRes.data.length > 0) {
           list = fallbackRes.data;
+          if (fallbackRes.total > 100 && list.length === 100) {
+            const fallbackRes2 = await this.fetchWithTimeout(buildUrl('', 100)).catch(() => ({ data: [] }));
+            if (Array.isArray(fallbackRes2.data)) {
+              list = [...list, ...fallbackRes2.data];
+            }
+          }
         }
       }
 
@@ -259,9 +315,14 @@ export class MangaDexProvider implements IMangaSource {
         : chapter.data;
       const subDir = chapter.dataSaver && chapter.dataSaver.length > 0 ? 'data-saver' : 'data';
 
+      // Prefer permanent official MangaDex CDN (uploads.mangadex.org)
+      // to ensure reliable, unthrottled image URLs that do not expire after 15 minutes
+      // or return 404 from ephemeral volunteer nodes.
+      const cdnBase = 'https://uploads.mangadex.org';
+
       return files.map((fileName, index) => ({
         pageNumber: index + 1,
-        imageUrl: `${baseUrl}/${subDir}/${chapter.hash}/${fileName}`
+        imageUrl: `${cdnBase}/${subDir}/${chapter.hash}/${fileName}`
       }));
     } catch (err) {
       if (err instanceof HttpError) throw err;
