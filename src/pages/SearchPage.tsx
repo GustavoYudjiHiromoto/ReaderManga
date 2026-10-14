@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Layers, ArrowRight } from 'lucide-react';
+import { Search, X, Filter, BookOpen, RefreshCw, Layers, ArrowRight, Shield, ShieldAlert, Check } from 'lucide-react';
 import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
@@ -15,34 +15,77 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   onSelectManga,
   onReadChapter
 }) => {
-  const [query, setQuery] = useState(initialQuery);
+  const getUrlParam = (key: string, fallback = '') => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      const val = sp.get(key);
+      if (val !== null) return val;
+    }
+    return fallback;
+  };
+
+  const [query, setQuery] = useState(() => getUrlParam('q', initialQuery));
   const [results, setResults] = useState<Manga[]>([]);
   const [sources, setSources] = useState<MangaSourceInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchPage, setSearchPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [selectedSource, setSelectedSource] = useState<string>('all');
-  const [selectedGenre, setSelectedGenre] = useState<string>('all');
+  const [selectedSource, setSelectedSource] = useState<string>(() => getUrlParam('source', 'all'));
+  const [selectedGenre, setSelectedGenre] = useState<string>(() => getUrlParam('genre', 'all'));
+  const [safeSearch, setSafeSearch] = useState<boolean>(() => getUrlParam('safe', '1') === '1');
+  const [onlyAvailable, setOnlyAvailable] = useState<boolean>(() => getUrlParam('available', '0') === '1');
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
     MangaApi.getSources().then(setSources).catch(console.error);
-    executeSearch(initialQuery);
+    const startQ = getUrlParam('q', initialQuery);
+    const startSrc = getUrlParam('source', 'all');
+    const startGenre = getUrlParam('genre', 'all');
+    const startSafe = getUrlParam('safe', '1') === '1';
+    const startAvail = getUrlParam('available', '0') === '1';
+    executeSearch(startQ, startSrc, startGenre, startSafe, startAvail);
+  }, []);
+
+  useEffect(() => {
+    if (initialQuery && initialQuery !== query) {
+      setQuery(initialQuery);
+      executeSearch(initialQuery, selectedSource, selectedGenre, safeSearch, onlyAvailable);
+    }
   }, [initialQuery]);
 
-  const executeSearch = async (searchQuery: string, source = selectedSource, genre = selectedGenre) => {
+  const executeSearch = async (
+    searchQuery: string,
+    source = selectedSource,
+    genre = selectedGenre,
+    isSafe = safeSearch,
+    availOnly = onlyAvailable
+  ) => {
     setLoading(true);
     setHasSearched(true);
     setSearchPage(1);
     setHasMore(true);
+
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/search')) {
+      const sp = new URLSearchParams();
+      if (searchQuery.trim()) sp.set('q', searchQuery.trim());
+      if (source && source !== 'all') sp.set('source', source);
+      if (genre && genre !== 'all') sp.set('genre', genre);
+      if (!isSafe) sp.set('safe', '0');
+      if (availOnly) sp.set('available', '1');
+      const newUrl = sp.toString() ? `/search?${sp.toString()}` : '/search';
+      window.history.replaceState({ ...window.history.state, view: 'search' }, '', newUrl);
+    }
+
     try {
       const res = await MangaApi.search(searchQuery, {
         source: source === 'all' ? undefined : source,
         genre: genre === 'all' ? undefined : genre,
         limit: 24,
-        page: 1
+        page: 1,
+        includeAdult: !isSafe,
+        onlyAvailable: availOnly
       });
       const data = res.data || [];
       setResults(data);
@@ -67,7 +110,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         source: selectedSource === 'all' ? undefined : selectedSource,
         genre: selectedGenre === 'all' ? undefined : selectedGenre,
         limit: 24,
-        page: nextPage
+        page: nextPage,
+        includeAdult: !safeSearch,
+        onlyAvailable: onlyAvailable
       });
       const newItems = res.data || [];
       if (newItems.length === 0 || newItems.length < 24) {
@@ -88,22 +133,34 @@ export const SearchPage: React.FC<SearchPageProps> = ({
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    executeSearch(query);
+    executeSearch(query, selectedSource, selectedGenre, safeSearch, onlyAvailable);
   };
 
   const handleClear = () => {
     setQuery('');
-    executeSearch('', selectedSource, selectedGenre);
+    executeSearch('', selectedSource, selectedGenre, safeSearch, onlyAvailable);
   };
 
   const handleSourceSelect = (source: string) => {
     setSelectedSource(source);
-    executeSearch(query, source, selectedGenre);
+    executeSearch(query, source, selectedGenre, safeSearch, onlyAvailable);
   };
 
   const handleGenreSelect = (genre: string) => {
     setSelectedGenre(genre);
-    executeSearch(query, selectedSource, genre);
+    executeSearch(query, selectedSource, genre, safeSearch, onlyAvailable);
+  };
+
+  const toggleSafeSearch = () => {
+    const nextSafe = !safeSearch;
+    setSafeSearch(nextSafe);
+    executeSearch(query, selectedSource, selectedGenre, nextSafe, onlyAvailable);
+  };
+
+  const toggleOnlyAvailable = () => {
+    const nextAvail = !onlyAvailable;
+    setOnlyAvailable(nextAvail);
+    executeSearch(query, selectedSource, selectedGenre, safeSearch, nextAvail);
   };
 
   const POPULAR_SEARCH_TERMS = ['Frieren', 'Chainsaw Man', 'One-Punch Man', 'Solo Leveling', 'Berserk', 'Spy x Family', 'Jujutsu', 'One Piece'];
@@ -153,7 +210,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           </form>
 
           {/* Source and Quick Filters */}
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
             <div className="flex flex-wrap items-center justify-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800 text-xs">
               <button
                 onClick={() => handleSourceSelect('all')}
@@ -165,7 +222,6 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               </button>
               {sources.map((src) => {
                 const isSelected = selectedSource === src.id;
-                const isMock = src.type === 'mock';
                 return (
                   <button
                     key={src.id}
@@ -175,18 +231,52 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                     }`}
                   >
                     <span>{src.name}</span>
-                    <span
-                      className={`text-[9px] uppercase px-1 py-0.5 rounded font-mono ${
-                        isMock
-                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                      }`}
-                    >
-                      {isMock ? 'Demo' : 'Live'}
+                    <span className="text-[9px] uppercase px-1 py-0.5 rounded font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      Live
                     </span>
                   </button>
                 );
               })}
+            </div>
+
+            {/* Content & Availability Toggles */}
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={toggleSafeSearch}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                  safeSearch
+                    ? 'bg-emerald-950/30 text-emerald-300 border-emerald-600/40 hover:bg-emerald-950/50'
+                    : 'bg-rose-950/40 text-rose-300 border-rose-600/50 hover:bg-rose-950/60'
+                }`}
+                title={safeSearch ? 'Conteúdo adulto ocultado por padrão' : 'Conteúdo adulto liberado na pesquisa'}
+              >
+                {safeSearch ? (
+                  <>
+                    <Shield className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Filtro +18: Ativo</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Exibindo +18</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleOnlyAvailable}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                  onlyAvailable
+                    ? 'bg-rose-950/40 text-rose-300 border-rose-600/50 hover:bg-rose-950/60'
+                    : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700'
+                }`}
+                title="Filtrar apenas títulos que possuem capítulos legíveis no provedor"
+              >
+                <BookOpen className="h-3.5 w-3.5 text-zinc-400" />
+                <span>{onlyAvailable ? 'Apenas com Capítulos' : 'Todos os Catálogos'}</span>
+              </button>
             </div>
           </div>
 

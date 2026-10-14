@@ -19,6 +19,14 @@ async function startServer() {
   // Mount API routes
   app.use('/api', apiRouter);
 
+  // Guarantee that unmatched /api/* requests NEVER fall through to Vite SPA middleware
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({
+      success: false,
+      error: `Endpoint de API não encontrado: ${req.method} ${req.originalUrl}`
+    });
+  });
+
   if (!isProduction) {
     // Vite middleware for development
     const { createServer: createViteServer } = await import('vite');

@@ -2,17 +2,19 @@ import React from 'react';
 import { BookOpen, Search, Layers, Clock, Bookmark, Sparkles } from 'lucide-react';
 
 interface NavbarProps {
-  currentTab: 'home' | 'catalog' | 'search' | 'api' | 'detail' | 'reader';
-  onNavigate: (tab: 'home' | 'catalog' | 'search' | 'api') => void;
+  currentTab: 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader';
+  onNavigate: (tab: 'home' | 'catalog' | 'search' | 'favorites' | 'api') => void;
   onOpenHistory: () => void;
   historyCount: number;
+  favoritesCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onNavigate,
   onOpenHistory,
-  historyCount
+  historyCount,
+  favoritesCount = 0
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md">
@@ -29,7 +31,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
         </button>
 
-        {/* Zone 2: 4 clean text navigation links */}
+        {/* Zone 2: Clean text navigation links */}
         <nav className="hidden md:flex items-center gap-7 text-sm font-medium">
           <button
             onClick={() => onNavigate('home')}
@@ -57,6 +59,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             Pesquisa
           </button>
           <button
+            onClick={() => onNavigate('favorites')}
+            className={`transition-colors hover:text-zinc-100 cursor-pointer flex items-center gap-1.5 ${
+              currentTab === 'favorites' ? 'text-rose-400 font-semibold' : 'text-zinc-400'
+            }`}
+          >
+            <Bookmark className={`h-4 w-4 ${currentTab === 'favorites' ? 'fill-rose-400/30' : ''}`} />
+            <span>Favoritos</span>
+            {favoritesCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
+                {favoritesCount}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => onNavigate('api')}
             className={`transition-colors hover:text-zinc-100 cursor-pointer flex items-center gap-1.5 ${
               currentTab === 'api' ? 'text-rose-400 font-semibold' : 'text-zinc-400'
@@ -67,7 +83,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </nav>
 
-        {/* Zone 3: 1-2 primary actions */}
+        {/* Zone 3: Actions */}
         <div className="flex items-center gap-2.5">
           <button
             onClick={() => onNavigate('search')}
@@ -78,11 +94,23 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            onClick={() => onNavigate('favorites')}
+            aria-label="Minha biblioteca de favoritos"
+            className="md:hidden relative p-2 text-zinc-400 hover:text-zinc-100 rounded-lg hover:bg-zinc-900 transition-colors"
+          >
+            <Bookmark className="h-5 w-5" />
+            {favoritesCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-rose-500" />
+            )}
+          </button>
+
+          <button
             onClick={onOpenHistory}
             className="relative flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 bg-zinc-900 hover:bg-zinc-800 hover:text-zinc-100 border border-zinc-800 transition-colors cursor-pointer"
           >
             <Clock className="h-3.5 w-3.5 text-rose-400" />
-            <span>Continuar Lendo</span>
+            <span className="hidden sm:inline">Continuar Lendo</span>
+            <span className="sm:hidden">Histórico</span>
             {historyCount > 0 && (
               <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
                 {historyCount}

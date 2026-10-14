@@ -47,6 +47,11 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   useEffect(() => {
     loadMangaDetails();
     setIsBookmarked(HistoryService.isBookmarked(mangaId));
+
+    const unsubscribe = HistoryService.subscribe(() => {
+      setIsBookmarked(HistoryService.isBookmarked(mangaId));
+    });
+    return unsubscribe;
   }, [mangaId]);
 
   const loadChapters = async () => {
@@ -87,7 +92,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   };
 
   const handleBookmarkToggle = () => {
-    const newState = HistoryService.toggleBookmark(mangaId);
+    if (!manga) return;
+    const newState = HistoryService.toggleBookmark({
+      mangaId: manga.id,
+      title: manga.title,
+      coverUrl: manga.coverUrl,
+      sourceName: manga.sources[0]?.sourceName,
+      sourceId: manga.sources[0]?.sourceId,
+      rating: manga.rating,
+      authors: manga.authors,
+      genres: manga.genres,
+      status: manga.status
+    });
     setIsBookmarked(newState);
   };
 
@@ -133,7 +149,6 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   }
 
   const primarySource = manga.sources[0];
-  const isMock = manga.id.includes('_mock_') || primarySource?.sourceId === 'mock';
   const firstChapter = chapters.length > 0 ? (chapterOrder === 'asc' ? chapters[0] : chapters[chapters.length - 1]) : null;
 
   return (
@@ -247,6 +262,22 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   </span>
                 </>
               )}
+              {manga.isAdult && (
+                <>
+                  <span aria-hidden="true" className="text-zinc-600">·</span>
+                  <span className="bg-rose-500/15 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 rounded text-[10px] font-bold">
+                    +18 Conteúdo Adulto
+                  </span>
+                </>
+              )}
+              {manga.hasAvailableChapters === false && (
+                <>
+                  <span aria-hidden="true" className="text-zinc-600">·</span>
+                  <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium">
+                    Apenas Catálogo
+                  </span>
+                </>
+              )}
             </div>
 
             <h1 className="font-serif text-3xl sm:text-4xl font-bold tracking-tight text-white mb-2 text-balance">
@@ -322,21 +353,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <span className="text-zinc-500 block">Provedor de Origem:</span>
                   <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                     <span className="text-zinc-300 font-medium">
-                      {isMock ? 'Mock Manga (Demonstração Local)' : (primarySource?.sourceName || primarySource?.sourceId)}
+                      {primarySource?.sourceName || primarySource?.sourceId}
                     </span>
-                    <span
-                      className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-mono font-semibold ${
-                        isMock
-                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                      }`}
-                    >
-                      {isMock ? 'Mock / Demo' : 'Live API'}
+                    <span className="text-[9px] uppercase px-1.5 py-0.5 rounded font-mono font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      Live API
                     </span>
                     <span className="text-zinc-500 font-mono text-[11px]">
                       (extId: {primarySource?.externalId})
                     </span>
-                    {!isMock && primarySource?.url && (
+                    {primarySource?.url && (
                       <a
                         href={primarySource.url}
                         target="_blank"
@@ -350,6 +375,32 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Multi-Source Switcher if consolidated across multiple providers */}
+              {manga.sources.length > 1 && onSelectManga && (
+                <div className="mt-3 pt-2.5 border-t border-zinc-800/60 flex flex-wrap items-center gap-2">
+                  <span className="text-zinc-500 text-[11px]">Fontes conectadas para esta obra:</span>
+                  {manga.sources.map(s => {
+                    const targetInternalId = `mr_${s.sourceId}_${s.externalId}`;
+                    const isCurrent = targetInternalId === manga.id;
+                    return (
+                      <button
+                        key={s.sourceId + s.externalId}
+                        disabled={isCurrent}
+                        onClick={() => onSelectManga(targetInternalId)}
+                        className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors border ${
+                          isCurrent
+                            ? 'bg-zinc-800 text-emerald-400 border-emerald-500/40 cursor-default'
+                            : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-300 hover:text-white border-zinc-800 cursor-pointer'
+                        }`}
+                      >
+                        <span>{s.sourceName || s.sourceId}</span>
+                        {isCurrent && <span className="ml-1 text-[9px] opacity-75">(ativa)</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
           </div>
@@ -357,66 +408,21 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
         {/* Chapters Section */}
         <section className="mt-14 pt-8 border-t border-zinc-800">
-          {/* Mock Catalog Notification & Quick Switcher */}
-          {isMock && (
-            <div className="mb-6 p-4 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200">
-              <div className="flex items-start sm:items-center justify-between flex-col sm:flex-row gap-4">
-                <div>
-                  <div className="flex items-center gap-2 font-semibold text-amber-300 text-sm mb-1">
-                    <Info className="h-4 w-4" />
-                    <span>Catálogo de Demonstração (Mock Local)</span>
-                  </div>
-                  <p className="text-zinc-300 leading-relaxed">
-                    Esta versão contém apenas <strong>capítulos e páginas de demonstração (placeholders)</strong> para testes locais.
-                    Para ler a obra completa com páginas oficiais e fallback integrado, abra a versão dos provedores ao vivo (Comick / MangaDex).
-                  </p>
-                </div>
-                {manga.id === 'mr_mock_berserk' && onSelectManga && (
-                  <button
-                    onClick={() => onSelectManga('mr_comick_udwf1dTf')}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    <span>Abrir Berserk Oficial (Comick)</span>
-                  </button>
-                )}
-                {manga.id === 'mr_mock_solo-leveling' && onSelectManga && (
-                  <button
-                    onClick={() => onSelectManga('mr_comick_71gMd0vF')}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    <span>Abrir Solo Leveling Oficial (Comick)</span>
-                  </button>
-                )}
-                {manga.id === 'mr_mock_one-piece' && onSelectManga && (
-                  <button
-                    onClick={() => onSelectManga('mr_comick_CzcseUMi')}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    <span>Abrir One Piece Oficial (Comick)</span>
-                  </button>
-                )}
-                {manga.id === 'mr_mock_frieren-journey' && onSelectManga && (
-                  <button
-                    onClick={() => onSelectManga('mr_comick_0FiLFYD1')}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs whitespace-nowrap transition-colors cursor-pointer shrink-0 shadow-lg flex items-center gap-1.5"
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    <span>Abrir Frieren Oficial (Comick)</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Live Provider status indicator */}
-          {!isMock && primarySource?.sourceId === 'comick' && (
+          {primarySource?.sourceId === 'comick' && (
             <div className="mb-6 p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-xs text-emerald-300 flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
               <span>
                 <strong>Obra do Comick (Ao Vivo):</strong> capítulos conectados diretamente à CDN e integrados com fallback automático via MangaDex.
+              </span>
+            </div>
+          )}
+
+          {primarySource?.sourceId === 'weebcentral' && (
+            <div className="mb-6 p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-xs text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+              <span>
+                <strong>Obra do WeebCentral (Ao Vivo):</strong> scans de alta resolução conectados diretamente à CDN sem restrições de licenciamento.
               </span>
             </div>
           )}
@@ -463,13 +469,13 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             <div className="p-8 text-center text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60 flex flex-col items-center justify-center gap-2">
               <div className="h-6 w-6 animate-spin rounded-full border-2 border-rose-500 border-t-transparent" />
               <p className="text-xs">
-                {isMock ? 'Carregando capítulos do catálogo de demonstração...' : 'Consultando capítulos no provedor externo...'}
+                Consultando capítulos no provedor externo...
               </p>
             </div>
           ) : chaptersError ? (
             <div className="p-8 text-center text-zinc-400 bg-zinc-900/40 rounded-xl border border-rose-900/40 flex flex-col items-center justify-center gap-2">
               <p className="text-sm font-medium text-rose-300">
-                {isMock ? 'Não foi possível carregar os capítulos do catálogo mock' : 'Não foi possível carregar os capítulos do provedor externo'}
+                Não foi possível carregar os capítulos do provedor externo
               </p>
               <p className="text-xs text-zinc-500 max-w-md">{chaptersError}</p>
               <button
@@ -480,12 +486,38 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               </button>
             </div>
           ) : filteredChapters.length === 0 ? (
-            <div className="p-8 text-center text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60">
-              <p className="text-sm">
+            <div className="p-8 text-center text-zinc-400 bg-zinc-900/40 rounded-xl border border-zinc-800/80 max-w-xl mx-auto">
+              <BookOpen className="h-10 w-10 mx-auto mb-3 text-zinc-600" />
+              <p className="text-base font-semibold text-zinc-200 mb-1">
                 {chapterSearch
                   ? 'Nenhum capítulo encontrado correspondente à busca.'
-                  : 'Nenhum capítulo disponível nesta obra.'}
+                  : 'Nenhum capítulo disponível para leitura nesta fonte.'}
               </p>
+              <p className="text-xs text-zinc-500 max-w-md mx-auto">
+                {chapterSearch
+                  ? 'Tente pesquisar por outro número ou limpe o campo de busca.'
+                  : 'Esta obra está registrada com metadados no catálogo, mas não há capítulos hospedados para leitura online no momento.'}
+              </p>
+              {manga.sources.length > 1 && onSelectManga && (
+                <div className="mt-5 pt-4 border-t border-zinc-800/80">
+                  <p className="text-xs text-zinc-300 font-medium mb-2.5">
+                    Esta obra também está cadastrada em outros provedores:
+                  </p>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {manga.sources
+                      .filter(s => `mr_${s.sourceId}_${s.externalId}` !== manga.id)
+                      .map(s => (
+                        <button
+                          key={s.sourceId + s.externalId}
+                          onClick={() => onSelectManga(`mr_${s.sourceId}_${s.externalId}`)}
+                          className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-md"
+                        >
+                          Ver no {s.sourceName || s.sourceId}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

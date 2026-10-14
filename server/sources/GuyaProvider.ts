@@ -159,14 +159,25 @@ export class GuyaProvider implements IMangaSource {
 
   private async getSeriesDetail(slug: string): Promise<GuyaSeriesDetail | null> {
     const now = Date.now();
-    const cached = this.detailsCache.get(slug);
+    let resolvedSlug = slug;
+    try {
+      const all = await this.getAllSeries();
+      const match = Object.values(all).find(o => o.slug.toLowerCase() === slug.toLowerCase());
+      if (match) {
+        resolvedSlug = match.slug;
+      }
+    } catch {
+      // Continue with provided slug
+    }
+
+    const cached = this.detailsCache.get(resolvedSlug);
     if (cached && now - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.data;
     }
 
     try {
-      const data = await this.fetchWithTimeout(`${this.baseUrl}/api/series/${encodeURIComponent(slug)}/`);
-      this.detailsCache.set(slug, { data, timestamp: now });
+      const data = await this.fetchWithTimeout(`${this.baseUrl}/api/series/${encodeURIComponent(resolvedSlug)}/`);
+      this.detailsCache.set(resolvedSlug, { data, timestamp: now });
       return data;
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) return null;
@@ -217,7 +228,11 @@ export class GuyaProvider implements IMangaSource {
       ],
       updatedAt: overview.last_updated
         ? new Date(overview.last_updated * 1000).toISOString()
-        : new Date().toISOString()
+        : new Date().toISOString(),
+      contentRating: 'safe',
+      isAdult: false,
+      hasAvailableChapters: true,
+      availabilityStatus: 'available'
     };
   }
 
@@ -304,7 +319,7 @@ export class GuyaProvider implements IMangaSource {
       if (!detail) return null;
 
       const all = await this.getAllSeries().catch(() => ({}));
-      const overview = Object.values(all).find(o => o.slug === externalId) || {
+      const overview = Object.values(all).find(o => o.slug.toLowerCase() === externalId.toLowerCase()) || {
         slug: detail.slug,
         author: detail.author,
         artist: detail.artist,

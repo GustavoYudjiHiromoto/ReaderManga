@@ -48,25 +48,25 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
-      path: '/api/search?q=frieren&limit=10',
+      path: '/api/search?q=kaguya&limit=10',
       title: 'Pesquisa Multiprovedor',
-      description: 'Pesquisa com busca federada entre Mock Catalog, MangaDex ou fontes registradas.'
+      description: 'Pesquisa federada entre MangaDex, WeebCentral, Guya e Comick.'
     },
     {
       method: 'GET',
-      path: '/api/manga/mr_mock_frieren-journey',
+      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to',
       title: 'Detalhes da Obra por ID Interno',
       description: 'Consulta um mangá pelo identificador interno desacoplado do MangaReader.'
     },
     {
       method: 'GET',
-      path: '/api/manga/mr_mock_frieren-journey/chapters',
+      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters',
       title: 'Listagem de Capítulos',
       description: 'Retorna capítulos ordenados de um mangá com metadados de paginação e idioma.'
     },
     {
       method: 'GET',
-      path: '/api/chapters/ch_mock_frieren-journey_frieren-ch-01/pages',
+      path: '/api/chapters/ch_guya_kaguya-wants-to-be-confessed-to_1/pages',
       title: 'Páginas de Leitura',
       description: 'Obtém as páginas e URLs de imagem resolvidas diretamente pelo provedor da obra.'
     }
@@ -148,22 +148,15 @@ export const ApiDocPage: React.FC = () => {
                     <span aria-hidden="true" className="text-zinc-700">·</span>
                     <span>Páginas de Leitura</span>
                     <span aria-hidden="true" className="text-zinc-700">·</span>
-                    <span>{src.type === 'live_api' ? 'API Externa ao Vivo' : 'Mock (Demonstração / Testes)'}</span>
+                    <span>API Externa ao Vivo</span>
                   </div>
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-zinc-800 flex items-center justify-between text-[11px]">
-                  {src.type === 'live_api' ? (
-                    <span className="text-emerald-400 flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                      API Externa Online & Operacional
-                    </span>
-                  ) : (
-                    <span className="text-amber-400 flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                      Mock em Memória (Offline Ready)
-                    </span>
-                  )}
+                  <span className="text-emerald-400 flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    API Externa Online & Operacional
+                  </span>
                   {src.websiteUrl && (
                     <a
                       href={src.websiteUrl}

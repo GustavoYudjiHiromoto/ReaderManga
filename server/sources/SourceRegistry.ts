@@ -1,9 +1,9 @@
 import { IMangaSource, SourceSearchOptions } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
-import { MockMangaProvider } from './MockMangaProvider.js';
 import { MangaDexProvider } from './MangaDexProvider.js';
 import { ComickProvider } from './ComickProvider.js';
 import { GuyaProvider } from './GuyaProvider.js';
+import { WeebCentralProvider } from './WeebCentralProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 
 function normalizeTitle(t: string): string {
@@ -89,7 +89,19 @@ function mergeManga(primary: Manga, secondary: Manga): Manga {
       country: primary.publicationInfo?.country || secondary.publicationInfo?.country,
       demographic: primary.publicationInfo?.demographic || secondary.publicationInfo?.demographic,
       magazine: primary.publicationInfo?.magazine || secondary.publicationInfo?.magazine
-    }
+    },
+    isAdult: Boolean(primary.isAdult || secondary.isAdult),
+    contentRating: (primary.contentRating === 'pornographic' || secondary.contentRating === 'pornographic')
+      ? 'pornographic'
+      : (primary.contentRating === 'erotica' || secondary.contentRating === 'erotica')
+      ? 'erotica'
+      : (primary.contentRating === 'suggestive' || secondary.contentRating === 'suggestive')
+      ? 'suggestive'
+      : 'safe',
+    hasAvailableChapters: Boolean(primary.hasAvailableChapters || secondary.hasAvailableChapters),
+    availabilityStatus: (primary.hasAvailableChapters || secondary.hasAvailableChapters)
+      ? 'available'
+      : 'metadata_only'
   };
 }
 
@@ -114,8 +126,8 @@ export class SourceRegistry {
   constructor() {
     this.registerSource(new ComickProvider());
     this.registerSource(new MangaDexProvider());
+    this.registerSource(new WeebCentralProvider());
     this.registerSource(new GuyaProvider());
-    this.registerSource(new MockMangaProvider());
   }
 
   public registerSource(source: IMangaSource): void {
@@ -133,9 +145,9 @@ export class SourceRegistry {
 
   /**
    * Search across a specified source or all sources simultaneously.
-   * When searching across all sources, live providers (Comick, MangaDex) are queried in parallel,
-   * safe cross-source deduplication merges identical works, and exact title matches are ranked first.
-   * Mock demonstration works are only queried if explicitly chosen or as a fallback if all live sources fail.
+   * When searching across all sources, live providers (Comick, MangaDex, WeebCentral, Guya)
+   * are queried in parallel, safe cross-source deduplication merges identical works,
+   * and exact title matches are ranked first.
    */
   public async search(query: string, options?: SourceSearchOptions & { sourceId?: string }): Promise<{
     results: Manga[];
@@ -150,7 +162,7 @@ export class SourceRegistry {
       if (src) sourcesToQuery.push(src);
     } else {
       // Query real live sources first
-      const liveSourceIds = ['comick', 'mangadex', 'guya'];
+      const liveSourceIds = ['comick', 'mangadex', 'weebcentral', 'guya'];
       for (const id of liveSourceIds) {
         const src = this.sources.get(id);
         if (src) sourcesToQuery.push(src);
@@ -166,19 +178,23 @@ export class SourceRegistry {
 
     const outcomes = await Promise.all(promises);
     const rawLiveResults: Manga[] = [];
-    const mockResults: Manga[] = [];
 
-    outcomes.forEach((outcome, idx) => {
-      const src = sourcesToQuery[idx];
-      if (src.getInfo().type === 'mock') {
-        mockResults.push(...outcome.mangaList);
-      } else {
-        rawLiveResults.push(...outcome.mangaList);
-      }
+    outcomes.forEach((outcome) => {
+      rawLiveResults.push(...outcome.mangaList);
     });
 
-    // Safely deduplicate live results across Comick and MangaDex
-    const liveResults = deduplicateMangaList(rawLiveResults);
+    // Safely deduplicate live results across Comick, MangaDex, WeebCentral, and Guya
+    let liveResults = deduplicateMangaList(rawLiveResults);
+
+    // Filter adult if includeAdult is not explicitly true (Safe Mode by default)
+    if (!options?.includeAdult) {
+      liveResults = liveResults.filter(m => !m.isAdult);
+    }
+
+    // Filter by availability if requested
+    if (options?.onlyAvailable) {
+      liveResults = liveResults.filter(m => m.hasAvailableChapters);
+    }
 
     // If a search query was supplied, sort live results so exact or prefix matches come first
     const trimmedQuery = query.trim().toLowerCase();
@@ -209,54 +225,22 @@ export class SourceRegistry {
       });
     }
 
-    // If user explicitly chose mock, return mock results
-    if (targetSourceId === 'mock') {
-      return {
-        results: mockResults,
-        total: mockResults.length,
-        sourcesQueried: ['mock']
-      };
-    }
-
-    // If live providers returned results, use them exclusively (anti-slop: never pollute real search with mocks)
-    if (liveResults.length > 0) {
-      return {
-        results: liveResults,
-        total: liveResults.length,
-        sourcesQueried: sourcesToQuery.map(s => s.getInfo().id)
-      };
-    }
-
-    // Emergency fallback: If all live sources returned 0 results (offline/challenge) and querying all sources,
-    // query mock source so the app remains responsive
-    if (!targetSourceId || targetSourceId === 'all') {
-      const mockSrc = this.sources.get('mock');
-      if (mockSrc) {
-        const mockOutcome = await mockSrc.search(query, options).catch(() => ({ mangaList: [], total: 0, hasMore: false }));
-        return {
-          results: mockOutcome.mangaList,
-          total: mockOutcome.mangaList.length,
-          sourcesQueried: [...sourcesToQuery.map(s => s.getInfo().id), 'mock']
-        };
-      }
-    }
-
     return {
-      results: [],
-      total: 0,
+      results: liveResults,
+      total: liveResults.length,
       sourcesQueried: sourcesToQuery.map(s => s.getInfo().id)
     };
   }
 
   /**
    * Retrieve featured / popular manga for homepage discovery.
-   * Merges and deduplicates popular works from Comick and MangaDex.
-   * Falls back to mock only if live providers are completely unreachable.
+   * Merges and deduplicates popular works from live providers (Comick, MangaDex, WeebCentral, Guya).
+   * Safe mode and chapter availability are enforced for a premium discovery experience.
    */
   public async getFeatured(): Promise<Manga[]> {
-    const liveSources = [this.sources.get('comick'), this.sources.get('mangadex'), this.sources.get('guya')].filter(Boolean) as IMangaSource[];
+    const liveSources = [this.sources.get('comick'), this.sources.get('mangadex'), this.sources.get('weebcentral'), this.sources.get('guya')].filter(Boolean) as IMangaSource[];
     const promises = liveSources.map(src =>
-      src.getPopular({ limit: 24 }).catch(() => [])
+      src.getPopular({ limit: 24, includeAdult: false, onlyAvailable: true }).catch(() => [])
     );
 
     const results = await Promise.all(promises);
@@ -265,19 +249,9 @@ export class SourceRegistry {
       rawList.push(...list);
     }
 
-    const deduplicated = deduplicateMangaList(rawList);
-
-    if (deduplicated.length > 0) {
-      return deduplicated;
-    }
-
-    // Fallback to mock only if live providers return no items
-    const mockSrc = this.sources.get('mock');
-    if (mockSrc) {
-      return await mockSrc.getPopular({ limit: 8 }).catch(() => []);
-    }
-
-    return [];
+    const deduped = deduplicateMangaList(rawList);
+    // Exclude adult content and metadata-only works from homepage featured
+    return deduped.filter(m => !m.isAdult && m.hasAvailableChapters !== false);
   }
 
   /**
@@ -287,12 +261,16 @@ export class SourceRegistry {
     if (!internalId || !internalId.startsWith('mr_')) {
       throw new HttpError(400, `Formato de identificador de mangá inválido: '${internalId}'. O formato esperado é 'mr_<source>_<id>'.`);
     }
-    const parts = internalId.split('_');
-    if (parts.length < 3 || !parts[1] || !parts.slice(2).join('_')) {
+    const withoutPrefix = internalId.substring(3);
+    const firstUnderscore = withoutPrefix.indexOf('_');
+    if (firstUnderscore === -1) {
       throw new HttpError(400, `Formato de identificador de mangá inválido: '${internalId}'. O formato esperado é 'mr_<source>_<id>'.`);
     }
-    const sourceId = parts[1];
-    const externalId = parts.slice(2).join('_');
+    const sourceId = withoutPrefix.substring(0, firstUnderscore);
+    const externalId = withoutPrefix.substring(firstUnderscore + 1);
+    if (!sourceId || !externalId) {
+      throw new HttpError(400, `Formato de identificador de mangá inválido: '${internalId}'. O formato esperado é 'mr_<source>_<id>'.`);
+    }
     return { sourceId, externalId };
   }
 
@@ -319,14 +297,84 @@ export class SourceRegistry {
       idWithoutFallback = internalChapterId.substring(0, mdIndex);
     }
 
-    const parts = idWithoutFallback.split('_');
-    if (parts.length < 4 || !parts[1] || !parts[2] || !parts.slice(3).join('_')) {
+    // Strip "ch_" prefix
+    const withoutPrefix = idWithoutFallback.substring(3);
+    const firstUnderscore = withoutPrefix.indexOf('_');
+    if (firstUnderscore === -1) {
       throw new HttpError(400, `Formato de identificador de capítulo inválido: '${internalChapterId}'. O formato esperado é 'ch_<source>_<mangaId>_<chapterId>'.`);
     }
 
-    const sourceId = parts[1];
-    const externalMangaId = parts[2];
-    const externalChapterId = parts.slice(3).join('_');
+    const sourceId = withoutPrefix.substring(0, firstUnderscore);
+    const remainder = withoutPrefix.substring(firstUnderscore + 1);
+    if (!sourceId || !remainder) {
+      throw new HttpError(400, `Formato de identificador de capítulo inválido: '${internalChapterId}'. O formato esperado é 'ch_<source>_<mangaId>_<chapterId>'.`);
+    }
+
+    let externalMangaId = '';
+    let externalChapterId = '';
+
+    if (sourceId === 'comick') {
+      // In Comick, manga IDs and chapter hids are canonical 8-character identifiers.
+      // If externalMangaId contains underscores (e.g. dhPOlu_L or _OdzOZzi), remainder starts with 8 chars,
+      // followed by '_' and the externalChapterId.
+      if (remainder.length >= 17 && remainder[8] === '_') {
+        externalMangaId = remainder.substring(0, 8);
+        externalChapterId = remainder.substring(9);
+      } else {
+        const lastUnderscore = remainder.lastIndexOf('_');
+        if (lastUnderscore !== -1) {
+          externalMangaId = remainder.substring(0, lastUnderscore);
+          externalChapterId = remainder.substring(lastUnderscore + 1);
+        } else {
+          externalMangaId = remainder;
+          externalChapterId = remainder;
+        }
+      }
+    } else if (sourceId === 'guya') {
+      // Guya externalChapterId is <slug>---<chapterNum>
+      const tripleDash = remainder.indexOf('---');
+      if (tripleDash !== -1) {
+        const underscoreBeforeSlug = remainder.lastIndexOf('_', tripleDash);
+        if (underscoreBeforeSlug !== -1) {
+          externalMangaId = remainder.substring(0, underscoreBeforeSlug);
+          externalChapterId = remainder.substring(underscoreBeforeSlug + 1);
+        }
+      }
+      if (!externalMangaId) {
+        const parts = remainder.split('_');
+        externalMangaId = parts[0];
+        externalChapterId = parts.slice(1).join('_');
+      }
+    } else if (sourceId === 'mangadex') {
+      // MangaDex externalChapterId is a 36-character UUID
+      if (remainder.length > 37 && remainder[remainder.length - 37] === '_') {
+        externalChapterId = remainder.substring(remainder.length - 36);
+        externalMangaId = remainder.substring(0, remainder.length - 37);
+      } else {
+        const parts = remainder.split('_');
+        externalMangaId = parts[0];
+        externalChapterId = parts.slice(1).join('_');
+      }
+    } else if (sourceId === 'weebcentral') {
+      // WeebCentral uses 26-character ULIDs for series and chapters
+      if (remainder.length === 53 && remainder[26] === '_') {
+        externalMangaId = remainder.substring(0, 26);
+        externalChapterId = remainder.substring(27);
+      } else {
+        const parts = remainder.split('_');
+        externalMangaId = parts[0];
+        externalChapterId = parts.slice(1).join('_');
+      }
+    } else {
+      const parts = remainder.split('_');
+      externalMangaId = parts[0];
+      externalChapterId = parts.slice(1).join('_');
+    }
+
+    if (!externalMangaId || !externalChapterId) {
+      throw new HttpError(400, `Formato de identificador de capítulo inválido: '${internalChapterId}'. O formato esperado é 'ch_<source>_<mangaId>_<chapterId>'.`);
+    }
+
     return {
       sourceId,
       externalMangaId,
@@ -379,15 +427,23 @@ export class SourceRegistry {
       let chapNum: string | undefined;
 
       // 1. Chame primeiro ComickProvider para obter páginas e descobrir mdid (sem chamada HTTP duplicada)
-      // Se Comick lançar HttpError, NÃO faça fallback e propague o erro normalmente.
+      // Se Comick lançar HttpError, só prossiga para fallback se fallbackChapterId já for conhecido.
       if (typeof (source as any).getChapterPagesResult === 'function') {
-        const result = await (source as any).getChapterPagesResult(parsed.externalChapterId);
-        pages = result.pages;
-        if (!fallbackChapterId && result.mdid) {
-          fallbackChapterId = result.mdid;
+        try {
+          const result = await (source as any).getChapterPagesResult(parsed.externalChapterId);
+          pages = result.pages;
+          if (!fallbackChapterId && result.mdid) {
+            fallbackChapterId = result.mdid;
+          }
+          comicSlug = result.comicSlug;
+          chapNum = result.chapNum;
+        } catch (err) {
+          if (err instanceof HttpError && (err.status === 404 || err.status === 502) && fallbackChapterId) {
+            pages = [];
+          } else {
+            throw err;
+          }
         }
-        comicSlug = result.comicSlug;
-        chapNum = result.chapNum;
       } else {
         pages = await source.getChapterPages(parsed.externalChapterId);
       }

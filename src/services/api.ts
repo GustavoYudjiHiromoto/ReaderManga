@@ -41,7 +41,7 @@ export const MangaApi = {
     return json.data || [];
   },
 
-  async search(query: string, options?: { source?: string; genre?: string; limit?: number; offset?: number; page?: number }): Promise<SearchResponse> {
+  async search(query: string, options?: { source?: string; genre?: string; limit?: number; offset?: number; page?: number; includeAdult?: boolean; onlyAvailable?: boolean }): Promise<SearchResponse> {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (options?.source && options.source !== 'all') params.set('source', options.source);
@@ -49,6 +49,8 @@ export const MangaApi = {
     if (options?.limit) params.set('limit', options.limit.toString());
     if (options?.offset !== undefined) params.set('offset', options.offset.toString());
     if (options?.page !== undefined) params.set('page', options.page.toString());
+    if (options?.includeAdult) params.set('includeAdult', 'true');
+    if (options?.onlyAvailable) params.set('onlyAvailable', 'true');
 
     const res = await fetch(`/api/search?${params.toString()}`);
     if (!res.ok) throw new Error('Falha ao pesquisar mangás');

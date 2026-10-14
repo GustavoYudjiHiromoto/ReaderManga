@@ -41,12 +41,17 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
 
+    const includeAdult = req.query.includeAdult === 'true';
+    const onlyAvailable = req.query.onlyAvailable === 'true';
+
     const searchResult = await sourceRegistry.search(q, {
       sourceId,
       genre,
       limit,
       offset,
-      page
+      page,
+      includeAdult,
+      onlyAvailable
     });
 
     res.json({
@@ -137,10 +142,10 @@ apiRouter.get('/manga/:id/chapters', async (req: Request, res: Response) => {
   }
 });
 
-// 7. Chapter info and pages endpoint
-apiRouter.get('/chapters/:id/pages', async (req: Request, res: Response) => {
+// 7. Chapter info and pages endpoint (matches any chapter ID, including composite or encoded tokens)
+apiRouter.get(/^\/chapters\/(.+)\/pages$/, async (req: Request, res: Response) => {
   try {
-    const internalChapterId = req.params.id;
+    const internalChapterId = req.params[0] || (req.params as any).id;
     const pages = await sourceRegistry.getChapterPages(internalChapterId);
 
     res.json({
@@ -168,6 +173,10 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
 
     if (imageUrl.includes('comick.pictures') || imageUrl.includes('comick.io')) {
       headers['Referer'] = 'https://comick.io/';
+    } else if (imageUrl.includes('weebcentral') || imageUrl.includes('planeptune.us') || imageUrl.includes('compsci88.com')) {
+      headers['Referer'] = 'https://weebcentral.com/';
+    } else if (imageUrl.includes('guya.cubari.moe') || imageUrl.includes('guya.moe')) {
+      headers['Referer'] = 'https://guya.cubari.moe/';
     }
 
     let response = await fetch(imageUrl, { headers });
@@ -199,4 +208,12 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).send('Proxy error');
   }
+});
+
+// 9. Catch-all for undefined API routes (always returns JSON 404, never falls through to HTML)
+apiRouter.all('*', (req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    error: `Endpoint de API não encontrado: ${req.method} ${req.originalUrl}`
+  });
 });

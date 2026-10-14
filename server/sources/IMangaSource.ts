@@ -6,6 +6,8 @@ export interface SourceSearchOptions {
   page?: number;
   genre?: string;
   language?: string;
+  includeAdult?: boolean;
+  onlyAvailable?: boolean;
 }
 
 export interface SourceSearchResult {

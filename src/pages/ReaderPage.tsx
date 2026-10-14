@@ -53,13 +53,24 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
 }) => {
   const [currentSrc, setCurrentSrc] = useState(imageUrl);
   const [attempt, setAttempt] = useState(0);
+  const [retryKey, setRetryKey] = useState(0);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const imgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     setCurrentSrc(imageUrl);
     setAttempt(0);
+    setRetryKey(0);
     setStatus('loading');
   }, [imageUrl]);
+
+  // Check if browser already has image completed in cache upon mount or src change
+  useEffect(() => {
+    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      setStatus('loaded');
+      onLoad?.();
+    }
+  }, [currentSrc, retryKey]);
 
   const handleError = () => {
     // Attempt 1: If URL is from mangadex.network volunteer node, try official uploads.mangadex.org CDN
@@ -68,6 +79,7 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
       if (uploadFallback !== currentSrc) {
         setAttempt(1);
         setCurrentSrc(uploadFallback);
+        setStatus('loading');
         return;
       }
     }
@@ -76,6 +88,7 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
     if (attempt <= 1 && !currentSrc.startsWith('/api/proxy/image')) {
       setAttempt(2);
       setCurrentSrc(`/api/proxy/image?url=${encodeURIComponent(currentSrc)}`);
+      setStatus('loading');
       return;
     }
 
@@ -85,22 +98,25 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
 
   const handleRetry = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setAttempt(0);
     setStatus('loading');
-    setCurrentSrc(imageUrl);
+    setAttempt(0);
+    setRetryKey(prev => prev + 1);
+    // Add cache buster parameter to force a fresh network request instead of reusing a failed/aborted cache entry
+    const separator = imageUrl.includes('?') ? '&' : '?';
+    setCurrentSrc(`${imageUrl}${separator}_retry=${Date.now()}`);
   };
 
   return (
     <div className="relative flex flex-col items-center justify-center w-full min-h-[320px]">
       {status === 'loading' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/40 rounded-lg text-zinc-500 py-16">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/40 rounded-lg text-zinc-500 py-16 z-10 pointer-events-none">
           <RefreshCw className="h-6 w-6 animate-spin text-zinc-400 mb-2" />
           <span className="text-xs">Carregando página {pageNumber}...</span>
         </div>
       )}
 
       {status === 'error' ? (
-        <div className="flex flex-col items-center justify-center p-8 my-6 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center max-w-md w-full shadow-lg">
+        <div className="flex flex-col items-center justify-center p-8 my-6 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center max-w-md w-full shadow-lg z-20">
           <AlertCircle className="h-8 w-8 text-amber-500 mb-2" />
           <h4 className="text-sm font-semibold text-zinc-200 mb-1">
             Falha ao carregar a página {pageNumber}
@@ -118,6 +134,8 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
         </div>
       ) : (
         <img
+          key={`${imageUrl}_${retryKey}`}
+          ref={imgRef}
           src={currentSrc}
           alt={alt || `Página ${pageNumber}`}
           referrerPolicy="no-referrer"
@@ -384,11 +402,6 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             <div className="overflow-hidden">
               <div className="flex items-center gap-2">
                 <h2 className="font-semibold text-xs sm:text-sm line-clamp-1">{manga?.title}</h2>
-                {manga?.id.includes('_mock_') && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase font-mono font-semibold shrink-0">
-                    Demonstração Mock
-                  </span>
-                )}
               </div>
               <div className="flex items-center gap-2 text-[11px] text-zinc-400">
                 <span className="font-mono tabular-nums">
@@ -573,6 +586,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             >
               {pages[currentPageIndex] && (
                 <ReaderPageImage
+                  key={`single_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
                   pageNumber={currentPageIndex + 1}
                   imageUrl={pages[currentPageIndex].imageUrl}
                   className={`object-contain transition-all shadow-2xl ${
@@ -611,6 +625,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               <div className="flex justify-end h-full">
                 {pages[currentPageIndex + 1] ? (
                   <ReaderPageImage
+                    key={`double_right_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
                     pageNumber={currentPageIndex + 2}
                     imageUrl={pages[currentPageIndex + 1].imageUrl}
                     className="max-h-[85vh] w-auto object-contain"
@@ -627,6 +642,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               <div className="flex justify-start h-full">
                 {pages[currentPageIndex] && (
                   <ReaderPageImage
+                    key={`double_left_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
                     pageNumber={currentPageIndex + 1}
                     imageUrl={pages[currentPageIndex].imageUrl}
                     className="max-h-[85vh] w-auto object-contain"

@@ -19,6 +19,9 @@ export interface PublicationInfo {
   demographic?: string;
 }
 
+export type MangaContentRating = 'safe' | 'suggestive' | 'erotica' | 'pornographic';
+export type MangaAvailabilityStatus = 'available' | 'metadata_only' | 'source_error';
+
 export interface Manga {
   id: string; // Internal unique ID (e.g., 'mr_mangadex_xxx' or 'mr_openmanga_frieren')
   title: string;
@@ -35,6 +38,10 @@ export interface Manga {
   totalChapters?: number;
   rating?: number;
   updatedAt: string;
+  contentRating?: MangaContentRating;
+  isAdult?: boolean;
+  hasAvailableChapters?: boolean;
+  availabilityStatus?: MangaAvailabilityStatus;
 }
 
 export interface Chapter {
@@ -63,7 +70,7 @@ export interface MangaSourceInfo {
   description: string;
   version: string;
   isAvailable: boolean;
-  type: 'live_api' | 'mock';
+  type: 'live_api';
   websiteUrl?: string;
   supportedFeatures: {
     search: boolean;
@@ -82,5 +89,18 @@ export interface ReadingProgress {
   chapterTitle?: string;
   pageNumber: number;
   totalPages: number;
+  updatedAt: number;
+}
+
+export interface FavoriteManga {
+  mangaId: string;
+  title: string;
+  coverUrl: string;
+  sourceName?: string;
+  sourceId?: string;
+  rating?: number;
+  authors?: string[];
+  genres?: string[];
+  status?: MangaStatus;
   updatedAt: number;
 }

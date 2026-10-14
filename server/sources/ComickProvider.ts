@@ -154,6 +154,21 @@ export class ComickProvider implements IMangaSource {
     // Synopsis
     const synopsis = item.desc || details?.comic?.desc || 'Sinopse não disponível.';
 
+    // Content rating and adult content detection
+    const rawRating = item.content_rating || details?.comic?.content_rating;
+    let contentRating: 'safe' | 'suggestive' | 'erotica' | 'pornographic' = 'safe';
+    if (rawRating === 'pornographic') contentRating = 'pornographic';
+    else if (rawRating === 'erotica') contentRating = 'erotica';
+    else if (rawRating === 'suggestive') contentRating = 'suggestive';
+
+    const hasAdultGenre = genres.some(g => /hentai|erotica|smut|adult|doujinshi/i.test(g));
+    const isAdult = contentRating === 'pornographic' || contentRating === 'erotica' || hasAdultGenre;
+
+    // Availability detection:
+    // In Comick, if item.last_chapter is null, undefined, or 0, there are no chapters uploaded.
+    const hasAvailableChapters = item.last_chapter !== null && item.last_chapter !== undefined && Number(item.last_chapter) > 0;
+    const availabilityStatus = hasAvailableChapters ? 'available' : 'metadata_only';
+
     return {
       id: `mr_${this.sourceId}_${hid}`,
       title,
@@ -178,7 +193,11 @@ export class ComickProvider implements IMangaSource {
         }
       ],
       latestChapter: item.last_chapter ? String(item.last_chapter) : undefined,
-      updatedAt: item.uploaded_at || item.created_at || new Date().toISOString()
+      updatedAt: item.uploaded_at || item.created_at || new Date().toISOString(),
+      contentRating,
+      isAdult,
+      hasAvailableChapters,
+      availabilityStatus
     };
   }
 
@@ -228,7 +247,15 @@ export class ComickProvider implements IMangaSource {
 
       const res = await this.fetchWithTimeout(url);
       const list = Array.isArray(res) ? res : [];
-      const mangaList = list.map((item: any) => this.normalizeComickItem(item));
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeComickItem(item));
+
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
 
       return {
         mangaList,
@@ -256,7 +283,17 @@ export class ComickProvider implements IMangaSource {
 
       const res = await this.fetchWithTimeout(url);
       const list = Array.isArray(res) ? res : [];
-      return list.map((item: any) => this.normalizeComickItem(item));
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeComickItem(item));
+
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
+
+      return mangaList;
     } catch (err) {
       console.warn(`[ComickProvider] getPopular failed:`, (err as Error).message);
       return [];

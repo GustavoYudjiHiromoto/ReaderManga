@@ -1,7 +1,7 @@
 /**
  * PARTE 1 — TESTES DETERMINÍSTICOS
- * Esta suíte NÃO depende da disponibilidade ou rede do MangaDex.
- * Testa contratos locais, MockMangaProvider, SourceRegistry e comportamento HTTP da API.
+ * Esta suíte testa contratos locais, coexistência das 4 fontes reais (Comick, MangaDex, WeebCentral, Guya),
+ * SourceRegistry e comportamento HTTP da API sem qualquer dependência de Mock.
  */
 
 const BASE_URL = 'http://localhost:3000';
@@ -28,9 +28,9 @@ async function runDeterministicTests() {
 
   try {
     // -------------------------------------------------------------------------
-    // 1. CONTRATO DO ENDPOINT /api/sources
+    // 1. CONTRATO DO ENDPOINT /api/sources (SEM MOCK)
     // -------------------------------------------------------------------------
-    console.log('[1/4] Testando /api/sources e Coexistência de Fontes...');
+    console.log('[1/4] Testando /api/sources e Coexistência de Fontes Reais...');
     const sourcesRes = await fetch(`${BASE_URL}/api/sources`);
     assert(sourcesRes.status === 200, 'GET /api/sources retorna status 200');
     const sourcesJson = await sourcesRes.json();
@@ -40,52 +40,51 @@ async function runDeterministicTests() {
     const mockSource = sourcesJson.data.find(s => s.id === 'mock');
     const dexSource = sourcesJson.data.find(s => s.id === 'mangadex');
     const comickSource = sourcesJson.data.find(s => s.id === 'comick');
-    assert(!!mockSource, 'Fonte "mock" está registrada em /api/sources');
-    assert(mockSource?.type === 'mock', 'Fonte "mock" possui type === "mock"');
+    const weebSource = sourcesJson.data.find(s => s.id === 'weebcentral');
+    const guyaSource = sourcesJson.data.find(s => s.id === 'guya');
+
+    assert(!mockSource, 'Fonte "mock" foi completamente removida de /api/sources');
     assert(!!dexSource, 'Fonte "mangadex" está registrada em /api/sources');
     assert(dexSource?.type === 'live_api', 'Fonte "mangadex" possui type === "live_api"');
     assert(!!comickSource, 'Fonte "comick" está registrada em /api/sources');
     assert(comickSource?.type === 'live_api', 'Fonte "comick" possui type === "live_api"');
-    assert(sourcesJson.data.length >= 3, 'Coexistência: 3 fontes estão ativas (Mock, MangaDex, Comick)');
+    assert(!!weebSource, 'Fonte "weebcentral" está registrada em /api/sources');
+    assert(weebSource?.type === 'live_api', 'Fonte "weebcentral" possui type === "live_api"');
+    assert(!!guyaSource, 'Fonte "guya" está registrada em /api/sources');
+    assert(guyaSource?.type === 'live_api', 'Fonte "guya" possui type === "live_api"');
+    assert(sourcesJson.data.length === 4, 'Exatamente 4 fontes reais ativas (MangaDex, Comick, WeebCentral, Guya)');
 
     // -------------------------------------------------------------------------
-    // 2. BUSCA E FILTROS DO MOCK
+    // 2. BUSCA FEDERADA E POPULARES DAS FONTES REAIS
     // -------------------------------------------------------------------------
-    console.log('\n[2/4] Testando Busca e Filtros do Mock...');
-    const searchMockRes = await fetch(`${BASE_URL}/api/search?source=mock&q=frieren`);
-    assert(searchMockRes.status === 200, 'GET /api/search?source=mock&q=frieren retorna 200');
-    const searchMockJson = await searchMockRes.json();
-    assert(searchMockJson.total > 0, 'Busca retorna ao menos 1 resultado para "frieren" no mock');
-    assert(searchMockJson.data[0]?.id.startsWith('mr_mock_'), 'ID gerado possui prefixo canônico "mr_mock_"');
-    assert(searchMockJson.data[0]?.title.includes('Frieren'), 'Título corresponde ao mangá pesquisado');
-
-    const genreRes = await fetch(`${BASE_URL}/api/search?source=mock&genre=Aventura`);
-    assert(genreRes.status === 200, 'GET /api/search?source=mock&genre=Aventura retorna 200');
-    const genreJson = await genreRes.json();
-    assert(genreJson.total > 0, 'Filtro por gênero retorna resultados no mock');
-    assert(genreJson.data.every(m => m.genres.some(g => g.toLowerCase() === 'aventura')), 'Todos os resultados contêm o gênero Aventura');
+    console.log('\n[2/4] Testando Busca Federada e Featured...');
+    const searchRes = await fetch(`${BASE_URL}/api/search?q=kaguya`);
+    assert(searchRes.status === 200, 'GET /api/search?q=kaguya retorna 200');
+    const searchJson = await searchRes.json();
+    assert(searchJson.total > 0, 'Busca retorna ao menos 1 resultado para "kaguya"');
+    assert(!searchJson.data.some(m => m.id.includes('_mock_')), 'Nenhum resultado de busca contém o prefixo canônico "mr_mock_"');
 
     // -------------------------------------------------------------------------
-    // 3. DETALHES, CAPÍTULOS E PÁGINAS DO MOCK
+    // 3. DETALHES, CAPÍTULOS E PÁGINAS DE FONTE REAL (GUYA)
     // -------------------------------------------------------------------------
-    console.log('\n[3/4] Testando Detalhes, Capítulos e Páginas do Mock...');
-    const mangaRes = await fetch(`${BASE_URL}/api/manga/mr_mock_frieren-journey`);
-    assert(mangaRes.status === 200, 'GET /api/manga/mr_mock_frieren-journey retorna 200');
+    console.log('\n[3/4] Testando Detalhes, Capítulos e Páginas Reais (Guya)...');
+    const mangaRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to`);
+    assert(mangaRes.status === 200, 'GET /api/manga/mr_guya_kaguya-wants-to-be-confessed-to retorna 200');
     const mangaJson = await mangaRes.json();
-    assert(mangaJson.data?.id === 'mr_mock_frieren-journey', 'ID do mangá retornado é exatamente mr_mock_frieren-journey');
-    assert(mangaJson.data?.sources[0]?.sourceId === 'mock', 'SourceId do vínculo primário é "mock"');
+    assert(mangaJson.data?.sources[0]?.sourceId === 'guya', 'SourceId do vínculo primário é "guya"');
+    assert(mangaJson.data?.title.includes('Kaguya'), 'Título do mangá retornado corresponde à obra real');
 
-    const chRes = await fetch(`${BASE_URL}/api/manga/mr_mock_frieren-journey/chapters`);
-    assert(chRes.status === 200, 'GET /api/manga/mr_mock_frieren-journey/chapters retorna 200');
+    const chRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters`);
+    assert(chRes.status === 200, 'GET /api/manga/.../chapters retorna 200');
     const chJson = await chRes.json();
-    assert(chJson.total === 3, 'Mock de Frieren possui 3 capítulos cadastrados');
-    assert(chJson.data[0]?.id.startsWith('ch_mock_'), 'ID do capítulo possui prefixo canônico "ch_mock_"');
-    assert(chJson.data[0]?.mangaId === 'mr_mock_frieren-journey', 'Capítulo vinculado ao ID canônico correto');
+    assert(chJson.total > 0, 'Guya de Kaguya possui capítulos cadastrados');
+    assert(chJson.data[0]?.id.startsWith('ch_guya_'), 'ID do capítulo possui prefixo canônico "ch_guya_"');
 
-    const pagesRes = await fetch(`${BASE_URL}/api/chapters/ch_mock_frieren-journey_frieren-ch-01/pages`);
-    assert(pagesRes.status === 200, 'GET /api/chapters/.../pages retorna 200');
+    const firstChId = chJson.data[0]?.id;
+    const pagesRes = await fetch(`${BASE_URL}/api/chapters/${firstChId}/pages`);
+    assert(pagesRes.status === 200, `GET /api/chapters/${firstChId}/pages retorna 200`);
     const pagesJson = await pagesRes.json();
-    assert(pagesJson.total === 6, 'Capítulo 1 possui 6 páginas resolvidas');
+    assert(pagesJson.total > 0, 'Capítulo 1 possui páginas resolvidas');
     assert(pagesJson.data[0]?.pageNumber === 1, 'Páginas numeradas a partir de 1');
     assert(typeof pagesJson.data[0]?.imageUrl === 'string', 'Páginas possuem URL de imagem válida');
 
@@ -106,16 +105,14 @@ async function runDeterministicTests() {
     assert(r400ChJson.error.includes('Formato de identificador de capítulo inválido'), 'Mensagem explicativa de formato de capítulo inválido');
 
     // 4.2 Verificação determinística do parser de IDs de capítulo (SourceRegistry)
-    // Usando SourceRegistry diretamente para validar os formatos canônicos e fallback
     const { SourceRegistry } = await import('../sources/SourceRegistry.js');
     const registry = new SourceRegistry();
 
-    // ID canônico Mock sem fallback
-    const parsedMock = registry.parseInternalChapterId('ch_mock_frieren-journey_frieren-ch-01');
-    assert(parsedMock.sourceId === 'mock', 'Parser extrai sourceId "mock"');
-    assert(parsedMock.externalMangaId === 'frieren-journey', 'Parser extrai externalMangaId do mock');
-    assert(parsedMock.externalChapterId === 'frieren-ch-01', 'Parser extrai externalChapterId do mock');
-    assert(parsedMock.fallbackChapterId === undefined, 'Mock sem fallback não possui fallbackChapterId');
+    // ID canônico Guya
+    const parsedGuya = registry.parseInternalChapterId('ch_guya_kaguya-wants-to-be-confessed-to_1');
+    assert(parsedGuya.sourceId === 'guya', 'Parser extrai sourceId "guya"');
+    assert(parsedGuya.externalMangaId === 'kaguya-wants-to-be-confessed-to', 'Parser extrai externalMangaId do guya');
+    assert(parsedGuya.externalChapterId === '1', 'Parser extrai externalChapterId do guya');
 
     // ID canônico MangaDex sem fallback
     const parsedMd = registry.parseInternalChapterId('ch_mangadex_a77742b1_e7c4d0c9-cec9-4116-aba1-178b2a5d4cc3');
@@ -139,22 +136,45 @@ async function runDeterministicTests() {
     assert(parsedComickWithFallback.externalChapterId === 'Tggg2nmZ', 'Parser com fallback extrai externalChapterId limpo');
     assert(parsedComickWithFallback.fallbackChapterId === sampleMdid, 'Parser extrai fallbackChapterId com o UUID correto do MangaDex');
 
-    // 4.3 Erro 404: Recurso bem-formatado, mas inexistente
-    const r404Manga = await fetch(`${BASE_URL}/api/manga/mr_mock_obra-inexistente-123`);
-    assert(r404Manga.status === 404, 'Mangá inexistente no catálogo mock retorna HTTP 404');
-
-    const r404Ch = await fetch(`${BASE_URL}/api/manga/mr_mock_obra-inexistente-123/chapters`);
-    assert(r404Ch.status === 404, 'Busca de capítulos para mangá inexistente retorna HTTP 404');
-    const r404ChJson = await r404Ch.json();
-    assert(r404ChJson.error.includes('não encontrado no catálogo Mock'), 'Mensagem indica que obra não foi encontrada no mock');
-
-    const r404Pages = await fetch(`${BASE_URL}/api/chapters/ch_mock_frieren-journey_cap-inexistente/pages`);
-    assert(r404Pages.status === 404, 'Capítulo inexistente no catálogo mock retorna HTTP 404');
-
-    const r404Source = await fetch(`${BASE_URL}/api/manga/mr_fontefantasma_123/chapters`);
-    assert(r404Source.status === 404, 'Fonte não registrada no ID retorna HTTP 404');
+    // 4.3 Erro 404: Fonte inexistente ou desativada
+    const r404Source = await fetch(`${BASE_URL}/api/manga/mr_mock_frieren-journey`);
+    assert(r404Source.status === 404, 'Tentativa de acessar fonte desativada (mr_mock_...) retorna HTTP 404');
     const r404SourceJson = await r404Source.json();
-    assert(r404SourceJson.error.includes('não encontrada'), 'Mensagem informa que a fonte não foi encontrada');
+    assert(r404SourceJson.error.includes('não suportada') || r404SourceJson.error.includes('não encontrada'), 'Mensagem informa que a fonte não é suportada ou não foi encontrada');
+
+    // -------------------------------------------------------------------------
+    // 5. TESTES DE FILTRAGEM ADULTA (+18 / HENTAI) E DISPONIBILIDADE DE CAPÍTULOS (FASE 2)
+    // -------------------------------------------------------------------------
+    console.log('\n[5/5] Testando Filtro +18 e Disponibilidade de Capítulos (Fase 2)...');
+
+    // 5.1 Busca padrão esconde conteúdo adulto por padrão (Safe Search)
+    const safeSearchRes = await fetch(`${BASE_URL}/api/search?q=hentai`);
+    assert(safeSearchRes.status === 200, 'GET /api/search?q=hentai retorna 200');
+    const safeSearchJson = await safeSearchRes.json();
+    const hasUnfilteredAdult = safeSearchJson.data.some(m => m.isAdult === true);
+    assert(!hasUnfilteredAdult, 'Busca padrão com Safe Search esconde obras marcadas como adultas (+18)');
+
+    // 5.2 Busca com includeAdult=true libera obras adultas
+    const adultSearchRes = await fetch(`${BASE_URL}/api/search?q=hentai&includeAdult=true`);
+    assert(adultSearchRes.status === 200, 'GET /api/search?q=hentai&includeAdult=true retorna 200');
+    const adultSearchJson = await adultSearchRes.json();
+    assert(Array.isArray(adultSearchJson.data), 'Busca com includeAdult=true retorna array');
+
+    // 5.3 Obras retornadas possuem campos de disponibilidade e contentRating
+    const sampleManga = searchJson.data[0];
+    if (sampleManga) {
+      assert(typeof sampleManga.hasAvailableChapters === 'boolean', 'Obra possui campo hasAvailableChapters (boolean)');
+      assert(typeof sampleManga.isAdult === 'boolean', 'Obra possui campo isAdult (boolean)');
+      assert(typeof sampleManga.contentRating === 'string', 'Obra possui campo contentRating (string)');
+      assert(typeof sampleManga.availabilityStatus === 'string', 'Obra possui campo availabilityStatus (string)');
+    }
+
+    // 5.4 Teste de filtro onlyAvailable=true
+    const availSearchRes = await fetch(`${BASE_URL}/api/search?q=kaguya&onlyAvailable=true`);
+    assert(availSearchRes.status === 200, 'GET /api/search?q=kaguya&onlyAvailable=true retorna 200');
+    const availSearchJson = await availSearchRes.json();
+    const allHaveChapters = availSearchJson.data.every(m => m.hasAvailableChapters === true);
+    assert(allHaveChapters, 'Todos os resultados com onlyAvailable=true possuem hasAvailableChapters === true');
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

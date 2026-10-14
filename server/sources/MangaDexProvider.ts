@@ -118,6 +118,28 @@ export class MangaDexProvider implements IMangaSource {
     else if (attrs.status === 'hiatus') status = 'hiatus';
     else if (attrs.status === 'cancelled') status = 'cancelled';
 
+    // Content rating and adult content detection
+    const rawRating = attrs.contentRating as string;
+    let contentRating: 'safe' | 'suggestive' | 'erotica' | 'pornographic' = 'safe';
+    if (rawRating === 'pornographic') contentRating = 'pornographic';
+    else if (rawRating === 'erotica') contentRating = 'erotica';
+    else if (rawRating === 'suggestive') contentRating = 'suggestive';
+
+    const allTagNames = Array.isArray(attrs.tags)
+      ? attrs.tags.map((t: any) => t.attributes?.name?.en).filter(Boolean)
+      : [];
+    const hasAdultTag = allTagNames.some((t: string) => /hentai|erotica|smut|sexual violence/i.test(t));
+    const isAdult = contentRating === 'pornographic' || contentRating === 'erotica' || hasAdultTag;
+
+    // Availability detection:
+    // A work on MangaDex is readable if it has uploaded chapters in available languages
+    const hasAvailableChapters = Boolean(
+      attrs.latestUploadedChapter &&
+      Array.isArray(attrs.availableTranslatedLanguages) &&
+      attrs.availableTranslatedLanguages.length > 0
+    );
+    const availabilityStatus = hasAvailableChapters ? 'available' : 'metadata_only';
+
     return {
       id: `mr_${this.sourceId}_${item.id}`,
       title,
@@ -142,7 +164,11 @@ export class MangaDexProvider implements IMangaSource {
         }
       ],
       latestChapter: attrs.lastChapter || undefined,
-      updatedAt: attrs.updatedAt || new Date().toISOString()
+      updatedAt: attrs.updatedAt || new Date().toISOString(),
+      contentRating,
+      isAdult,
+      hasAvailableChapters,
+      availabilityStatus
     };
   }
 
@@ -176,7 +202,10 @@ export class MangaDexProvider implements IMangaSource {
       const limit = Math.min(options?.limit || 24, 60);
       const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
       const orderParam = query.trim() ? 'order[relevance]=desc' : 'order[followedCount]=desc';
-      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&${orderParam}`;
+      const ratingsQuery = options?.includeAdult
+        ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
+        : 'contentRating[]=safe&contentRating[]=suggestive';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&${orderParam}`;
       
       if (query.trim()) {
         url += `&title=${encodeURIComponent(query.trim())}`;
@@ -191,7 +220,17 @@ export class MangaDexProvider implements IMangaSource {
 
       const res = await this.fetchWithTimeout(url);
       const list = Array.isArray(res.data) ? res.data : [];
-      const mangaList = list.map((item: any) => this.normalizeMangaDexItem(item));
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeMangaDexItem(item));
+
+      // Filter adult if includeAdult is false (secondary safety check on tags)
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      // Filter onlyAvailable if requested
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
 
       return {
         mangaList,
@@ -208,7 +247,10 @@ export class MangaDexProvider implements IMangaSource {
     try {
       const limit = Math.min(options?.limit || 24, 60);
       const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
-      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc`;
+      const ratingsQuery = options?.includeAdult
+        ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
+        : 'contentRating[]=safe&contentRating[]=suggestive';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&order[followedCount]=desc`;
 
       if (options?.genre && options.genre !== 'all') {
         const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
@@ -219,7 +261,17 @@ export class MangaDexProvider implements IMangaSource {
 
       const res = await this.fetchWithTimeout(url);
       const list = Array.isArray(res.data) ? res.data : [];
-      return list.map((item: any) => this.normalizeMangaDexItem(item));
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeMangaDexItem(item));
+
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
+
+      return mangaList;
     } catch (err) {
       console.warn(`[MangaDexProvider] getPopular failed:`, (err as Error).message);
       return [];
@@ -278,7 +330,14 @@ export class MangaDexProvider implements IMangaSource {
         }
       }
 
-      return list.map((item: any) => {
+      // Filter out chapters hosted on external third-party sites (e.g. MangaPlus, Webnovel)
+      // which have externalUrl set or 0 pages, as MangaDex does not host images for them.
+      const readableList = list.filter((item: any) => {
+        const attrs = item.attributes || {};
+        return !attrs.externalUrl && (attrs.pages === undefined || attrs.pages === null || attrs.pages > 0);
+      });
+
+      return readableList.map((item: any) => {
         const attrs = item.attributes || {};
         return {
           id: `ch_${this.sourceId}_${externalMangaId}_${item.id}`,
@@ -305,7 +364,8 @@ export class MangaDexProvider implements IMangaSource {
       const url = `${this.baseUrl}/at-home/server/${externalChapterId}`;
       const res = await this.fetchWithTimeout(url);
       if (!res.baseUrl || !res.chapter?.hash) {
-        throw new HttpError(502, 'Resposta inválida do servidor at-home do MangaDex.');
+        // If the chapter is external or has no hosted images, return empty list instead of throwing 502
+        return [];
       }
 
       const { baseUrl, chapter } = res;

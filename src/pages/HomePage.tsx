@@ -7,15 +7,19 @@ import { HistoryService } from '../services/history.js';
 import { ReadingProgress } from '../types/manga.js';
 
 interface HomePageProps {
-  onSelectManga: (mangaId: string) => void;
+  onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
   onReadChapter: (mangaId: string, chapterId: string) => void;
   onNavigateToSearch: (initialQuery?: string) => void;
+  history?: ReadingProgress[];
+  onOpenHistory?: () => void;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
   onSelectManga,
   onReadChapter,
-  onNavigateToSearch
+  onNavigateToSearch,
+  history: propHistory,
+  onOpenHistory
 }) => {
   const [featuredManga, setFeaturedManga] = useState<Manga[]>([]);
   const [catalogManga, setCatalogManga] = useState<Manga[]>([]);
@@ -26,12 +30,17 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [hasMore, setHasMore] = useState(true);
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('all');
-  const [history, setHistory] = useState<ReadingProgress[]>([]);
+  const [localHistory, setLocalHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
 
   useEffect(() => {
     loadData();
-    setHistory(HistoryService.getHistory());
+    const unsubscribe = HistoryService.subscribe(() => {
+      setLocalHistory(HistoryService.getHistory());
+    });
+    return unsubscribe;
   }, []);
+
+  const activeHistory = propHistory || localHistory;
 
   const loadData = async () => {
     setLoading(true);
@@ -140,8 +149,8 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
-  // Dominant spotlight manga: always prioritize live real manga over mock demo
-  const heroManga = featuredManga.find(m => !m.id.includes('_mock_')) || featuredManga[0];
+  // Dominant spotlight manga: prioritize readable, safe featured manga
+  const heroManga = featuredManga.find(m => m.hasAvailableChapters !== false && !m.isAdult) || featuredManga[0];
 
   const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi', 'Romance', 'Mistério'];
 
@@ -254,18 +263,29 @@ export const HomePage: React.FC<HomePageProps> = ({
 
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-10 space-y-12">
         {/* 2. Continuar Lendo (Recent Reading Shelf) */}
-        {history.length > 0 && (
+        {activeHistory.length > 0 && (
           <section>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Clock className="h-4 w-4 text-rose-400" />
                 <h2 className="text-lg font-semibold text-zinc-100">Continuar Lendo</h2>
               </div>
-              <span className="text-xs text-zinc-500">Salvo automaticamente</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-500 hidden sm:inline">Salvo automaticamente</span>
+                {onOpenHistory && (
+                  <button
+                    onClick={onOpenHistory}
+                    className="text-xs text-rose-400 hover:text-rose-300 font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <span>Ver todos ({activeHistory.length})</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {history.slice(0, 3).map((item) => {
+              {activeHistory.slice(0, 3).map((item) => {
                 const percent = item.totalPages > 0 ? Math.round((item.pageNumber / item.totalPages) * 100) : 0;
                 return (
                   <div
@@ -307,7 +327,7 @@ export const HomePage: React.FC<HomePageProps> = ({
         )}
 
         {/* 3. Catalog Explorer with Multi-Source & Genre Filtering */}
-        <section>
+        <section id="catalog-section">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-zinc-800/80 mb-6">
             <div>
               <h2 className="text-xl font-bold tracking-tight text-zinc-100">Explorar Catálogo</h2>
@@ -330,7 +350,6 @@ export const HomePage: React.FC<HomePageProps> = ({
               </button>
               {sources.map(src => {
                 const isSelected = selectedSource === src.id;
-                const isMock = src.type === 'mock';
                 return (
                   <button
                     key={src.id}
@@ -342,14 +361,8 @@ export const HomePage: React.FC<HomePageProps> = ({
                     }`}
                   >
                     <span>{src.name}</span>
-                    <span
-                      className={`text-[9px] uppercase px-1 py-0.5 rounded font-mono ${
-                        isMock
-                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                          : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                      }`}
-                    >
-                      {isMock ? 'Demo' : 'Live'}
+                    <span className="text-[9px] uppercase px-1 py-0.5 rounded font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      Live
                     </span>
                   </button>
                 );
@@ -402,7 +415,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <MangaCard
                     key={manga.id}
                     manga={manga}
-                    onSelect={onSelectManga}
+                    onSelect={(id) => onSelectManga(id, true)}
                     onQuickRead={() => handleHeroQuickRead(manga)}
                   />
                 ))}
