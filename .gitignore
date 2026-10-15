@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+*.tsbuildinfo
+.vscode/
+.idea/
+.tsx-*
+.aistudio/

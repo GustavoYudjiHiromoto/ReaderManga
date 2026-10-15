@@ -54,15 +54,21 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
+      path: '/api/search?q=chainsaw&onlyAvailable=true',
+      title: 'Busca com Filtro de Disponibilidade',
+      description: 'Retorna apenas obras que possuem capítulos hospedados e prontos para leitura.'
+    },
+    {
+      method: 'GET',
       path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to',
       title: 'Detalhes da Obra por ID Interno',
       description: 'Consulta um mangá pelo identificador interno desacoplado do MangaReader.'
     },
     {
       method: 'GET',
-      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters',
-      title: 'Listagem de Capítulos',
-      description: 'Retorna capítulos ordenados de um mangá com metadados de paginação e idioma.'
+      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters?deduplicate=true',
+      title: 'Capítulos Deduplicados com Variantes',
+      description: 'Retorna capítulos com agrupamento inteligente de clones e scanlations em variantes.'
     },
     {
       method: 'GET',
