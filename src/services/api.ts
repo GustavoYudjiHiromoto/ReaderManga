@@ -67,10 +67,11 @@ export const MangaApi = {
     return json.data;
   },
 
-  async getChapters(internalMangaId: string, options?: { lang?: string; order?: 'asc' | 'desc' }): Promise<Chapter[]> {
+  async getChapters(internalMangaId: string, options?: { lang?: string; order?: 'asc' | 'desc'; deduplicate?: boolean }): Promise<Chapter[]> {
     const params = new URLSearchParams();
     if (options?.lang) params.set('lang', options.lang);
     if (options?.order) params.set('order', options.order);
+    if (options?.deduplicate !== undefined) params.set('deduplicate', String(options.deduplicate));
 
     const res = await fetch(`/api/manga/${encodeURIComponent(internalMangaId)}/chapters?${params.toString()}`);
     if (!res.ok) {

@@ -13,7 +13,9 @@ import {
   Search,
   CheckCircle2,
   Sparkles,
-  Info
+  Info,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { Manga, Chapter } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -40,6 +42,9 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chaptersError, setChaptersError] = useState<string | null>(null);
   const [chapterOrder, setChapterOrder] = useState<'asc' | 'desc'>('asc');
   const [chapterSearch, setChapterSearch] = useState('');
+  const [deduplicate, setDeduplicate] = useState(true);
+  const [selectedLang, setSelectedLang] = useState<string>('all');
+  const [expandedVariantsChapterId, setExpandedVariantsChapterId] = useState<string | null>(null);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [showFullSynopsis, setShowFullSynopsis] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -54,11 +59,11 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     return unsubscribe;
   }, [mangaId]);
 
-  const loadChapters = async () => {
+  const loadChapters = async (isDeduplicated = deduplicate) => {
     setChaptersLoading(true);
     setChaptersError(null);
     try {
-      const chaptersData = await MangaApi.getChapters(mangaId, { order: chapterOrder });
+      const chaptersData = await MangaApi.getChapters(mangaId, { order: chapterOrder, deduplicate: isDeduplicated });
       setChapters(chaptersData);
     } catch (err) {
       console.error(err);
@@ -91,6 +96,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setChapters(prev => [...prev].reverse());
   };
 
+  const toggleDeduplication = () => {
+    const next = !deduplicate;
+    setDeduplicate(next);
+    loadChapters(next);
+  };
+
   const handleBookmarkToggle = () => {
     if (!manga) return;
     const newState = HistoryService.toggleBookmark({
@@ -115,11 +126,19 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
   const readingProgress = HistoryService.getProgress(mangaId);
 
+  // Unique languages among loaded chapters
+  const availableLanguages = Array.from(new Set(chapters.map(c => c.language).filter(Boolean)));
+
   // Filtered chapters
   const filteredChapters = chapters.filter(c => {
+    if (selectedLang !== 'all' && c.language !== selectedLang) return false;
     if (!chapterSearch) return true;
     const q = chapterSearch.toLowerCase();
-    return c.chapterNumber.includes(q) || (c.title && c.title.toLowerCase().includes(q));
+    return (
+      c.chapterNumber.includes(q) ||
+      (c.title && c.title.toLowerCase().includes(q)) ||
+      (c.scanlationGroup && c.scanlationGroup.toLowerCase().includes(q))
+    );
   });
 
   if (loading) {
@@ -427,41 +446,93 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             </div>
           )}
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-            <div>
-              <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-                <span>Capítulos Disponíveis</span>
-                <span className="text-xs font-normal text-zinc-400 font-mono tabular-nums">
-                  ({chapters.length})
-                </span>
-              </h2>
-              <p className="text-xs text-zinc-400 mt-0.5">
-                Selecione um capítulo para iniciar a leitura imediata
-              </p>
-            </div>
-
-            {/* Filter and Sort controls */}
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
-                <input
-                  type="text"
-                  placeholder="Filtrar capítulo..."
-                  value={chapterSearch}
-                  onChange={(e) => setChapterSearch(e.target.value)}
-                  className="pl-8 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500"
-                />
+          <div className="flex flex-col gap-4 mb-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+                  <span>Capítulos Disponíveis</span>
+                  <span className="text-xs font-normal text-zinc-400 font-mono tabular-nums">
+                    ({filteredChapters.length}{filteredChapters.length !== chapters.length ? ` de ${chapters.length}` : ''})
+                  </span>
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Selecione um capítulo para iniciar a leitura imediata
+                </p>
               </div>
 
-              <button
-                onClick={toggleSort}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
-                title="Inverter ordem"
-              >
-                <ArrowUpDown className="h-3.5 w-3.5 text-rose-400" />
-                <span>{chapterOrder === 'asc' ? '1 → Fim' : 'Fim → 1'}</span>
-              </button>
+              {/* Filter and Sort controls */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                  <input
+                    type="text"
+                    placeholder="Filtrar capítulo ou scan..."
+                    value={chapterSearch}
+                    onChange={(e) => setChapterSearch(e.target.value)}
+                    className="pl-8 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 w-44 sm:w-52"
+                  />
+                </div>
+
+                <button
+                  onClick={toggleDeduplication}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer border ${
+                    deduplicate
+                      ? 'bg-rose-500/10 border-rose-500/40 text-rose-300'
+                      : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title={
+                    deduplicate
+                      ? 'Agrupamento ativo: scanlations e clones são unificados em versões'
+                      : 'Modo expandido: todos os uploads avulsos são exibidos'
+                  }
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  <span>{deduplicate ? 'Agrupado' : 'Todas as Versões'}</span>
+                </button>
+
+                <button
+                  onClick={toggleSort}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
+                  title="Inverter ordem"
+                >
+                  <ArrowUpDown className="h-3.5 w-3.5 text-rose-400" />
+                  <span>{chapterOrder === 'asc' ? '1 → Fim' : 'Fim → 1'}</span>
+                </button>
+              </div>
             </div>
+
+            {/* Language filter pills */}
+            {availableLanguages.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-zinc-850">
+                <span className="text-[11px] font-medium text-zinc-400 mr-1">Idioma:</span>
+                <button
+                  onClick={() => setSelectedLang('all')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    selectedLang === 'all'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                >
+                  Todos ({chapters.length})
+                </button>
+                {availableLanguages.map((lang) => {
+                  const count = chapters.filter(c => c.language === lang).length;
+                  return (
+                    <button
+                      key={lang}
+                      onClick={() => setSelectedLang(lang)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase transition-colors cursor-pointer ${
+                        selectedLang === lang
+                          ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                          : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                      }`}
+                    >
+                      {lang} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Chapters List */}
@@ -479,7 +550,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               </p>
               <p className="text-xs text-zinc-500 max-w-md">{chaptersError}</p>
               <button
-                onClick={loadChapters}
+                onClick={() => loadChapters()}
                 className="mt-2 px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
               >
                 Tentar novamente
@@ -523,53 +594,156 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {filteredChapters.map((chapter) => {
                 const isCurrentRead = readingProgress?.chapterId === chapter.id;
+                const hasVariants = Boolean(chapter.variants && chapter.variants.length > 0);
+                const isExpanded = expandedVariantsChapterId === chapter.id;
 
                 return (
                   <div
                     key={chapter.id}
-                    onClick={() => onReadChapter(manga.id, chapter.id)}
-                    className={`group flex items-center justify-between p-3.5 rounded-xl border transition-all cursor-pointer ${
+                    className={`group flex flex-col p-3.5 rounded-xl border transition-all ${
                       isCurrentRead
-                        ? 'bg-rose-950/20 border-rose-800/60 hover:bg-rose-950/30'
-                        : 'bg-zinc-900/60 hover:bg-zinc-900 border-zinc-800/80 hover:border-zinc-700'
+                        ? 'bg-rose-950/20 border-rose-800/60'
+                        : 'bg-zinc-900/60 hover:bg-zinc-900/90 border-zinc-800/80 hover:border-zinc-700'
                     }`}
                   >
-                    <div className="flex items-center gap-3 overflow-hidden">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono font-medium text-zinc-300 tabular-nums group-hover:border-rose-500/50 group-hover:text-rose-400 transition-colors">
-                        {chapter.chapterNumber}
+                    <div
+                      onClick={() => onReadChapter(manga.id, chapter.id)}
+                      className="flex items-center justify-between cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono font-medium text-zinc-300 tabular-nums group-hover:border-rose-500/50 group-hover:text-rose-400 transition-colors">
+                          {chapter.chapterNumber}
+                        </div>
+
+                        <div className="overflow-hidden">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold text-xs text-zinc-200 line-clamp-1 group-hover:text-rose-400 transition-colors">
+                              Capítulo {chapter.chapterNumber}
+                              {chapter.title && ` - ${chapter.title}`}
+                            </span>
+
+                            {chapter.scanlationGroup && (
+                              <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono">
+                                {chapter.scanlationGroup}
+                              </span>
+                            )}
+
+                            {chapter.edition && chapter.edition !== 'standard' && (
+                              <span className="text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 uppercase font-mono font-medium">
+                                {chapter.edition}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-1">
+                            {chapter.releaseDate && <span>{chapter.releaseDate}</span>}
+                            {chapter.pagesCount && (
+                              <>
+                                <span aria-hidden="true" className="text-zinc-600">·</span>
+                                <span className="font-mono tabular-nums">{chapter.pagesCount} páginas</span>
+                              </>
+                            )}
+                            <span aria-hidden="true" className="text-zinc-600">·</span>
+                            <span className="uppercase text-[10px] text-zinc-400 font-mono">{chapter.language}</span>
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="overflow-hidden">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-xs text-zinc-200 line-clamp-1 group-hover:text-rose-400 transition-colors">
-                            Capítulo {chapter.chapterNumber}
-                            {chapter.title && ` - ${chapter.title}`}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isCurrentRead && (
+                          <span className="text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
+                            Em Leitura
                           </span>
-                        </div>
-                        <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-0.5">
-                          {chapter.releaseDate && <span>{chapter.releaseDate}</span>}
-                          {chapter.pagesCount && (
-                            <>
-                              <span aria-hidden="true" className="text-zinc-600">·</span>
-                              <span className="font-mono tabular-nums">{chapter.pagesCount} páginas</span>
-                            </>
-                          )}
-                          <span aria-hidden="true" className="text-zinc-600">·</span>
-                          <span className="uppercase text-[10px] text-zinc-400">{chapter.language}</span>
-                        </div>
+                        )}
+
+                        {hasVariants && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedVariantsChapterId(isExpanded ? null : chapter.id);
+                            }}
+                            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 transition-colors cursor-pointer"
+                            title="Alternar versões/scans deste capítulo"
+                          >
+                            <Layers className="h-3 w-3" />
+                            <span>+{chapter.variants!.length}</span>
+                            <ChevronDown className={`h-2.5 w-2.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          className="p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
+                          title="Ler agora"
+                        >
+                          <BookOpen className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {isCurrentRead && (
-                        <span className="text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
-                          Em Leitura
-                        </span>
-                      )}
-                      <button className="p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors">
-                        <BookOpen className="h-4 w-4" />
-                      </button>
-                    </div>
+                    {/* Expandable variants list */}
+                    {hasVariants && isExpanded && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-3 pt-3 border-t border-zinc-800/80 space-y-1.5 animate-in fade-in duration-150"
+                      >
+                        <div className="flex items-center justify-between text-[11px] font-medium text-zinc-400 mb-1">
+                          <span>Versões disponíveis para o Capítulo {chapter.chapterNumber}:</span>
+                        </div>
+
+                        {/* Primary variant */}
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/80 border border-zinc-800/60 text-xs">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-semibold uppercase">
+                              Padrão
+                            </span>
+                            <span className="text-zinc-200 font-medium truncate">
+                              {chapter.scanlationGroup || chapter.sourceId}
+                            </span>
+                            {chapter.pagesCount && (
+                              <span className="text-[10px] text-zinc-500 font-mono">
+                                ({chapter.pagesCount} págs)
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => onReadChapter(manga.id, chapter.id)}
+                            className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+                          >
+                            Ler
+                          </button>
+                        </div>
+
+                        {/* Other variants */}
+                        {chapter.variants!.map((v) => (
+                          <div
+                            key={v.id}
+                            className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/40 border border-zinc-800/40 text-xs hover:border-zinc-700/70 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-medium uppercase">
+                                {v.sourceName || v.sourceId}
+                              </span>
+                              <span className="text-zinc-300 font-medium truncate">
+                                {v.scanlationGroup || v.title || 'Versão Alternativa'}
+                              </span>
+                              {v.pagesCount && (
+                                <span className="text-[10px] text-zinc-500 font-mono">
+                                  ({v.pagesCount} págs)
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => onReadChapter(manga.id, v.id)}
+                              className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+                            >
+                              Ler
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -363,6 +363,9 @@ export class ComickProvider implements IMangaSource {
 
       return list.map((item: any) => {
         const mdSuffix = item.mdid ? `__md_${item.mdid}` : '';
+        const scanGroup = Array.isArray(item.group_name)
+          ? item.group_name[0]
+          : (item.group_name || (Array.isArray(item.group_names) ? item.group_names[0] : undefined));
         return {
           id: `ch_${this.sourceId}_${externalMangaId}_${item.hid}${mdSuffix}`,
           mangaId: `mr_${this.sourceId}_${externalMangaId}`,
@@ -373,7 +376,8 @@ export class ComickProvider implements IMangaSource {
           language: item.lang || language || 'en',
           sourceId: this.sourceId,
           externalChapterId: item.hid,
-          pagesCount: undefined
+          pagesCount: undefined,
+          scanlationGroup: scanGroup || undefined
         };
       });
     } catch (err) {

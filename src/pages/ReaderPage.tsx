@@ -197,7 +197,10 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       setChapters(chaptersData);
       setPages(pagesData);
 
-      const foundChapter = chaptersData.find(c => c.id === chapterId);
+      let foundChapter = chaptersData.find(c => c.id === chapterId);
+      if (!foundChapter) {
+        foundChapter = chaptersData.find(c => c.variants?.some(v => v.id === chapterId));
+      }
       setCurrentChapter(foundChapter || null);
 
       // Check saved progress
@@ -252,7 +255,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   }, [currentPageIndex, pages.length, readerMode]);
 
   // Next / Previous chapter helpers
-  const currentChapterIndex = chapters.findIndex(c => c.id === chapterId);
+  const currentChapterIndex = chapters.findIndex(c => c.id === chapterId || c.variants?.some(v => v.id === chapterId));
   const prevChapter = currentChapterIndex > 0 ? chapters[currentChapterIndex - 1] : null;
   const nextChapter = currentChapterIndex >= 0 && currentChapterIndex < chapters.length - 1 ? chapters[currentChapterIndex + 1] : null;
 
@@ -420,9 +423,9 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           {/* Quick Chapter Selector */}
           <div className="hidden md:flex items-center gap-2">
             <select
-              value={chapterId}
+              value={currentChapter?.id || chapterId}
               onChange={(e) => onChangeChapter(e.target.value)}
-              className="px-3 py-1 bg-zinc-950/80 border border-zinc-800 rounded-lg text-xs font-mono tabular-nums focus:outline-none focus:border-rose-500 cursor-pointer"
+              className="px-3 py-1 bg-zinc-950/80 border border-zinc-800 rounded-lg text-xs font-mono tabular-nums focus:outline-none focus:border-rose-500 cursor-pointer text-zinc-200"
             >
               {chapters.map((ch) => (
                 <option key={ch.id} value={ch.id}>
@@ -430,6 +433,27 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 </option>
               ))}
             </select>
+
+            {/* Quick Variant Switcher */}
+            {currentChapter?.variants && currentChapter.variants.length > 0 && (
+              <div className="flex items-center gap-1.5 bg-zinc-950/80 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs">
+                <span className="text-[11px] text-zinc-500 font-medium">Versão:</span>
+                <select
+                  value={chapterId}
+                  onChange={(e) => onChangeChapter(e.target.value)}
+                  className="bg-transparent text-xs text-rose-300 font-medium focus:outline-none cursor-pointer"
+                >
+                  <option value={currentChapter.id}>
+                    {currentChapter.scanlationGroup || currentChapter.sourceId} (Padrão)
+                  </option>
+                  {currentChapter.variants.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.sourceName || v.sourceId} {v.scanlationGroup ? `· ${v.scanlationGroup}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Controls: Mode, Theme, Fullscreen */}
@@ -526,6 +550,26 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {currentChapter?.variants && currentChapter.variants.length > 0 && (
+                    <div className="pt-2 border-t border-zinc-800">
+                      <span className="text-zinc-400 font-medium block mb-2">Versão / Scanlation</span>
+                      <select
+                        value={chapterId}
+                        onChange={(e) => onChangeChapter(e.target.value)}
+                        className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+                      >
+                        <option value={currentChapter.id}>
+                          {currentChapter.scanlationGroup || currentChapter.sourceId} (Padrão)
+                        </option>
+                        {currentChapter.variants.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.sourceName || v.sourceId} {v.scanlationGroup ? `· ${v.scanlationGroup}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500">
                     <span>Atalhos: ← → (Passar pág)</span>

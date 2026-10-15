@@ -5,6 +5,7 @@ import { ComickProvider } from './ComickProvider.js';
 import { GuyaProvider } from './GuyaProvider.js';
 import { WeebCentralProvider } from './WeebCentralProvider.js';
 import { HttpError } from '../errors/HttpError.js';
+import { deduplicateAndGroupChapters } from './ChapterDeduplicator.js';
 
 function normalizeTitle(t: string): string {
   if (!t) return '';
@@ -397,16 +398,26 @@ export class SourceRegistry {
   }
 
   /**
-   * Get chapters for an internal manga ID
+   * Get chapters for an internal manga ID with optional deduplication
    */
-  public async getChapters(internalMangaId: string, language?: string): Promise<Chapter[]> {
+  public async getChapters(
+    internalMangaId: string,
+    language?: string,
+    options?: { deduplicate?: boolean }
+  ): Promise<Chapter[]> {
     const parsed = this.parseInternalMangaId(internalMangaId);
     const source = this.sources.get(parsed.sourceId);
     if (!source) {
       throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o mangá '${internalMangaId}'.`);
     }
 
-    return await source.getChapters(parsed.externalId, language);
+    let chapters = await source.getChapters(parsed.externalId, language);
+
+    if (options?.deduplicate !== false) {
+      chapters = deduplicateAndGroupChapters(chapters);
+    }
+
+    return chapters;
   }
 
   /**

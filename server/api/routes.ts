@@ -121,14 +121,20 @@ apiRouter.get('/manga/:id/chapters', async (req: Request, res: Response) => {
     const internalMangaId = req.params.id;
     const lang = req.query.lang as string | undefined;
     const order = (req.query.order as string) || 'asc'; // 'asc' or 'desc'
+    const deduplicate = req.query.deduplicate !== 'false';
 
-    let chapters = await sourceRegistry.getChapters(internalMangaId, lang);
+    let chapters = await sourceRegistry.getChapters(internalMangaId, lang, { deduplicate });
 
     // Sort chapters
     chapters.sort((a, b) => {
-      const numA = parseFloat(a.chapterNumber) || 0;
-      const numB = parseFloat(b.chapterNumber) || 0;
-      return order === 'desc' ? numB - numA : numA - numB;
+      const numA = parseFloat(a.chapterNumber);
+      const numB = parseFloat(b.chapterNumber);
+      if (!isNaN(numA) && !isNaN(numB) && numA !== numB) {
+        return order === 'desc' ? numB - numA : numA - numB;
+      }
+      return order === 'desc'
+        ? b.chapterNumber.localeCompare(a.chapterNumber, undefined, { numeric: true })
+        : a.chapterNumber.localeCompare(b.chapterNumber, undefined, { numeric: true });
     });
 
     res.json({

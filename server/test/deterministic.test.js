@@ -176,6 +176,83 @@ async function runDeterministicTests() {
     const allHaveChapters = availSearchJson.data.every(m => m.hasAvailableChapters === true);
     assert(allHaveChapters, 'Todos os resultados com onlyAvailable=true possuem hasAvailableChapters === true');
 
+    // -------------------------------------------------------------------------
+    // 6. TESTES DE DEDUPLICAÇÃO E AGRUPAMENTO DE CAPÍTULOS (FASE 3)
+    // -------------------------------------------------------------------------
+    console.log('\n[6/6] Testando Deduplicação e Agrupamento de Capítulos (Fase 3)...');
+
+    const {
+      normalizeChapterNumber,
+      detectEdition,
+      areChaptersEquivalent,
+      deduplicateAndGroupChapters
+    } = await import('../sources/ChapterDeduplicator.js');
+
+    // 6.1 Normalização de números de capítulo
+    assert(normalizeChapterNumber('1.0') === '1', 'normalizeChapterNumber converte "1.0" em "1"');
+    assert(normalizeChapterNumber(' 05 ') === '5', 'normalizeChapterNumber converte " 05 " em "5"');
+    assert(normalizeChapterNumber('10.5') === '10.5', 'normalizeChapterNumber preserva decimais "10.5"');
+
+    // 6.2 Detecção de edições especiais
+    assert(detectEdition('Chapter 1 (Colored)') === 'colored', 'detectEdition detecta edição colorida');
+    assert(detectEdition('One-shot Special') === 'oneshot', 'detectEdition detecta oneshot');
+    assert(detectEdition('Standard Chapter') === 'standard', 'detectEdition detecta padrão como standard');
+
+    // 6.3 Equivalência de capítulos
+    const chPt1 = {
+      id: 'ch_mangadex_1_pt',
+      mangaId: 'mr_mangadex_1',
+      chapterNumber: '1',
+      language: 'pt-br',
+      sourceId: 'mangadex',
+      externalChapterId: 'md_pt_1'
+    };
+    const chPt1Clone = {
+      id: 'ch_comick_1_pt',
+      mangaId: 'mr_comick_1',
+      chapterNumber: '1.0',
+      language: 'pt-br',
+      sourceId: 'comick',
+      externalChapterId: 'cm_pt_1'
+    };
+    const chEn1 = {
+      id: 'ch_mangadex_1_en',
+      mangaId: 'mr_mangadex_1',
+      chapterNumber: '1',
+      language: 'en',
+      sourceId: 'mangadex',
+      externalChapterId: 'md_en_1'
+    };
+    const chPt1Colored = {
+      id: 'ch_mangadex_1_pt_color',
+      mangaId: 'mr_mangadex_1',
+      chapterNumber: '1',
+      title: 'Capítulo 1 (Versão Colorida)',
+      language: 'pt-br',
+      sourceId: 'mangadex',
+      externalChapterId: 'md_pt_color_1'
+    };
+
+    assert(areChaptersEquivalent(chPt1, chPt1Clone) === true, 'Capítulos com mesmo número e idioma são equivalentes (duplicatas)');
+    assert(areChaptersEquivalent(chPt1, chEn1) === false, 'Capítulos com idiomas distintos (PT-BR vs EN) NÃO são equivalentes');
+    assert(areChaptersEquivalent(chPt1, chPt1Colored) === false, 'Capítulo normal vs edição colorida NÃO são equivalentes');
+
+    // 6.4 Deduplicação e agrupamento de lista
+    const rawChapters = [chPt1, chPt1Clone, chEn1, chPt1Colored];
+    const grouped = deduplicateAndGroupChapters(rawChapters);
+    assert(grouped.length === 3, 'Lista de 4 capítulos (com 1 duplicata) foi agrupada em 3 itens canônicos');
+    const groupedPt = grouped.find(c => c.language === 'pt-br' && c.chapterNumber === '1' && (!c.edition || c.edition === 'standard'));
+    assert(!!groupedPt, 'Item canônico PT-BR Capítulo 1 está presente');
+    assert(groupedPt.variants?.length === 1, 'Item canônico possui exatamente 1 variante agrupada');
+    assert(groupedPt.variants[0].externalChapterId === 'cm_pt_1', 'Variante agrupada contém o externalChapterId correto');
+
+    // 6.5 Endpoint /api/manga/:id/chapters responde com deduplicate=true
+    const chaptersApiRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters?deduplicate=true`);
+    assert(chaptersApiRes.status === 200, 'GET /api/manga/.../chapters?deduplicate=true retorna 200');
+    const chaptersApiJson = await chaptersApiRes.json();
+    assert(chaptersApiJson.success === true, 'Endpoint de capítulos com deduplicação retorna success: true');
+    assert(Array.isArray(chaptersApiJson.data), 'Endpoint retorna array de capítulos');
+
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);
     failedTests++;

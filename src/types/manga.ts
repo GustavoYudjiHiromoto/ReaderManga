@@ -44,6 +44,19 @@ export interface Manga {
   availabilityStatus?: MangaAvailabilityStatus;
 }
 
+export interface ChapterVariant {
+  id: string;
+  sourceId: string;
+  sourceName?: string;
+  externalChapterId: string;
+  title?: string;
+  scanlationGroup?: string;
+  releaseDate?: string;
+  pagesCount?: number;
+  language: string;
+  edition?: string;
+}
+
 export interface Chapter {
   id: string; // Internal chapter ID (e.g., 'ch_openmanga_frieren_1')
   mangaId: string; // References internal Manga id
@@ -55,6 +68,9 @@ export interface Chapter {
   sourceId: string;
   externalChapterId: string;
   pagesCount?: number;
+  edition?: string;
+  scanlationGroup?: string;
+  variants?: ChapterVariant[];
 }
 
 export interface MangaPage {

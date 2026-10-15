@@ -295,7 +295,7 @@ export class MangaDexProvider implements IMangaSource {
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     try {
       const buildUrl = (langQuery: string, offset = 0) =>
-        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&offset=${offset}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica${langQuery}`;
+        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&offset=${offset}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&includes[]=scanlation_group${langQuery}`;
 
       let langQuery = '';
       if (language) {
@@ -339,6 +339,7 @@ export class MangaDexProvider implements IMangaSource {
 
       return readableList.map((item: any) => {
         const attrs = item.attributes || {};
+        const scanGroup = item.relationships?.find((r: any) => r.type === 'scanlation_group')?.attributes?.name;
         return {
           id: `ch_${this.sourceId}_${externalMangaId}_${item.id}`,
           mangaId: `mr_${this.sourceId}_${externalMangaId}`,
@@ -349,7 +350,8 @@ export class MangaDexProvider implements IMangaSource {
           language: attrs.translatedLanguage || 'en',
           sourceId: this.sourceId,
           externalChapterId: item.id,
-          pagesCount: attrs.pages || undefined
+          pagesCount: attrs.pages || undefined,
+          scanlationGroup: scanGroup || undefined
         };
       });
     } catch (err) {
