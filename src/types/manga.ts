@@ -120,3 +120,11 @@ export interface FavoriteManga {
   status?: MangaStatus;
   updatedAt: number;
 }
+
+export interface LibraryBackup {
+  version: number;
+  exportedAt: string;
+  source: string;
+  favorites: FavoriteManga[];
+  history: ReadingProgress[];
+}

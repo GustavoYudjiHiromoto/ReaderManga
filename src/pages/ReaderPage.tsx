@@ -17,7 +17,8 @@ import {
   Check,
   AlertCircle,
   RotateCcw,
-  FileX
+  FileX,
+  Download
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -33,6 +34,7 @@ interface ReaderPageProps {
 type ReaderMode = 'webtoon' | 'single' | 'double';
 type ReaderTheme = 'dark' | 'black' | 'sepia' | 'light';
 type PageFit = 'width' | 'height' | 'original';
+type ReadingDirection = 'rtl' | 'ltr';
 
 interface ReaderPageImageProps {
   pageNumber: number;
@@ -170,6 +172,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [readerMode, setReaderMode] = useState<ReaderMode>('webtoon');
   const [readerTheme, setReaderTheme] = useState<ReaderTheme>('dark');
   const [pageFit, setPageFit] = useState<PageFit>('width');
+  const [readingDirection, setReadingDirection] = useState<ReadingDirection>('rtl');
   const [showSettings, setShowSettings] = useState(false);
   const [showUi, setShowUi] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -177,6 +180,19 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   // Container refs for scroll spy
   const pagesContainerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Intelligent prefetching: pre-load upcoming 3 pages into browser cache
+  useEffect(() => {
+    if (!pages || pages.length === 0) return;
+    const prefetchLimit = 3;
+    for (let i = 1; i <= prefetchLimit; i++) {
+      const idx = currentPageIndex + i;
+      if (idx < pages.length && pages[idx]?.imageUrl) {
+        const img = new Image();
+        img.src = pages[idx].imageUrl;
+      }
+    }
+  }, [currentPageIndex, pages]);
 
   // Load Manga, Chapter list, and Pages
   useEffect(() => {
@@ -234,25 +250,48 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }
   }, [currentPageIndex, manga, currentChapter, pages]);
 
-  // Keyboard navigation
+  // Keyboard navigation respecting reading direction
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        goToNextPage();
-      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        goToPrevPage();
-      } else if (e.key === 'f' || e.key === 'F') {
+      if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
-      } else if (e.key === 'Escape') {
+        return;
+      }
+      if (e.key === 'Escape') {
         setShowSettings(false);
+        return;
+      }
+
+      if (readerMode === 'webtoon') {
+        if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'ArrowRight') {
+          goToNextPage();
+        } else if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'ArrowLeft') {
+          goToPrevPage();
+        }
+      } else {
+        if (readingDirection === 'rtl') {
+          // Japanese manga reading: ArrowLeft advances page, ArrowRight goes back
+          if (e.key === 'ArrowLeft' || e.key === 'PageDown') {
+            goToNextPage();
+          } else if (e.key === 'ArrowRight' || e.key === 'PageUp') {
+            goToPrevPage();
+          }
+        } else {
+          // Western reading: ArrowRight advances page, ArrowLeft goes back
+          if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+            goToNextPage();
+          } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+            goToPrevPage();
+          }
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPageIndex, pages.length, readerMode]);
+  }, [currentPageIndex, pages.length, readerMode, readingDirection]);
 
   // Next / Previous chapter helpers
   const currentChapterIndex = chapters.findIndex(c => c.id === chapterId || c.variants?.some(v => v.id === chapterId));
@@ -551,6 +590,34 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                     </div>
                   </div>
 
+                  {readerMode !== 'webtoon' && (
+                    <div>
+                      <span className="text-zinc-400 font-medium block mb-2">Direção de Leitura</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          onClick={() => setReadingDirection('rtl')}
+                          className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] ${
+                            readingDirection === 'rtl'
+                              ? 'border-rose-500 bg-rose-500/20 text-rose-300'
+                              : 'border-zinc-800 bg-zinc-950 text-zinc-400'
+                          }`}
+                        >
+                          Mangá (Dir → Esq)
+                        </button>
+                        <button
+                          onClick={() => setReadingDirection('ltr')}
+                          className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] ${
+                            readingDirection === 'ltr'
+                              ? 'border-rose-500 bg-rose-500/20 text-rose-300'
+                              : 'border-zinc-800 bg-zinc-950 text-zinc-400'
+                          }`}
+                        >
+                          Ocidental (Esq → Dir)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {currentChapter?.variants && currentChapter.variants.length > 0 && (
                     <div className="pt-2 border-t border-zinc-800">
                       <span className="text-zinc-400 font-medium block mb-2">Versão / Scanlation</span>
@@ -571,6 +638,19 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                     </div>
                   )}
 
+                  {/* Offline Download Option */}
+                  <div className="pt-2 border-t border-zinc-800">
+                    <span className="text-zinc-400 font-medium block mb-1.5">Leitura Offline</span>
+                    <a
+                      href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
+                      download
+                      className="flex items-center justify-center gap-1.5 w-full py-1.5 px-3 rounded-lg bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white transition-colors text-xs font-medium cursor-pointer"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Baixar Capítulo (.cbz)</span>
+                    </a>
+                  </div>
+
                   <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500">
                     <span>Atalhos: ← → (Passar pág)</span>
                     <span>F (Tela cheia)</span>
@@ -578,6 +658,16 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Download Chapter Action */}
+            <a
+              href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
+              download
+              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
+              title="Baixar capítulo (.cbz) para leitura offline"
+            >
+              <Download className="h-4 w-4" />
+            </a>
 
             {/* Fullscreen Toggle */}
             <button
@@ -644,18 +734,18 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               <div
                 onClick={(e) => {
                   e.stopPropagation();
-                  goToPrevPage();
+                  readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
                 }}
                 className="absolute left-0 inset-y-0 w-1/3 cursor-w-resize"
-                title="Página Anterior (ou tecla ←)"
+                title={readingDirection === 'rtl' ? 'Avançar (Direção Mangá RTL - tecla ←)' : 'Página Anterior (tecla ←)'}
               />
               <div
                 onClick={(e) => {
                   e.stopPropagation();
-                  goToNextPage();
+                  readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
                 }}
                 className="absolute right-0 inset-y-0 w-1/3 cursor-e-resize"
-                title="Próxima Página (ou tecla →)"
+                title={readingDirection === 'rtl' ? 'Página Anterior (Direção Mangá RTL - tecla →)' : 'Próxima Página (tecla →)'}
               />
             </div>
           </div>
@@ -665,33 +755,61 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         {readerMode === 'double' && (
           <div className="relative w-full flex items-center justify-center max-w-7xl py-4">
             <div className="grid grid-cols-2 gap-2 max-h-[88vh] items-center">
-              {/* Right page (Manga reading right to left) */}
+              {/* First Column: in RTL this is the higher page (left), in LTR this is the lower page (left) */}
               <div className="flex justify-end h-full">
-                {pages[currentPageIndex + 1] ? (
-                  <ReaderPageImage
-                    key={`double_right_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
-                    pageNumber={currentPageIndex + 2}
-                    imageUrl={pages[currentPageIndex + 1].imageUrl}
-                    className="max-h-[85vh] w-auto object-contain"
-                    loading="eager"
-                  />
+                {readingDirection === 'rtl' ? (
+                  pages[currentPageIndex + 1] ? (
+                    <ReaderPageImage
+                      key={`double_left_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
+                      pageNumber={currentPageIndex + 2}
+                      imageUrl={pages[currentPageIndex + 1].imageUrl}
+                      className="max-h-[85vh] w-auto object-contain"
+                      loading="eager"
+                    />
+                  ) : (
+                    <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
+                      Fim do capítulo
+                    </div>
+                  )
                 ) : (
-                  <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
-                    Fim do capítulo
-                  </div>
+                  pages[currentPageIndex] && (
+                    <ReaderPageImage
+                      key={`double_left_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
+                      pageNumber={currentPageIndex + 1}
+                      imageUrl={pages[currentPageIndex].imageUrl}
+                      className="max-h-[85vh] w-auto object-contain"
+                      loading="eager"
+                    />
+                  )
                 )}
               </div>
 
-              {/* Left page */}
+              {/* Second Column: in RTL this is current page (right), in LTR this is next page (right) */}
               <div className="flex justify-start h-full">
-                {pages[currentPageIndex] && (
-                  <ReaderPageImage
-                    key={`double_left_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
-                    pageNumber={currentPageIndex + 1}
-                    imageUrl={pages[currentPageIndex].imageUrl}
-                    className="max-h-[85vh] w-auto object-contain"
-                    loading="eager"
-                  />
+                {readingDirection === 'rtl' ? (
+                  pages[currentPageIndex] && (
+                    <ReaderPageImage
+                      key={`double_right_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
+                      pageNumber={currentPageIndex + 1}
+                      imageUrl={pages[currentPageIndex].imageUrl}
+                      className="max-h-[85vh] w-auto object-contain"
+                      loading="eager"
+                    />
+                  )
+                ) : (
+                  pages[currentPageIndex + 1] ? (
+                    <ReaderPageImage
+                      key={`double_right_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
+                      pageNumber={currentPageIndex + 2}
+                      imageUrl={pages[currentPageIndex + 1].imageUrl}
+                      className="max-h-[85vh] w-auto object-contain"
+                      loading="eager"
+                    />
+                  ) : (
+                    <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
+                      Fim do capítulo
+                    </div>
+                  )
                 )}
               </div>
             </div>
@@ -700,16 +818,18 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             <div
               onClick={(e) => {
                 e.stopPropagation();
-                goToPrevPage();
+                readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
               }}
               className="absolute left-0 inset-y-0 w-1/4 cursor-w-resize"
+              title={readingDirection === 'rtl' ? 'Avançar (RTL)' : 'Voltar (LTR)'}
             />
             <div
               onClick={(e) => {
                 e.stopPropagation();
-                goToNextPage();
+                readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
               }}
               className="absolute right-0 inset-y-0 w-1/4 cursor-e-resize"
+              title={readingDirection === 'rtl' ? 'Voltar (RTL)' : 'Avançar (LTR)'}
             />
           </div>
         )}

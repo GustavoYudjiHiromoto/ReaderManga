@@ -2,7 +2,7 @@ import { IMangaSource, SourceSearchOptions } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
 import { MangaDexProvider } from './MangaDexProvider.js';
 import { ComickProvider } from './ComickProvider.js';
-import { GuyaProvider } from './GuyaProvider.js';
+import { MangaPillProvider } from './MangaPillProvider.js';
 import { WeebCentralProvider } from './WeebCentralProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 import { deduplicateAndGroupChapters } from './ChapterDeduplicator.js';
@@ -128,7 +128,7 @@ export class SourceRegistry {
     this.registerSource(new ComickProvider());
     this.registerSource(new MangaDexProvider());
     this.registerSource(new WeebCentralProvider());
-    this.registerSource(new GuyaProvider());
+    this.registerSource(new MangaPillProvider());
   }
 
   public registerSource(source: IMangaSource): void {
@@ -146,7 +146,7 @@ export class SourceRegistry {
 
   /**
    * Search across a specified source or all sources simultaneously.
-   * When searching across all sources, live providers (Comick, MangaDex, WeebCentral, Guya)
+   * When searching across all sources, live providers (Comick, MangaDex, WeebCentral, MangaPill)
    * are queried in parallel, safe cross-source deduplication merges identical works,
    * and exact title matches are ranked first.
    */
@@ -163,7 +163,7 @@ export class SourceRegistry {
       if (src) sourcesToQuery.push(src);
     } else {
       // Query real live sources first
-      const liveSourceIds = ['comick', 'mangadex', 'weebcentral', 'guya'];
+      const liveSourceIds = ['comick', 'mangadex', 'weebcentral', 'mangapill'];
       for (const id of liveSourceIds) {
         const src = this.sources.get(id);
         if (src) sourcesToQuery.push(src);
@@ -235,11 +235,11 @@ export class SourceRegistry {
 
   /**
    * Retrieve featured / popular manga for homepage discovery.
-   * Merges and deduplicates popular works from live providers (Comick, MangaDex, WeebCentral, Guya).
+   * Merges and deduplicates popular works from live providers (Comick, MangaDex, WeebCentral, MangaPill).
    * Safe mode and chapter availability are enforced for a premium discovery experience.
    */
   public async getFeatured(): Promise<Manga[]> {
-    const liveSources = [this.sources.get('comick'), this.sources.get('mangadex'), this.sources.get('weebcentral'), this.sources.get('guya')].filter(Boolean) as IMangaSource[];
+    const liveSources = [this.sources.get('comick'), this.sources.get('mangadex'), this.sources.get('weebcentral'), this.sources.get('mangapill')].filter(Boolean) as IMangaSource[];
     const promises = liveSources.map(src =>
       src.getPopular({ limit: 24, includeAdult: false, onlyAvailable: true }).catch(() => [])
     );
@@ -331,20 +331,14 @@ export class SourceRegistry {
           externalChapterId = remainder;
         }
       }
-    } else if (sourceId === 'guya') {
-      // Guya externalChapterId is <slug>---<chapterNum>
-      const tripleDash = remainder.indexOf('---');
-      if (tripleDash !== -1) {
-        const underscoreBeforeSlug = remainder.lastIndexOf('_', tripleDash);
-        if (underscoreBeforeSlug !== -1) {
-          externalMangaId = remainder.substring(0, underscoreBeforeSlug);
-          externalChapterId = remainder.substring(underscoreBeforeSlug + 1);
-        }
-      }
-      if (!externalMangaId) {
-        const parts = remainder.split('_');
-        externalMangaId = parts[0];
-        externalChapterId = parts.slice(1).join('_');
+    } else if (sourceId === 'mangapill') {
+      const lastUnderscore = remainder.lastIndexOf('_');
+      if (lastUnderscore !== -1) {
+        externalMangaId = remainder.substring(0, lastUnderscore);
+        externalChapterId = remainder.substring(lastUnderscore + 1);
+      } else {
+        externalMangaId = remainder;
+        externalChapterId = remainder;
       }
     } else if (sourceId === 'mangadex') {
       // MangaDex externalChapterId is a 36-character UUID
@@ -434,8 +428,6 @@ export class SourceRegistry {
     if (parsed.sourceId === 'comick') {
       let pages: MangaPage[] = [];
       let fallbackChapterId = parsed.fallbackChapterId;
-      let comicSlug: string | undefined;
-      let chapNum: string | undefined;
 
       // 1. Chame primeiro ComickProvider para obter páginas e descobrir mdid (sem chamada HTTP duplicada)
       // Se Comick lançar HttpError, só prossiga para fallback se fallbackChapterId já for conhecido.
@@ -446,8 +438,6 @@ export class SourceRegistry {
           if (!fallbackChapterId && result.mdid) {
             fallbackChapterId = result.mdid;
           }
-          comicSlug = result.comicSlug;
-          chapNum = result.chapNum;
         } catch (err) {
           if (err instanceof HttpError && (err.status === 404 || err.status === 502) && fallbackChapterId) {
             pages = [];
@@ -481,34 +471,7 @@ export class SourceRegistry {
         }
       }
 
-      // 4. Se MangaDex também não retornar páginas, verifique se a obra é uma série correspondente no Guya/Cubari
-      if (comicSlug && chapNum) {
-        const guyaSlugMap: Record<string, string> = {
-          'kaguya-wants-to-be-confessed-to': 'Kaguya-Wants-To-Be-Confessed-To',
-          'kaguya-sama-wa-kokurasetai-tensai-tachi-no-renai-zunousen': 'Kaguya-Wants-To-Be-Confessed-To',
-          'kaguya-sama-wa-kokurasetai-tensai-tachi-no-renai-zunousen-fan-colored': 'Kaguya-Wants-To-Be-Confessed-To',
-          'oshi-no-ko': 'Oshi-no-Ko',
-          'renai-daikou': 'Renai-Daikou',
-          'we-want-to-talk-about-kaguya': 'We-Want-To-Talk-About-Kaguya',
-          'kaguya-wants-to-be-confessed-to-official-doujin': 'Kaguya-Wants-To-Be-Confessed-To-Official-Doujin'
-        };
-        const mappedGuyaSlug = guyaSlugMap[comicSlug.toLowerCase()];
-        if (mappedGuyaSlug) {
-          const guyaSource = this.sources.get('guya');
-          if (guyaSource) {
-            try {
-              const guyaPages = await guyaSource.getChapterPages(`${mappedGuyaSlug}---${chapNum}`);
-              if (guyaPages && guyaPages.length > 0) {
-                return guyaPages;
-              }
-            } catch (err) {
-              console.warn(`[SourceRegistry] Fallback Guya falhou para ${mappedGuyaSlug} cap ${chapNum}:`, (err as Error).message);
-            }
-          }
-        }
-      }
-
-      // 5. Se nenhuma fonte possuir páginas, retorne []
+      // 4. Se nenhuma fonte possuir páginas, retorne []
       return [];
     }
 

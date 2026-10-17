@@ -75,6 +75,24 @@ export const ApiDocPage: React.FC = () => {
       path: '/api/chapters/ch_guya_kaguya-wants-to-be-confessed-to_1/pages',
       title: 'Páginas de Leitura',
       description: 'Obtém as páginas e URLs de imagem resolvidas diretamente pelo provedor da obra.'
+    },
+    {
+      method: 'GET',
+      path: '/api/cache/stats',
+      title: 'Estatísticas do Cache em Memória (LRU)',
+      description: 'Métricas de taxa de acerto (hit rate), total de entradas e volume de requisições cacheadas.'
+    },
+    {
+      method: 'GET',
+      path: '/api/chapters/ch_guya_kaguya-wants-to-be-confessed-to_kaguya-wants-to-be-confessed-to---1/download?format=cbz',
+      title: 'Download de Capítulo Offline (.cbz / .zip)',
+      description: 'Empacota e transmite o capítulo com todas as páginas e metadados ComicInfo.xml para leitores offline.'
+    },
+    {
+      method: 'GET',
+      path: '/api/health',
+      title: 'Diagnóstico & Healthcheck do Servidor',
+      description: 'Estado de saúde da aplicação, tempo de atividade (uptime), fontes conectadas e telemetria de memória/cache.'
     }
   ];
 
@@ -83,8 +101,19 @@ export const ApiDocPage: React.FC = () => {
     setLoadingTest(true);
     try {
       const res = await fetch(endpoint);
-      const json = await res.json();
-      setTestResult(JSON.stringify(json, null, 2));
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await res.json();
+        setTestResult(JSON.stringify(json, null, 2));
+      } else {
+        const disposition = res.headers.get('content-disposition') || 'N/A';
+        const cacheHeader = res.headers.get('x-cache') || 'N/A';
+        setTestResult(`[Fluxo Binário: HTTP ${res.status} OK]
+Content-Type: ${contentType}
+Content-Disposition: ${disposition}
+X-Cache: ${cacheHeader}
+Status: Arquivo compactado CBZ/ZIP pronto para download.`);
+      }
     } catch (err) {
       setTestResult(`Erro ao executar requisição: ${(err as Error).message}`);
     } finally {

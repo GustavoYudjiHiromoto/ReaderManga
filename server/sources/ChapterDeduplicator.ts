@@ -73,7 +73,7 @@ export function areChaptersEquivalent(ch1: Chapter, ch2: Chapter): boolean {
 }
 
 const SOURCE_PRIORITY: Record<string, number> = {
-  guya: 10,
+  mangapill: 8,
   weebcentral: 8,
   mangadex: 6,
   comick: 4
@@ -89,7 +89,7 @@ export function calculateChapterScore(ch: Chapter): number {
 
 function getSourceName(sourceId: string): string {
   switch (sourceId) {
-    case 'guya': return 'Guya/Cubari';
+    case 'mangapill': return 'MangaPill';
     case 'weebcentral': return 'WeebCentral';
     case 'mangadex': return 'MangaDex';
     case 'comick': return 'Comick';

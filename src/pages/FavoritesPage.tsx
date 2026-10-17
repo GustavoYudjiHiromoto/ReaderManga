@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Bookmark, BookOpen, Trash2, ArrowRight, Sparkles, Heart } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Bookmark, BookOpen, Trash2, ArrowRight, Sparkles, Heart, Download, Upload, AlertCircle, Check } from 'lucide-react';
 import { FavoriteManga, Manga } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { MangaCard } from '../components/MangaCard.js';
@@ -17,6 +17,8 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   onNavigateToCatalog
 }) => {
   const [favorites, setFavorites] = useState<FavoriteManga[]>([]);
+  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Initial load
@@ -29,6 +31,42 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
     return unsubscribe;
   }, []);
+
+  const handleExport = () => {
+    HistoryService.downloadBackupFile();
+    setNotification({
+      type: 'success',
+      message: 'Backup da biblioteca exportado com sucesso!'
+    });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      const res = HistoryService.importBackup(content);
+      if (res.success) {
+        setNotification({
+          type: 'success',
+          message: `Restauração concluída! ${res.favoritesAdded} novo(s) favorito(s) e ${res.historyAdded} histórico(s) mesclados.`
+        });
+      } else {
+        setNotification({
+          type: 'error',
+          message: res.message || 'Falha ao importar o arquivo de backup.'
+        });
+      }
+      setTimeout(() => setNotification(null), 5000);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleRemove = (e: React.MouseEvent, mangaId: string) => {
     e.stopPropagation();
@@ -74,14 +112,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             fav.mangaId.includes('mangadex') ? 'mangadex' :
             fav.mangaId.includes('comick') ? 'comick' :
             fav.mangaId.includes('weebcentral') ? 'weebcentral' :
-            fav.mangaId.includes('guya') ? 'guya' : 'unknown'
+            fav.mangaId.includes('mangapill') ? 'mangapill' : 'unknown'
           ),
           externalId: '',
           sourceName: fav.sourceName || (
             fav.mangaId.includes('mangadex') ? 'MangaDex' :
             fav.mangaId.includes('comick') ? 'Comick' :
             fav.mangaId.includes('weebcentral') ? 'WeebCentral' :
-            fav.mangaId.includes('guya') ? 'Guya/Cubari' : 'Manga'
+            fav.mangaId.includes('mangapill') ? 'MangaPill' : 'Manga'
           )
         }
       ],
@@ -110,12 +148,65 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
-            <span className="px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 font-mono tabular-nums">
-              {favorites.length} {favorites.length === 1 ? 'obra favoritada' : 'obras favoritadas'}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <span className="px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 font-mono tabular-nums">
+              {favorites.length} {favorites.length === 1 ? 'obra' : 'obras'}
             </span>
+
+            {/* Hidden file input for restore */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              accept=".json,application/json"
+              className="hidden"
+            />
+
+            {/* Export Backup Button */}
+            <button
+              onClick={handleExport}
+              title="Exportar backup completo de favoritos e histórico em arquivo JSON"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+            >
+              <Download className="h-3.5 w-3.5 text-rose-400" />
+              <span>Exportar Backup</span>
+            </button>
+
+            {/* Import Backup Button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              title="Importar e mesclar backup de biblioteca de arquivo JSON"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+            >
+              <Upload className="h-3.5 w-3.5 text-emerald-400" />
+              <span>Restaurar Backup</span>
+            </button>
           </div>
         </div>
+
+        {/* Notification Banner */}
+        {notification && (
+          <div className={`mb-6 p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs animate-in fade-in duration-200 ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+              : 'bg-rose-950/40 border-rose-800/80 text-rose-200'
+          }`}>
+            <div className="flex items-center gap-2">
+              {notification.type === 'success' ? (
+                <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+              )}
+              <span>{notification.message}</span>
+            </div>
+            <button
+              onClick={() => setNotification(null)}
+              className="text-zinc-400 hover:text-zinc-200 text-xs cursor-pointer px-1"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Empty State */}
         {favorites.length === 0 ? (

@@ -15,7 +15,7 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
     manga.id.includes('mangadex') ? 'MangaDex' :
     manga.id.includes('comick') ? 'Comick' :
     manga.id.includes('weebcentral') ? 'WeebCentral' :
-    manga.id.includes('guya') ? 'Guya/Cubari' :
+    manga.id.includes('mangapill') ? 'MangaPill' :
     'Live'
   );
   const releaseYear = manga.publicationInfo?.releaseYear;
@@ -62,7 +62,7 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
             {manga.sources[0]?.sourceId === 'comick' ? 'Comick (Ao Vivo)' :
              manga.sources[0]?.sourceId === 'mangadex' ? 'MangaDex (Ao Vivo)' :
              manga.sources[0]?.sourceId === 'weebcentral' ? 'WeebCentral (Ao Vivo)' :
-             manga.sources[0]?.sourceId === 'guya' ? 'Guya (Ao Vivo)' :
+             manga.sources[0]?.sourceId === 'mangapill' ? 'MangaPill (Ao Vivo)' :
              primarySource}
           </span>
           <div className="flex items-center gap-1 shrink-0">

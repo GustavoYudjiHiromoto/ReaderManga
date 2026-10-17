@@ -28,7 +28,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenApi }) => {
               Especificação REST & Feed de Recomendação
             </button>
             <span className="text-zinc-700">·</span>
-            <span>Múltiplas Fontes (MangaDex, WeebCentral, Guya, Comick)</span>
+            <span>Múltiplas Fontes (MangaDex, WeebCentral, MangaPill, Comick)</span>
             <span className="text-zinc-700">·</span>
             <span className="font-mono tabular-nums">v1.0.0</span>
           </div>

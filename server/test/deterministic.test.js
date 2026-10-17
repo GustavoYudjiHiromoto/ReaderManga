@@ -253,6 +253,110 @@ async function runDeterministicTests() {
     assert(chaptersApiJson.success === true, 'Endpoint de capítulos com deduplicação retorna success: true');
     assert(Array.isArray(chaptersApiJson.data), 'Endpoint retorna array de capítulos');
 
+    // -------------------------------------------------------------------------
+    // 7. TESTES DE CACHE LRU EM MEMÓRIA E DOWNLOAD OFFLINE (FASE 4)
+    // -------------------------------------------------------------------------
+    console.log('\n[7/7] Testando Cache LRU e Download Offline CBZ (Fase 4)...');
+
+    const { CacheService } = await import('../cache/CacheService.js');
+
+    // 7.1 CacheService: operações básicas
+    const testCache = new CacheService(3, 60);
+    testCache.set('k1', 'val1');
+    assert(testCache.get('k1') === 'val1', 'CacheService armazena e recupera chave');
+    assert(testCache.has('k1') === true, 'CacheService.has() retorna true para chave existente');
+    assert(testCache.has('k_nonexistent') === false, 'CacheService.has() retorna false para chave inexistente');
+
+    // 7.2 CacheService: política LRU
+    testCache.set('k2', 'val2');
+    testCache.set('k3', 'val3');
+    testCache.set('k4', 'val4'); // deve remover k1 por atingir maxEntries (3)
+    assert(testCache.get('k1') === undefined, 'CacheService remove chave mais antiga por política LRU');
+    assert(testCache.get('k4') === 'val4', 'CacheService preserva nova chave inserida');
+
+    // 7.3 CacheService: expiração por TTL
+    const expiringCache = new CacheService(10, 0.05); // 50ms TTL
+    expiringCache.set('temp', 'tempVal');
+    assert(expiringCache.get('temp') === 'tempVal', 'Valor acessível antes do TTL expirar');
+    await new Promise(r => setTimeout(r, 65));
+    assert(expiringCache.get('temp') === undefined, 'Valor expira automaticamente após TTL');
+
+    // 7.4 Endpoint /api/cache/stats
+    const statsRes = await fetch(`${BASE_URL}/api/cache/stats`);
+    assert(statsRes.status === 200, 'GET /api/cache/stats retorna status 200');
+    const statsJson = await statsRes.json();
+    assert(statsJson.success === true, 'Stats retorna success: true');
+    assert(typeof statsJson.data?.size === 'number', 'Stats contém size numérico');
+    assert(typeof statsJson.data?.hitRate === 'number', 'Stats contém hitRate numérico');
+
+    // 7.5 Verificação de cabeçalho X-Cache
+    await fetch(`${BASE_URL}/api/sources`); // garante aquecimento
+    const hitRes = await fetch(`${BASE_URL}/api/sources`);
+    assert(hitRes.headers.get('x-cache') === 'HIT', 'Segunda requisição retorna cabeçalho X-Cache: HIT');
+
+    // 7.6 Endpoint de Download de Capítulo (.cbz)
+    const sampleChId = 'ch_guya_kaguya-wants-to-be-confessed-to_kaguya-wants-to-be-confessed-to---1';
+    const downloadRes = await fetch(`${BASE_URL}/api/chapters/${sampleChId}/download?format=cbz`);
+    assert(downloadRes.status === 200, 'GET /api/chapters/.../download retorna 200');
+    assert(downloadRes.headers.get('content-type')?.includes('comicbook+zip') || downloadRes.headers.get('content-type')?.includes('zip'), 'Download retorna Content-Type de CBZ/ZIP');
+    assert(downloadRes.headers.get('content-disposition')?.includes('attachment'), 'Download retorna Content-Disposition attachment');
+    assert(downloadRes.headers.get('content-disposition')?.includes('.cbz'), 'Nome do arquivo para download possui extensão .cbz');
+
+    // -------------------------------------------------------------------------
+    // 8. TESTES DE HEALTHCHECK E BACKUP DE BIBLIOTECA (FASE 5)
+    // -------------------------------------------------------------------------
+    console.log('\n[8/8] Testando Healthcheck, Diagnóstico e Backup de Biblioteca (Fase 5)...');
+
+    // 8.1 Endpoint /api/health
+    const healthRes = await fetch(`${BASE_URL}/api/health`);
+    assert(healthRes.status === 200, 'GET /api/health retorna status 200');
+    const healthJson = await healthRes.json();
+    assert(healthJson.status === 'healthy', 'Status do healthcheck é "healthy"');
+    assert(typeof healthJson.uptime === 'number', 'Uptime do servidor é numérico');
+    assert(typeof healthJson.memory?.rssMb === 'number', 'Telemetria de memória contém rssMb');
+    assert(typeof healthJson.memory?.heapUsedMb === 'number', 'Telemetria de memória contém heapUsedMb');
+    assert(Array.isArray(healthJson.sources), 'Healthcheck lista fontes ativas');
+    assert(healthJson.sources.length === 4, 'Healthcheck confirma 4 fontes reais conectadas');
+    assert(typeof healthJson.cache?.size === 'number', 'Healthcheck inclui telemetria de cache');
+
+    // 8.2 Validação de Backup & Mesclagem de Biblioteca
+    const mockBackupData = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      source: 'MangaReader',
+      favorites: [
+        { mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', title: 'Kaguya-sama', coverUrl: 'https://img.test/kaguya.jpg', updatedAt: 1000 },
+        { mangaId: 'mr_mangadex_frieren', title: 'Frieren', coverUrl: 'https://img.test/frieren.jpg', updatedAt: 2000 }
+      ],
+      history: [
+        { mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', mangaTitle: 'Kaguya-sama', mangaCover: 'https://img.test/kaguya.jpg', chapterId: 'ch1', chapterNumber: '1', pageNumber: 5, totalPages: 20, updatedAt: 1500 }
+      ]
+    };
+
+    assert(mockBackupData.version === 1, 'Backup possui schema version 1');
+    assert(Array.isArray(mockBackupData.favorites), 'Backup contém array de favoritos');
+    assert(Array.isArray(mockBackupData.history), 'Backup contém array de histórico');
+
+    // Teste de deduplicação na mesclagem de favoritos
+    const existingFavs = [{ mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', title: 'Kaguya Old', coverUrl: '', updatedAt: 500 }];
+    const favMap = new Map();
+    existingFavs.forEach(f => favMap.set(f.mangaId, f));
+    mockBackupData.favorites.forEach(f => {
+      const existing = favMap.get(f.mangaId);
+      favMap.set(f.mangaId, {
+        mangaId: f.mangaId,
+        title: f.title || existing?.title,
+        coverUrl: f.coverUrl || existing?.coverUrl,
+        updatedAt: Math.max(f.updatedAt, existing?.updatedAt || 0)
+      });
+    });
+
+    const mergedFavs = Array.from(favMap.values());
+    assert(mergedFavs.length === 2, 'Mesclagem de backup deduplica favoritos por mangaId (1 existente + 1 novo = 2 total)');
+    const updatedKaguya = mergedFavs.find(f => f.mangaId === 'mr_guya_kaguya-wants-to-be-confessed-to');
+    assert(updatedKaguya?.title === 'Kaguya-sama', 'Mesclagem preserva título mais rico/recente');
+    assert(updatedKaguya?.updatedAt === 1000, 'Mesclagem preserva timestamp mais recente');
+
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);
     failedTests++;

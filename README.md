@@ -26,11 +26,17 @@ O sistema opera com **federação ao vivo de 4 provedores reais** (zero dados mo
 
 ### 4. Leitor Avançado
 - **Três Modos de Leitura**: Cascata vertical contínua (*Webtoon*), Página Única e Página Dupla (*Mangá clássico*).
+- **Direção de Leitura Configurável**: Alternância entre Mangá Tradicional Japonês (*RTL - Right-to-Left*) e Ocidental (*LTR - Left-to-Right*) com reorientação automática das setas e do par de páginas no modo duplo.
+- **Pré-carregamento Inteligente (*Prefetching*)**: Pré-carrega as próximas 3 páginas na memória do navegador para viradas instantâneas sem telas de espera.
 - **Quatro Temas**: Escuro (*Dark*), AMOLED (*Black*), Sépia (*Conforto visual*) e Claro (*Light*).
 - **Navegação por Teclado**: Setas (`←` / `→`) para paginação, tecla `F` para tela cheia e `Esc` para fechar painéis.
 - **Histórico e Marcadores**: Persistência de leitura em `localStorage` com restauração automática de página e indicador de progresso.
 
-### 5. Proxy Reverso de Imagens (`/api/proxy/image`)
+### 5. Backup & Restauração de Biblioteca
+- **Exportação JSON Padronizada**: Exporta instantaneamente todo o acervo de favoritos e histórico de leitura em arquivo `.json`.
+- **Mesclagem Inteligente de Restauração**: Importa backups mesclando obras sem duplicação de títulos, preservando o capítulo e timestamp mais recente.
+
+### 6. Proxy Reverso de Imagens (`/api/proxy/image`)
 - Resolve bloqueios de *Hotlinking*, restrições de CORS e `Referer` de CDNs externas de mangá (Comick, MangaDex Network, WeebCentral).
 - Mecanismo de fallback de CDN automático quando nós voluntários retornam 404/502.
 
@@ -79,7 +85,10 @@ O sistema opera com **federação ao vivo de 4 provedores reais** (zero dados mo
 | `GET` | `/api/manga/:id` | Detalhes canônicos de uma obra | ID canônico (`mr_<source>_<id>`) |
 | `GET` | `/api/manga/:id/chapters` | Capítulos da obra | `lang`, `order` (`asc`\|`desc`), `deduplicate` (`true`\|`false`) |
 | `GET` | `/api/chapters/:id/pages` | Páginas de leitura resolvidas | ID do capítulo (`ch_<source>_<mangaId>_<chapterId>`) |
+| `GET` | `/api/chapters/:id/download` | Download de capítulo offline (.cbz / .zip) | `format` (`cbz`\|`zip`) |
 | `GET` | `/api/proxy/image` | Proxy reverso de imagens | `url` (URL da imagem codificada) |
+| `GET` | `/api/cache/stats` | Estatísticas e métricas de acerto do Cache LRU | N/A |
+| `GET` | `/api/health` | Diagnóstico, status do servidor, uptime e telemetria | N/A |
 | `GET` | `/api/recommendation-feed` | Feed para motores de recomendação | `limit` |
 
 ---

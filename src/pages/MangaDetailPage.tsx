@@ -15,7 +15,8 @@ import {
   Sparkles,
   Info,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Download
 } from 'lucide-react';
 import { Manga, Chapter } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -672,6 +673,16 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           </button>
                         )}
 
+                        <a
+                          href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
+                          download
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-1.5 text-zinc-500 hover:text-rose-400 transition-colors"
+                          title="Baixar capítulo (.cbz)"
+                        >
+                          <Download className="h-4 w-4" />
+                        </a>
+
                         <button
                           type="button"
                           className="p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
@@ -707,12 +718,23 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                               </span>
                             )}
                           </div>
-                          <button
-                            onClick={() => onReadChapter(manga.id, chapter.id)}
-                            className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
-                          >
-                            Ler
-                          </button>
+                          <div className="flex items-center gap-1.5">
+                            <a
+                              href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
+                              download
+                              onClick={(e) => e.stopPropagation()}
+                              className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
+                              title="Baixar versão padrão (.cbz)"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </a>
+                            <button
+                              onClick={() => onReadChapter(manga.id, chapter.id)}
+                              className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+                            >
+                              Ler
+                            </button>
+                          </div>
                         </div>
 
                         {/* Other variants */}
@@ -734,12 +756,23 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                                 </span>
                               )}
                             </div>
-                            <button
-                              onClick={() => onReadChapter(manga.id, v.id)}
-                              className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
-                            >
-                              Ler
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <a
+                                href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=cbz`}
+                                download
+                                onClick={(e) => e.stopPropagation()}
+                                className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
+                                title="Baixar esta versão (.cbz)"
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                              </a>
+                              <button
+                                onClick={() => onReadChapter(manga.id, v.id)}
+                                className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+                              >
+                                Ler
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>

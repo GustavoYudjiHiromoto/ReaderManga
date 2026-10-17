@@ -1,6 +1,6 @@
-import React from 'react';
-import { X, BookOpen, Trash2, ArrowRight, Clock } from 'lucide-react';
+import { X, BookOpen, Trash2, ArrowRight, Clock, Download } from 'lucide-react';
 import { ReadingProgress } from '../types/manga.js';
+import { HistoryService } from '../services/history.js';
 
 interface HistoryDrawerProps {
   isOpen: boolean;
@@ -109,6 +109,19 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
             })
           )}
         </div>
+
+        {/* Footer with backup export */}
+        {history.length > 0 && (
+          <div className="px-6 py-4 border-t border-zinc-800 bg-zinc-950/40">
+            <button
+              onClick={() => HistoryService.downloadBackupFile()}
+              className="flex items-center justify-center gap-2 w-full py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
+            >
+              <Download className="h-3.5 w-3.5 text-rose-400" />
+              <span>Exportar Backup (Histórico + Favoritos)</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
