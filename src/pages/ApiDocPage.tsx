@@ -48,9 +48,9 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
-      path: '/api/search?q=kaguya&limit=10',
+      path: '/api/search?q=berserk&limit=10',
       title: 'Pesquisa Multiprovedor',
-      description: 'Pesquisa federada entre MangaDex, WeebCentral, Guya e Comick.'
+      description: 'Pesquisa federada entre MangaDex, WeebCentral, MangaPill e Comick.'
     },
     {
       method: 'GET',
@@ -60,19 +60,19 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
-      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to',
+      path: '/api/manga/mr_mangapill_1-berserk',
       title: 'Detalhes da Obra por ID Interno',
       description: 'Consulta um mangá pelo identificador interno desacoplado do MangaReader.'
     },
     {
       method: 'GET',
-      path: '/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters?deduplicate=true',
+      path: '/api/manga/mr_mangapill_1-berserk/chapters?deduplicate=true',
       title: 'Capítulos Deduplicados com Variantes',
       description: 'Retorna capítulos com agrupamento inteligente de clones e scanlations em variantes.'
     },
     {
       method: 'GET',
-      path: '/api/chapters/ch_guya_kaguya-wants-to-be-confessed-to_1/pages',
+      path: '/api/chapters/ch_mangapill_1-berserk_1-10001000---berserk-chapter-1/pages',
       title: 'Páginas de Leitura',
       description: 'Obtém as páginas e URLs de imagem resolvidas diretamente pelo provedor da obra.'
     },
@@ -84,7 +84,7 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
-      path: '/api/chapters/ch_guya_kaguya-wants-to-be-confessed-to_kaguya-wants-to-be-confessed-to---1/download?format=cbz',
+      path: '/api/chapters/ch_mangapill_1-berserk_1-10001000---berserk-chapter-1/download?format=cbz',
       title: 'Download de Capítulo Offline (.cbz / .zip)',
       description: 'Empacota e transmite o capítulo com todas as páginas e metadados ComicInfo.xml para leitores offline.'
     },

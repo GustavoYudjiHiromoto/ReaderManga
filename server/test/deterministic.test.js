@@ -1,6 +1,6 @@
 /**
  * PARTE 1 — TESTES DETERMINÍSTICOS
- * Esta suíte testa contratos locais, coexistência das 4 fontes reais (Comick, MangaDex, WeebCentral, Guya),
+ * Esta suíte testa contratos locais, coexistência das 4 fontes reais (Comick, MangaDex, WeebCentral, MangaPill),
  * SourceRegistry e comportamento HTTP da API sem qualquer dependência de Mock.
  */
 
@@ -41,7 +41,7 @@ async function runDeterministicTests() {
     const dexSource = sourcesJson.data.find(s => s.id === 'mangadex');
     const comickSource = sourcesJson.data.find(s => s.id === 'comick');
     const weebSource = sourcesJson.data.find(s => s.id === 'weebcentral');
-    const guyaSource = sourcesJson.data.find(s => s.id === 'guya');
+    const pillSource = sourcesJson.data.find(s => s.id === 'mangapill');
 
     assert(!mockSource, 'Fonte "mock" foi completamente removida de /api/sources');
     assert(!!dexSource, 'Fonte "mangadex" está registrada em /api/sources');
@@ -50,35 +50,35 @@ async function runDeterministicTests() {
     assert(comickSource?.type === 'live_api', 'Fonte "comick" possui type === "live_api"');
     assert(!!weebSource, 'Fonte "weebcentral" está registrada em /api/sources');
     assert(weebSource?.type === 'live_api', 'Fonte "weebcentral" possui type === "live_api"');
-    assert(!!guyaSource, 'Fonte "guya" está registrada em /api/sources');
-    assert(guyaSource?.type === 'live_api', 'Fonte "guya" possui type === "live_api"');
-    assert(sourcesJson.data.length === 4, 'Exatamente 4 fontes reais ativas (MangaDex, Comick, WeebCentral, Guya)');
+    assert(!!pillSource, 'Fonte "mangapill" está registrada em /api/sources');
+    assert(pillSource?.type === 'live_api', 'Fonte "mangapill" possui type === "live_api"');
+    assert(sourcesJson.data.length === 4, 'Exatamente 4 fontes reais ativas (MangaDex, Comick, WeebCentral, MangaPill)');
 
     // -------------------------------------------------------------------------
     // 2. BUSCA FEDERADA E POPULARES DAS FONTES REAIS
     // -------------------------------------------------------------------------
     console.log('\n[2/4] Testando Busca Federada e Featured...');
-    const searchRes = await fetch(`${BASE_URL}/api/search?q=kaguya`);
-    assert(searchRes.status === 200, 'GET /api/search?q=kaguya retorna 200');
+    const searchRes = await fetch(`${BASE_URL}/api/search?q=berserk`);
+    assert(searchRes.status === 200, 'GET /api/search?q=berserk retorna 200');
     const searchJson = await searchRes.json();
-    assert(searchJson.total > 0, 'Busca retorna ao menos 1 resultado para "kaguya"');
+    assert(searchJson.total > 0, 'Busca retorna ao menos 1 resultado para "berserk"');
     assert(!searchJson.data.some(m => m.id.includes('_mock_')), 'Nenhum resultado de busca contém o prefixo canônico "mr_mock_"');
 
     // -------------------------------------------------------------------------
-    // 3. DETALHES, CAPÍTULOS E PÁGINAS DE FONTE REAL (GUYA)
+    // 3. DETALHES, CAPÍTULOS E PÁGINAS DE FONTE REAL (MANGAPILL)
     // -------------------------------------------------------------------------
-    console.log('\n[3/4] Testando Detalhes, Capítulos e Páginas Reais (Guya)...');
-    const mangaRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to`);
-    assert(mangaRes.status === 200, 'GET /api/manga/mr_guya_kaguya-wants-to-be-confessed-to retorna 200');
+    console.log('\n[3/4] Testando Detalhes, Capítulos e Páginas Reais (MangaPill)...');
+    const mangaRes = await fetch(`${BASE_URL}/api/manga/mr_mangapill_1-berserk`);
+    assert(mangaRes.status === 200, 'GET /api/manga/mr_mangapill_1-berserk retorna 200');
     const mangaJson = await mangaRes.json();
-    assert(mangaJson.data?.sources[0]?.sourceId === 'guya', 'SourceId do vínculo primário é "guya"');
-    assert(mangaJson.data?.title.includes('Kaguya'), 'Título do mangá retornado corresponde à obra real');
+    assert(mangaJson.data?.sources[0]?.sourceId === 'mangapill', 'SourceId do vínculo primário é "mangapill"');
+    assert(mangaJson.data?.title.includes('Berserk'), 'Título do mangá retornado corresponde à obra real');
 
-    const chRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters`);
+    const chRes = await fetch(`${BASE_URL}/api/manga/mr_mangapill_1-berserk/chapters`);
     assert(chRes.status === 200, 'GET /api/manga/.../chapters retorna 200');
     const chJson = await chRes.json();
-    assert(chJson.total > 0, 'Guya de Kaguya possui capítulos cadastrados');
-    assert(chJson.data[0]?.id.startsWith('ch_guya_'), 'ID do capítulo possui prefixo canônico "ch_guya_"');
+    assert(chJson.total > 0, 'MangaPill de Berserk possui capítulos cadastrados');
+    assert(chJson.data[0]?.id.startsWith('ch_mangapill_'), 'ID do capítulo possui prefixo canônico "ch_mangapill_"');
 
     const firstChId = chJson.data[0]?.id;
     const pagesRes = await fetch(`${BASE_URL}/api/chapters/${firstChId}/pages`);
@@ -108,11 +108,11 @@ async function runDeterministicTests() {
     const { SourceRegistry } = await import('../sources/SourceRegistry.js');
     const registry = new SourceRegistry();
 
-    // ID canônico Guya
-    const parsedGuya = registry.parseInternalChapterId('ch_guya_kaguya-wants-to-be-confessed-to_1');
-    assert(parsedGuya.sourceId === 'guya', 'Parser extrai sourceId "guya"');
-    assert(parsedGuya.externalMangaId === 'kaguya-wants-to-be-confessed-to', 'Parser extrai externalMangaId do guya');
-    assert(parsedGuya.externalChapterId === '1', 'Parser extrai externalChapterId do guya');
+    // ID canônico MangaPill
+    const parsedPill = registry.parseInternalChapterId('ch_mangapill_1-berserk_1-10001000---berserk-chapter-1');
+    assert(parsedPill.sourceId === 'mangapill', 'Parser extrai sourceId "mangapill"');
+    assert(parsedPill.externalMangaId === '1-berserk', 'Parser extrai externalMangaId do mangapill');
+    assert(parsedPill.externalChapterId === '1-10001000---berserk-chapter-1', 'Parser extrai externalChapterId do mangapill');
 
     // ID canônico MangaDex sem fallback
     const parsedMd = registry.parseInternalChapterId('ch_mangadex_a77742b1_e7c4d0c9-cec9-4116-aba1-178b2a5d4cc3');
@@ -170,8 +170,8 @@ async function runDeterministicTests() {
     }
 
     // 5.4 Teste de filtro onlyAvailable=true
-    const availSearchRes = await fetch(`${BASE_URL}/api/search?q=kaguya&onlyAvailable=true`);
-    assert(availSearchRes.status === 200, 'GET /api/search?q=kaguya&onlyAvailable=true retorna 200');
+    const availSearchRes = await fetch(`${BASE_URL}/api/search?q=berserk&onlyAvailable=true`);
+    assert(availSearchRes.status === 200, 'GET /api/search?q=berserk&onlyAvailable=true retorna 200');
     const availSearchJson = await availSearchRes.json();
     const allHaveChapters = availSearchJson.data.every(m => m.hasAvailableChapters === true);
     assert(allHaveChapters, 'Todos os resultados com onlyAvailable=true possuem hasAvailableChapters === true');
@@ -247,7 +247,7 @@ async function runDeterministicTests() {
     assert(groupedPt.variants[0].externalChapterId === 'cm_pt_1', 'Variante agrupada contém o externalChapterId correto');
 
     // 6.5 Endpoint /api/manga/:id/chapters responde com deduplicate=true
-    const chaptersApiRes = await fetch(`${BASE_URL}/api/manga/mr_guya_kaguya-wants-to-be-confessed-to/chapters?deduplicate=true`);
+    const chaptersApiRes = await fetch(`${BASE_URL}/api/manga/mr_mangapill_1-berserk/chapters?deduplicate=true`);
     assert(chaptersApiRes.status === 200, 'GET /api/manga/.../chapters?deduplicate=true retorna 200');
     const chaptersApiJson = await chaptersApiRes.json();
     assert(chaptersApiJson.success === true, 'Endpoint de capítulos com deduplicação retorna success: true');
@@ -295,7 +295,7 @@ async function runDeterministicTests() {
     assert(hitRes.headers.get('x-cache') === 'HIT', 'Segunda requisição retorna cabeçalho X-Cache: HIT');
 
     // 7.6 Endpoint de Download de Capítulo (.cbz)
-    const sampleChId = 'ch_guya_kaguya-wants-to-be-confessed-to_kaguya-wants-to-be-confessed-to---1';
+    const sampleChId = 'ch_mangapill_1-berserk_1-10001000---berserk-chapter-1';
     const downloadRes = await fetch(`${BASE_URL}/api/chapters/${sampleChId}/download?format=cbz`);
     assert(downloadRes.status === 200, 'GET /api/chapters/.../download retorna 200');
     assert(downloadRes.headers.get('content-type')?.includes('comicbook+zip') || downloadRes.headers.get('content-type')?.includes('zip'), 'Download retorna Content-Type de CBZ/ZIP');
@@ -325,11 +325,11 @@ async function runDeterministicTests() {
       exportedAt: new Date().toISOString(),
       source: 'MangaReader',
       favorites: [
-        { mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', title: 'Kaguya-sama', coverUrl: 'https://img.test/kaguya.jpg', updatedAt: 1000 },
+        { mangaId: 'mr_mangapill_1-berserk', title: 'Berserk', coverUrl: 'https://cdn.readdetectiveconan.com/file/mangapill/i/1.jpeg', updatedAt: 1000 },
         { mangaId: 'mr_mangadex_frieren', title: 'Frieren', coverUrl: 'https://img.test/frieren.jpg', updatedAt: 2000 }
       ],
       history: [
-        { mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', mangaTitle: 'Kaguya-sama', mangaCover: 'https://img.test/kaguya.jpg', chapterId: 'ch1', chapterNumber: '1', pageNumber: 5, totalPages: 20, updatedAt: 1500 }
+        { mangaId: 'mr_mangapill_1-berserk', mangaTitle: 'Berserk', mangaCover: 'https://cdn.readdetectiveconan.com/file/mangapill/i/1.jpeg', chapterId: 'ch1', chapterNumber: '1', pageNumber: 5, totalPages: 20, updatedAt: 1500 }
       ]
     };
 
@@ -338,7 +338,7 @@ async function runDeterministicTests() {
     assert(Array.isArray(mockBackupData.history), 'Backup contém array de histórico');
 
     // Teste de deduplicação na mesclagem de favoritos
-    const existingFavs = [{ mangaId: 'mr_guya_kaguya-wants-to-be-confessed-to', title: 'Kaguya Old', coverUrl: '', updatedAt: 500 }];
+    const existingFavs = [{ mangaId: 'mr_mangapill_1-berserk', title: 'Berserk Old', coverUrl: '', updatedAt: 500 }];
     const favMap = new Map();
     existingFavs.forEach(f => favMap.set(f.mangaId, f));
     mockBackupData.favorites.forEach(f => {
@@ -353,9 +353,9 @@ async function runDeterministicTests() {
 
     const mergedFavs = Array.from(favMap.values());
     assert(mergedFavs.length === 2, 'Mesclagem de backup deduplica favoritos por mangaId (1 existente + 1 novo = 2 total)');
-    const updatedKaguya = mergedFavs.find(f => f.mangaId === 'mr_guya_kaguya-wants-to-be-confessed-to');
-    assert(updatedKaguya?.title === 'Kaguya-sama', 'Mesclagem preserva título mais rico/recente');
-    assert(updatedKaguya?.updatedAt === 1000, 'Mesclagem preserva timestamp mais recente');
+    const updatedBerserk = mergedFavs.find(f => f.mangaId === 'mr_mangapill_1-berserk');
+    assert(updatedBerserk?.title === 'Berserk', 'Mesclagem preserva título mais rico/recente');
+    assert(updatedBerserk?.updatedAt === 1000, 'Mesclagem preserva timestamp mais recente');
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

@@ -184,7 +184,7 @@ export class SourceRegistry {
       rawLiveResults.push(...outcome.mangaList);
     });
 
-    // Safely deduplicate live results across Comick, MangaDex, WeebCentral, and Guya
+    // Safely deduplicate live results across Comick, MangaDex, WeebCentral, and MangaPill
     let liveResults = deduplicateMangaList(rawLiveResults);
 
     // Filter adult if includeAdult is not explicitly true (Safe Mode by default)

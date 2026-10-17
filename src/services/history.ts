@@ -96,7 +96,7 @@ export const HistoryService = {
           const sourceName = item.includes('mangadex') ? 'MangaDex' :
                              item.includes('comick') ? 'Comick' :
                              item.includes('weebcentral') ? 'WeebCentral' :
-                             item.includes('guya') ? 'Guya/Cubari' : 'MangaReader';
+                             item.includes('mangapill') ? 'MangaPill' : 'MangaReader';
           return {
             mangaId: item,
             title: hist?.mangaTitle || item.replace(/^mr_[^_]+_/, '').replace(/[-_]/g, ' ') || 'Mangá Salvo',

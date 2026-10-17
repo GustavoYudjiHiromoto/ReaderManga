@@ -1,6 +1,6 @@
 {
   "name": "mangareader",
-  "description": "Aplicação de descoberta e leitura de mangás com federação ao vivo (MangaDex, Comick, WeebCentral, Guya) e deduplicação de capítulos.",
+  "description": "Aplicação de descoberta e leitura de mangás com federação ao vivo (MangaDex, Comick, WeebCentral, MangaPill) e deduplicação de capítulos.",
   "private": true,
   "version": "1.0.0",
   "type": "module",
