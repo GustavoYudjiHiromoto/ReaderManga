@@ -1,7 +1,9 @@
-import { ReadingProgress, FavoriteManga, LibraryBackup } from '../types/manga.js';
+import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats } from '../types/manga.js';
 
 const STORAGE_KEY = 'manga_reader_history_v1';
 const BOOKMARKS_KEY = 'manga_reader_bookmarks_v1';
+const STATS_KEY = 'manga_reader_reading_stats_v1';
+const READ_CHAPTERS_KEY = 'manga_reader_read_chapters_v1';
 
 type HistoryListener = () => void;
 const listeners = new Set<HistoryListener>();
@@ -16,10 +18,32 @@ function notifyListeners() {
   });
 }
 
+function formatReadingTime(totalSeconds: number): string {
+  if (!totalSeconds || totalSeconds <= 0) return '0 min';
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+  if (hours > 0) {
+    if (minutes > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${hours}h`;
+  }
+  if (minutes > 0) {
+    return `${minutes} min`;
+  }
+  return `${totalSeconds}s`;
+}
+
 // Listen to changes across tabs
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    if (event.key === STORAGE_KEY || event.key === BOOKMARKS_KEY) {
+    if (
+      event.key === STORAGE_KEY ||
+      event.key === BOOKMARKS_KEY ||
+      event.key === STATS_KEY ||
+      event.key === READ_CHAPTERS_KEY
+    ) {
       notifyListeners();
     }
   });
@@ -48,6 +72,116 @@ export const HistoryService = {
     return list.find(item => item.mangaId === mangaId);
   },
 
+  getReadChapters(): string[] {
+    try {
+      const data = localStorage.getItem(READ_CHAPTERS_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  markChapterAsRead(chapterId: string): void {
+    if (!chapterId) return;
+    try {
+      const list = this.getReadChapters();
+      if (!list.includes(chapterId)) {
+        list.push(chapterId);
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+        notifyListeners();
+      }
+    } catch (e) {
+      console.warn('Failed to mark chapter as read', e);
+    }
+  },
+
+  addReadingTime(seconds: number): void {
+    if (!seconds || seconds <= 0) return;
+    try {
+      const current = this.getStoredSeconds();
+      const next = current + Math.round(seconds);
+      const payload = {
+        totalSeconds: next,
+        lastReadDate: new Date().toISOString()
+      };
+      localStorage.setItem(STATS_KEY, JSON.stringify(payload));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to add reading time', e);
+    }
+  },
+
+  getStoredSeconds(): number {
+    try {
+      const data = localStorage.getItem(STATS_KEY);
+      if (!data) return 0;
+      const parsed = JSON.parse(data);
+      if (typeof parsed === 'number') return parsed;
+      if (parsed && typeof parsed.totalSeconds === 'number') return parsed.totalSeconds;
+      return 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  getReadingStats(): ReadingStats {
+    const history = this.getHistory();
+    const readChapters = this.getReadChapters();
+
+    // Unique chapters: readChapters array + chapters in history
+    const chaptersSet = new Set<string>();
+    readChapters.forEach(id => chaptersSet.add(id));
+    history.forEach(h => {
+      if (h.chapterId) chaptersSet.add(h.chapterId);
+    });
+
+    // Unique mangas touched
+    const mangasSet = new Set<string>(history.map(h => h.mangaId));
+
+    // Total pages read across history
+    const totalPagesRead = history.reduce((sum, h) => sum + (h.pageNumber || 0), 0);
+
+    // Stored active time (in seconds)
+    const trackedSeconds = this.getStoredSeconds();
+
+    // Baseline estimation if user has history records but tracked active seconds is still 0
+    // (e.g. ~45 seconds per page read or ~4 minutes per chapter)
+    const estimatedSeconds = Math.max(
+      totalPagesRead * 45,
+      chaptersSet.size * 240
+    );
+
+    const effectiveSeconds = Math.max(trackedSeconds, estimatedSeconds);
+    const totalMinutesSpent = Math.round(effectiveSeconds / 60);
+
+    let lastReadDate: string | undefined;
+    try {
+      const data = localStorage.getItem(STATS_KEY);
+      if (data) {
+        const parsed = JSON.parse(data);
+        lastReadDate = parsed?.lastReadDate;
+      }
+    } catch {
+      // ignore
+    }
+
+    if (!lastReadDate && history.length > 0) {
+      lastReadDate = new Date(Math.max(...history.map(h => h.updatedAt || 0))).toISOString();
+    }
+
+    return {
+      totalChaptersRead: chaptersSet.size,
+      totalSecondsSpent: effectiveSeconds,
+      totalMinutesSpent,
+      formattedTimeSpent: formatReadingTime(effectiveSeconds),
+      uniqueMangasRead: mangasSet.size,
+      totalPagesRead,
+      lastReadDate
+    };
+  },
+
   saveProgress(progress: Omit<ReadingProgress, 'updatedAt'>): void {
     try {
       const list = this.getHistory();
@@ -56,9 +190,15 @@ export const HistoryService = {
         ...progress,
         updatedAt: Date.now()
       };
-      // Keep most recent 20 items
-      const newList = [updated, ...filtered].slice(0, 20);
+      // Keep most recent 50 items
+      const newList = [updated, ...filtered].slice(0, 50);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+
+      // Mark chapter in read set
+      if (progress.chapterId) {
+        this.markChapterAsRead(progress.chapterId);
+      }
+
       notifyListeners();
     } catch (e) {
       console.warn('Failed to save reading history', e);
@@ -201,7 +341,9 @@ export const HistoryService = {
       exportedAt: new Date().toISOString(),
       source: 'MangaReader',
       favorites: this.getFavorites(),
-      history: this.getHistory()
+      history: this.getHistory(),
+      stats: this.getReadingStats(),
+      readChapters: this.getReadChapters()
     };
   },
 
@@ -316,6 +458,25 @@ export const HistoryService = {
         .slice(0, 50);
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedHistory));
+
+      // Merge Read Chapters if present
+      if (Array.isArray(data.readChapters)) {
+        const currentRead = this.getReadChapters();
+        const set = new Set([...currentRead, ...data.readChapters]);
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(set)));
+      }
+
+      // Merge Stats if present
+      if (data.stats && typeof data.stats.totalSecondsSpent === 'number') {
+        const currentSec = this.getStoredSeconds();
+        if (data.stats.totalSecondsSpent > currentSec) {
+          localStorage.setItem(STATS_KEY, JSON.stringify({
+            totalSeconds: data.stats.totalSecondsSpent,
+            lastReadDate: data.stats.lastReadDate || new Date().toISOString()
+          }));
+        }
+      }
+
       notifyListeners();
 
       return {

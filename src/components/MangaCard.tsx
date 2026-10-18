@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BookOpen, Star, Layers } from 'lucide-react';
 import { Manga } from '../types/manga.js';
 
@@ -9,7 +9,21 @@ interface MangaCardProps {
 }
 
 export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRead }) => {
+  const [currentCover, setCurrentCover] = useState(manga.coverUrl);
   const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setCurrentCover(manga.coverUrl);
+    setImageError(false);
+  }, [manga.coverUrl]);
+
+  const handleImageError = () => {
+    if (currentCover && !currentCover.startsWith('/api/proxy/image') && currentCover.startsWith('http')) {
+      setCurrentCover(`/api/proxy/image?url=${encodeURIComponent(currentCover)}`);
+    } else {
+      setImageError(true);
+    }
+  };
 
   const primarySource = manga.sources[0]?.sourceName || (
     manga.id.includes('mangadex') ? 'MangaDex' :
@@ -37,10 +51,10 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-950">
         {!imageError ? (
           <img
-            src={manga.coverUrl}
+            src={currentCover}
             alt={`Capa de ${manga.title}`}
             referrerPolicy="no-referrer"
-            onError={() => setImageError(true)}
+            onError={handleImageError}
             className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${
               !isAvailable ? 'grayscale-[0.25]' : ''
             }`}

@@ -52,6 +52,55 @@ function parseRatingAndDemographic(genres: string[]): {
   return { contentRating: 'safe', isAdult: false, demographic };
 }
 
+function formatProxyUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  if (rawUrl.startsWith('/api/proxy/image')) return rawUrl;
+  if (rawUrl.includes('cdn.readdetectiveconan.com') || rawUrl.includes('mangapill.com')) {
+    return `/api/proxy/image?url=${encodeURIComponent(rawUrl)}`;
+  }
+  return rawUrl;
+}
+
+const GENRE_MAP: Record<string, string> = {
+  'ação': 'Action',
+  'acao': 'Action',
+  'action': 'Action',
+  'fantasia': 'Fantasy',
+  'fantasy': 'Fantasy',
+  'comédia': 'Comedy',
+  'comedia': 'Comedy',
+  'comedy': 'Comedy',
+  'aventura': 'Adventure',
+  'adventure': 'Adventure',
+  'drama': 'Drama',
+  'sobrenatural': 'Supernatural',
+  'supernatural': 'Supernatural',
+  'histórico': 'Historical',
+  'historico': 'Historical',
+  'historical': 'Historical',
+  'horror': 'Horror',
+  'terror': 'Horror',
+  'sci-fi': 'Sci-Fi',
+  'ficção científica': 'Sci-Fi',
+  'ficcao cientifica': 'Sci-Fi',
+  'romance': 'Romance',
+  'mistério': 'Mystery',
+  'misterio': 'Mystery',
+  'mystery': 'Mystery',
+  'shounen': 'Shounen',
+  'shonen': 'Shounen',
+  'seinen': 'Seinen',
+  'shoujo': 'Shoujo',
+  'shojo': 'Shoujo',
+  'josei': 'Josei'
+};
+
+function mapGenre(rawGenre?: string | null): string | null {
+  if (!rawGenre || rawGenre === 'all') return null;
+  const lower = rawGenre.trim().toLowerCase();
+  return GENRE_MAP[lower] || rawGenre;
+}
+
 export class MangaPillProvider implements IMangaSource {
   private readonly baseUrl = 'https://mangapill.com';
   private readonly sourceId = 'mangapill';
@@ -164,7 +213,7 @@ export class MangaPillProvider implements IMangaSource {
         id: `mr_${this.sourceId}_${externalId}`,
         title,
         altTitles: altTitle ? [altTitle] : [],
-        coverUrl,
+        coverUrl: formatProxyUrl(coverUrl),
         synopsis: 'Sinopse disponível na página de detalhes da obra.',
         authors: ['Autor Desconhecido'],
         artists: ['Artista Desconhecido'],
@@ -197,19 +246,20 @@ export class MangaPillProvider implements IMangaSource {
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
       const q = (query || '').trim();
-      const page = options?.page || 1;
+      const limit = options?.limit || 24;
+      const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
       let url: string;
 
-      const genre = options?.genre && options.genre !== 'all' ? options.genre : null;
+      const mappedGenre = mapGenre(options?.genre);
 
-      if (q && genre) {
-        url = `${this.baseUrl}/search?q=${encodeURIComponent(q)}&genre=${encodeURIComponent(genre)}&page=${page}`;
+      if (q && mappedGenre) {
+        url = `${this.baseUrl}/search?q=${encodeURIComponent(q)}&genre=${encodeURIComponent(mappedGenre)}&page=${page}`;
       } else if (q) {
         url = `${this.baseUrl}/search?q=${encodeURIComponent(q)}&page=${page}`;
-      } else if (genre) {
-        url = `${this.baseUrl}/search?genre=${encodeURIComponent(genre)}&page=${page}`;
+      } else if (mappedGenre) {
+        url = `${this.baseUrl}/search?genre=${encodeURIComponent(mappedGenre)}&page=${page}`;
       } else {
-        url = `${this.baseUrl}/mangas/new?page=${page}`;
+        url = `${this.baseUrl}/search?type=manga&page=${page}`;
       }
 
       const html = await this.fetchWithTimeout(url);
@@ -225,14 +275,12 @@ export class MangaPillProvider implements IMangaSource {
         mangaList = mangaList.filter(m => m.hasAvailableChapters);
       }
 
-      const limit = options?.limit || 24;
-      const offset = options?.offset || 0;
-      const sliced = mangaList.slice(offset, offset + limit);
+      const sliced = mangaList.slice(0, limit);
 
       return {
         mangaList: sliced,
         total: mangaList.length,
-        hasMore: offset + limit < mangaList.length
+        hasMore: mangaList.length >= limit
       };
     } catch (err) {
       console.warn(`[MangaPillProvider] search failed:`, (err as Error).message);
@@ -242,11 +290,12 @@ export class MangaPillProvider implements IMangaSource {
 
   async getPopular(options?: SourceSearchOptions): Promise<Manga[]> {
     try {
-      const page = options?.page || 1;
-      const genre = options?.genre && options.genre !== 'all' ? options.genre : null;
-      const url = genre
-        ? `${this.baseUrl}/search?genre=${encodeURIComponent(genre)}&page=${page}`
-        : `${this.baseUrl}/mangas/new?page=${page}`;
+      const limit = options?.limit || 24;
+      const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
+      const mappedGenre = mapGenre(options?.genre);
+      const url = mappedGenre
+        ? `${this.baseUrl}/search?genre=${encodeURIComponent(mappedGenre)}&page=${page}`
+        : `${this.baseUrl}/search?type=manga&page=${page}`;
 
       const html = await this.fetchWithTimeout(url);
       let mangaList = this.parseMangaCards(html);
@@ -259,9 +308,7 @@ export class MangaPillProvider implements IMangaSource {
         mangaList = mangaList.filter(m => m.hasAvailableChapters);
       }
 
-      const limit = options?.limit || 24;
-      const offset = options?.offset || 0;
-      return mangaList.slice(offset, offset + limit);
+      return mangaList.slice(0, limit);
     } catch (err) {
       console.warn(`[MangaPillProvider] getPopular failed:`, (err as Error).message);
       return [];
@@ -306,7 +353,7 @@ export class MangaPillProvider implements IMangaSource {
       // Cover image
       const coverMatch =
         html.match(/<img[^>]+data-src="([^"]+)"[^>]*>/i) || html.match(/<img[^>]+src="([^"]+)"[^>]*>/i);
-      const coverUrl = coverMatch ? coverMatch[1].trim() : '';
+      const coverUrl = formatProxyUrl(coverMatch ? coverMatch[1].trim() : '');
 
       // Year, Status, Type
       const yearMatch = html.match(/<label class="[^"]*text-secondary[^"]*">Year<\/label>\s*<div>([^<]+)<\/div>/i);
@@ -469,7 +516,7 @@ export class MangaPillProvider implements IMangaSource {
         if (imageUrl.includes('cdn.readdetectiveconan.com') || imageUrl.includes('mangap')) {
           pages.push({
             pageNumber: pageNum++,
-            imageUrl
+            imageUrl: formatProxyUrl(imageUrl)
           });
         }
       }
@@ -482,7 +529,7 @@ export class MangaPillProvider implements IMangaSource {
           if (imageUrl.includes('cdn.readdetectiveconan.com') && !imageUrl.includes('static')) {
             pages.push({
               pageNumber: pageNum++,
-              imageUrl
+              imageUrl: formatProxyUrl(imageUrl)
             });
           }
         }

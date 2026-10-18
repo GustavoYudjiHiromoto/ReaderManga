@@ -18,11 +18,13 @@ import {
   AlertCircle,
   RotateCcw,
   FileX,
-  Download
+  Download,
+  HardDriveDownload
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
+import { OfflineCacheService } from '../services/offlineCache.js';
 
 interface ReaderPageProps {
   mangaId: string;
@@ -176,6 +178,8 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [showUi, setShowUi] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isOfflineSaved, setIsOfflineSaved] = useState(false);
+  const [cachingOffline, setCachingOffline] = useState(false);
 
   // Container refs for scroll spy
   const pagesContainerRef = useRef<HTMLDivElement>(null);
@@ -196,8 +200,22 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
   // Load Manga, Chapter list, and Pages
   useEffect(() => {
+    setIsOfflineSaved(OfflineCacheService.isChapterSaved(chapterId));
     loadReaderData();
   }, [mangaId, chapterId]);
+
+  const handleToggleOfflineSave = async () => {
+    if (cachingOffline) return;
+    if (isOfflineSaved) {
+      await OfflineCacheService.removeChapter(chapterId, pages);
+      setIsOfflineSaved(false);
+    } else {
+      setCachingOffline(true);
+      await OfflineCacheService.cacheChapter(chapterId, pages);
+      setCachingOffline(false);
+      setIsOfflineSaved(true);
+    }
+  };
 
   const loadReaderData = async () => {
     setLoading(true);
@@ -249,6 +267,25 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       });
     }
   }, [currentPageIndex, manga, currentChapter, pages]);
+
+  // Active reading time tracking while reader tab is in focus
+  useEffect(() => {
+    let lastTick = Date.now();
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const now = Date.now();
+        const diffSeconds = Math.round((now - lastTick) / 1000);
+        if (diffSeconds > 0 && diffSeconds <= 30) {
+          HistoryService.addReadingTime(diffSeconds);
+        }
+        lastTick = now;
+      } else {
+        lastTick = Date.now();
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Keyboard navigation respecting reading direction
   useEffect(() => {
@@ -638,9 +675,9 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                     </div>
                   )}
 
-                  {/* Offline Download Option */}
-                  <div className="pt-2 border-t border-zinc-800">
-                    <span className="text-zinc-400 font-medium block mb-1.5">Leitura Offline</span>
+                  {/* Offline Download & Cache Options */}
+                  <div className="pt-2 border-t border-zinc-800 space-y-2">
+                    <span className="text-zinc-400 font-medium block mb-1">Leitura Offline</span>
                     <a
                       href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
                       download
@@ -649,6 +686,33 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       <Download className="h-3.5 w-3.5" />
                       <span>Baixar Capítulo (.cbz)</span>
                     </a>
+
+                    <button
+                      onClick={handleToggleOfflineSave}
+                      disabled={cachingOffline}
+                      className={`flex items-center justify-center gap-1.5 w-full py-1.5 px-3 rounded-lg border transition-colors text-xs font-medium cursor-pointer ${
+                        isOfflineSaved
+                          ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300 hover:bg-rose-950/40 hover:border-rose-600/40 hover:text-rose-300'
+                          : 'bg-zinc-800/90 hover:bg-zinc-700/90 border-zinc-700/60 text-zinc-200'
+                      }`}
+                    >
+                      {cachingOffline ? (
+                        <>
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin text-rose-400" />
+                          <span>Salvando páginas no app...</span>
+                        </>
+                      ) : isOfflineSaved ? (
+                        <>
+                          <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          <span>Salvo Offline (Remover)</span>
+                        </>
+                      ) : (
+                        <>
+                          <HardDriveDownload className="h-3.5 w-3.5 text-rose-400" />
+                          <span>Salvar no App (Offline)</span>
+                        </>
+                      )}
+                    </button>
                   </div>
 
                   <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500">

@@ -151,6 +151,19 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   // Dominant spotlight manga: prioritize readable, safe featured manga
   const heroManga = featuredManga.find(m => m.hasAvailableChapters !== false && !m.isAdult) || featuredManga[0];
+  const [heroCoverSrc, setHeroCoverSrc] = useState('');
+
+  useEffect(() => {
+    if (heroManga?.coverUrl) {
+      setHeroCoverSrc(heroManga.coverUrl);
+    }
+  }, [heroManga?.coverUrl]);
+
+  const handleHeroCoverError = () => {
+    if (heroCoverSrc && !heroCoverSrc.startsWith('/api/proxy/image') && heroCoverSrc.startsWith('http')) {
+      setHeroCoverSrc(`/api/proxy/image?url=${encodeURIComponent(heroCoverSrc)}`);
+    }
+  };
 
   const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi', 'Romance', 'Mistério'];
 
@@ -161,9 +174,10 @@ export const HomePage: React.FC<HomePageProps> = ({
         <section className="relative overflow-hidden border-b border-zinc-800/80 bg-zinc-900/40">
           <div className="absolute inset-0 z-0">
             <img
-              src={heroManga.coverUrl}
+              src={heroCoverSrc || heroManga.coverUrl}
               alt=""
               referrerPolicy="no-referrer"
+              onError={handleHeroCoverError}
               className="h-full w-full object-cover object-center opacity-15 blur-2xl scale-110"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-transparent" />
@@ -179,9 +193,10 @@ export const HomePage: React.FC<HomePageProps> = ({
                   className="group relative w-56 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/60 cursor-pointer transform hover:-translate-y-1 transition-transform duration-300"
                 >
                   <img
-                    src={heroManga.coverUrl}
+                    src={heroCoverSrc || heroManga.coverUrl}
                     alt={heroManga.title}
                     referrerPolicy="no-referrer"
+                    onError={handleHeroCoverError}
                     className="h-full w-full object-cover"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">

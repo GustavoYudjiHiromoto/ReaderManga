@@ -1,5 +1,6 @@
 import React from 'react';
 import { BookOpen, Search, Layers, Clock, Bookmark, Sparkles } from 'lucide-react';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface NavbarProps {
   currentTab: 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader';
@@ -103,6 +104,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-rose-500" />
             )}
           </button>
+
+          <PWAInstallButton />
 
           <button
             onClick={onOpenHistory}

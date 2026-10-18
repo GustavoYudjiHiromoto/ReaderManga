@@ -121,10 +121,22 @@ export interface FavoriteManga {
   updatedAt: number;
 }
 
+export interface ReadingStats {
+  totalChaptersRead: number;
+  totalSecondsSpent: number;
+  totalMinutesSpent: number;
+  formattedTimeSpent: string;
+  uniqueMangasRead: number;
+  totalPagesRead: number;
+  lastReadDate?: string;
+}
+
 export interface LibraryBackup {
   version: number;
   exportedAt: string;
   source: string;
   favorites: FavoriteManga[];
   history: ReadingProgress[];
+  stats?: ReadingStats;
+  readChapters?: string[];
 }

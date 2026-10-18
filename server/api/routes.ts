@@ -21,22 +21,27 @@ function sendApiError(res: Response, err: unknown) {
 }
 
 async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  let actualUrl = imageUrl;
+  if (actualUrl.startsWith('/api/proxy/image?url=')) {
+    actualUrl = decodeURIComponent(actualUrl.substring('/api/proxy/image?url='.length));
+  }
+
   const headers: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   };
 
-  if (imageUrl.includes('comick.pictures') || imageUrl.includes('comick.io')) {
+  if (actualUrl.includes('comick.pictures') || actualUrl.includes('comick.io')) {
     headers['Referer'] = 'https://comick.io/';
-  } else if (imageUrl.includes('weebcentral') || imageUrl.includes('planeptune.us') || imageUrl.includes('compsci88.com')) {
+  } else if (actualUrl.includes('weebcentral') || actualUrl.includes('planeptune.us') || actualUrl.includes('compsci88.com')) {
     headers['Referer'] = 'https://weebcentral.com/';
-  } else if (imageUrl.includes('cdn.readdetectiveconan.com') || imageUrl.includes('mangapill.com')) {
+  } else if (actualUrl.includes('cdn.readdetectiveconan.com') || actualUrl.includes('mangapill.com')) {
     headers['Referer'] = 'https://mangapill.com/';
   }
 
-  let response = await fetch(imageUrl, { headers }).catch(() => null);
+  let response = await fetch(actualUrl, { headers }).catch(() => null);
 
-  if ((!response || !response.ok) && imageUrl.includes('mangadex.network')) {
-    const fallbackUrl = imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
+  if ((!response || !response.ok) && actualUrl.includes('mangadex.network')) {
+    const fallbackUrl = actualUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
     response = await fetch(fallbackUrl, { headers }).catch(() => null);
   }
 

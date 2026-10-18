@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar.js';
 import { Footer } from './components/Footer.js';
 import { HistoryDrawer } from './components/HistoryDrawer.js';
+import { OfflineIndicator } from './components/OfflineIndicator.js';
 import { HomePage } from './pages/HomePage.js';
 import { SearchPage } from './pages/SearchPage.js';
 import { MangaDetailPage } from './pages/MangaDetailPage.js';
@@ -363,6 +364,9 @@ export default function App() {
         onResume={handleResumeProgress}
         onRemove={handleRemoveHistory}
       />
+
+      {/* Floating Offline Notification */}
+      <OfflineIndicator />
     </div>
   );
 }

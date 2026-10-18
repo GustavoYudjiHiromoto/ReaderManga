@@ -49,6 +49,19 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [showFullSynopsis, setShowFullSynopsis] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [coverSrc, setCoverSrc] = useState('');
+
+  useEffect(() => {
+    if (manga?.coverUrl) {
+      setCoverSrc(manga.coverUrl);
+    }
+  }, [manga?.coverUrl]);
+
+  const handleCoverError = () => {
+    if (coverSrc && !coverSrc.startsWith('/api/proxy/image') && coverSrc.startsWith('http')) {
+      setCoverSrc(`/api/proxy/image?url=${encodeURIComponent(coverSrc)}`);
+    }
+  };
 
   useEffect(() => {
     loadMangaDetails();
@@ -176,9 +189,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       {/* Background Banner with dynamic blur */}
       <div className="relative h-72 sm:h-96 w-full overflow-hidden border-b border-zinc-800/80">
         <img
-          src={manga.coverUrl}
+          src={coverSrc || manga.coverUrl}
           alt=""
           referrerPolicy="no-referrer"
+          onError={handleCoverError}
           className="h-full w-full object-cover opacity-20 blur-2xl scale-110"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/70 to-transparent" />
@@ -203,9 +217,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           <div className="md:col-span-4 lg:col-span-3 flex flex-col items-center md:items-start">
             <div className="w-56 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0">
               <img
-                src={manga.coverUrl}
+                src={coverSrc || manga.coverUrl}
                 alt={manga.title}
                 referrerPolicy="no-referrer"
+                onError={handleCoverError}
                 className="h-full w-full object-cover"
               />
             </div>
