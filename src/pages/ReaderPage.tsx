@@ -17,14 +17,22 @@ import {
   Check,
   AlertCircle,
   RotateCcw,
-  FileX,
   Download,
-  HardDriveDownload
+  HardDriveDownload,
+  Play,
+  Pause,
+  FastForward,
+  HelpCircle,
+  Bookmark,
+  BookmarkCheck,
+  X
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
+import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal.js';
+import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
 
 interface ReaderPageProps {
   mangaId: string;
@@ -180,10 +188,59 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isOfflineSaved, setIsOfflineSaved] = useState(false);
   const [cachingOffline, setCachingOffline] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [showBookmarksModal, setShowBookmarksModal] = useState(false);
+  const [isCurrentPageBookmarked, setIsCurrentPageBookmarked] = useState(false);
+  const [showBookmarkNoteDialog, setShowBookmarkNoteDialog] = useState(false);
+  const [bookmarkNoteInput, setBookmarkNoteInput] = useState('');
+  const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
+
+  // Ergonomic Controls: Autoscroll, Webtoon Gap & Visual Comfort
+  const [isAutoScrolling, setIsAutoScrolling] = useState(false);
+  const [autoScrollSpeed, setAutoScrollSpeed] = useState(2); // 1 to 6
+  const [webtoonGap, setWebtoonGap] = useState<number>(0); // 0, 8, 16, 24, 32
+  const [brightness, setBrightness] = useState<number>(100); // 60 to 100
+  const [nightLight, setNightLight] = useState<number>(0); // 0 to 40
 
   // Container refs for scroll spy
   const pagesContainerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Autoscroll continuous animation loop
+  useEffect(() => {
+    if (!isAutoScrolling || readerMode !== 'webtoon') return;
+
+    let animationFrameId: number;
+    const scrollStep = () => {
+      const step = autoScrollSpeed * 0.75;
+      window.scrollBy({ top: step, behavior: 'instant' as any });
+
+      if ((window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 50)) {
+        setIsAutoScrolling(false);
+        return;
+      }
+      animationFrameId = requestAnimationFrame(scrollStep);
+    };
+
+    animationFrameId = requestAnimationFrame(scrollStep);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isAutoScrolling, autoScrollSpeed, readerMode]);
+
+  // Pause autoscroll on manual user interaction
+  useEffect(() => {
+    const handleManualScroll = (e: Event) => {
+      if (isAutoScrolling && e.isTrusted) {
+        setIsAutoScrolling(false);
+      }
+    };
+
+    window.addEventListener('wheel', handleManualScroll, { passive: true });
+    window.addEventListener('touchstart', handleManualScroll, { passive: true });
+    return () => {
+      window.removeEventListener('wheel', handleManualScroll);
+      window.removeEventListener('touchstart', handleManualScroll);
+    };
+  }, [isAutoScrolling]);
 
   // Intelligent prefetching: pre-load upcoming 3 pages into browser cache
   useEffect(() => {
@@ -211,7 +268,13 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       setIsOfflineSaved(false);
     } else {
       setCachingOffline(true);
-      await OfflineCacheService.cacheChapter(chapterId, pages);
+      await OfflineCacheService.cacheChapter(chapterId, pages, {
+        mangaId: manga?.id || mangaId,
+        mangaTitle: manga?.title || 'Mangá',
+        mangaCover: manga?.coverUrl || '',
+        chapterNumber: currentChapter?.chapterNumber || '1',
+        chapterTitle: currentChapter?.title
+      });
       setCachingOffline(false);
       setIsOfflineSaved(true);
     }
@@ -245,7 +308,41 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         setCurrentPageIndex(0);
       }
     } catch (err) {
-      console.error('Failed to load reader data:', err);
+      console.warn('Network request failed, checking offline cache fallback:', err);
+      const offlineItem = OfflineCacheService.getOfflineChapter(chapterId);
+      if (offlineItem && offlineItem.pages && offlineItem.pages.length > 0) {
+        const fallbackManga: Manga = {
+          id: offlineItem.mangaId,
+          title: offlineItem.mangaTitle,
+          coverUrl: offlineItem.mangaCover,
+          altTitles: [],
+          synopsis: 'Lendo a partir do cache local salvo para leitura offline.',
+          authors: [],
+          artists: [],
+          genres: ['Offline'],
+          status: 'ongoing',
+          publicationInfo: {},
+          updatedAt: new Date(offlineItem.savedAt).toISOString(),
+          sources: []
+        };
+        const fallbackChapter: Chapter = {
+          id: offlineItem.chapterId,
+          mangaId: offlineItem.mangaId,
+          chapterNumber: offlineItem.chapterNumber,
+          title: offlineItem.chapterTitle,
+          language: 'pt-br',
+          sourceId: 'offline',
+          externalChapterId: offlineItem.chapterId,
+          pagesCount: offlineItem.pageCount
+        };
+        setManga(fallbackManga);
+        setChapters([fallbackChapter]);
+        setCurrentChapter(fallbackChapter);
+        setPages(offlineItem.pages);
+        setIsOfflineSaved(true);
+        setError(null);
+        return;
+      }
       setError((err as Error).message || 'Não foi possível carregar as páginas do capítulo.');
     } finally {
       setLoading(false);
@@ -287,6 +384,54 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     return () => clearInterval(interval);
   }, []);
 
+  // Track if current page has bookmark
+  useEffect(() => {
+    if (!currentChapter) return;
+    const pageNum = currentPageIndex + 1;
+    setIsCurrentPageBookmarked(HistoryService.isPageBookmarked(currentChapter.id, pageNum));
+
+    const unsubscribe = HistoryService.subscribe(() => {
+      setIsCurrentPageBookmarked(HistoryService.isPageBookmarked(currentChapter.id, pageNum));
+    });
+    return unsubscribe;
+  }, [currentChapter, currentPageIndex]);
+
+  const showToast = (msg: string) => {
+    setBookmarkToast(msg);
+    setTimeout(() => setBookmarkToast(null), 3000);
+  };
+
+  const handleToggleBookmark = () => {
+    if (!manga || !currentChapter || pages.length === 0) return;
+    const pageNum = currentPageIndex + 1;
+    if (isCurrentPageBookmarked) {
+      HistoryService.removePageBookmarkByPage(currentChapter.id, pageNum);
+      showToast(`Marcador removido da página ${pageNum}`);
+    } else {
+      setShowBookmarkNoteDialog(true);
+      setBookmarkNoteInput('');
+    }
+  };
+
+  const handleConfirmBookmarkWithNote = () => {
+    if (!manga || !currentChapter || pages.length === 0) return;
+    const pageNum = currentPageIndex + 1;
+    const curPage = pages[currentPageIndex];
+    HistoryService.addPageBookmark({
+      mangaId: manga.id,
+      mangaTitle: manga.title,
+      mangaCover: manga.coverUrl,
+      chapterId: currentChapter.id,
+      chapterNumber: currentChapter.chapterNumber,
+      chapterTitle: currentChapter.title,
+      pageNumber: pageNum,
+      imageUrl: curPage?.imageUrl || manga.coverUrl,
+      note: bookmarkNoteInput.trim() || undefined
+    });
+    setShowBookmarkNoteDialog(false);
+    showToast(`Página ${pageNum} marcada com sucesso!`);
+  };
+
   // Keyboard navigation respecting reading direction
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -296,8 +441,29 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         toggleFullscreen();
         return;
       }
+      if (e.key === 'b' || e.key === 'B') {
+        handleToggleBookmark();
+        return;
+      }
+      if (e.key === 'a' || e.key === 'A') {
+        if (readerMode === 'webtoon') {
+          setIsAutoScrolling(prev => !prev);
+          return;
+        }
+      }
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        setShowShortcutsModal(prev => !prev);
+        return;
+      }
+      if (e.key === 'm' || e.key === 'M') {
+        setShowUi(prev => !prev);
+        return;
+      }
       if (e.key === 'Escape') {
         setShowSettings(false);
+        setShowShortcutsModal(false);
+        setShowBookmarksModal(false);
+        setShowBookmarkNoteDialog(false);
         return;
       }
 
@@ -565,6 +731,23 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               </button>
             </div>
 
+            {/* Quick Autoscroll Action (Webtoon mode) */}
+            {readerMode === 'webtoon' && (
+              <button
+                onClick={() => setIsAutoScrolling(!isAutoScrolling)}
+                className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
+                  isAutoScrolling
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-950/60'
+                    : 'bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white'
+                }`}
+                title="Alternar rolagem automática mãos-livres (Atalho: tecla A)"
+              >
+                {isAutoScrolling ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 text-rose-400" />}
+                <span className="hidden sm:inline">{isAutoScrolling ? 'Pausar' : 'Autoscroll'}</span>
+                <span className="font-mono text-[10px] text-rose-300">{autoScrollSpeed}x</span>
+              </button>
+            )}
+
             {/* Settings Dropdown Toggle */}
             <div className="relative">
               <button
@@ -577,7 +760,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
               {/* Settings Panel */}
               {showSettings && (
-                <div className="absolute right-0 top-12 w-64 p-4 rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl z-50 text-xs space-y-4">
+                <div className="absolute right-0 top-12 w-64 p-4 rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl z-50 text-xs space-y-4 max-h-[85vh] overflow-y-auto">
                   <div>
                     <span className="text-zinc-400 font-medium block mb-2">Tema de Leitura</span>
                     <div className="grid grid-cols-4 gap-1.5">
@@ -624,6 +807,100 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       >
                         Real
                       </button>
+                    </div>
+                  </div>
+
+                  {/* Webtoon Ergonomics: Autoscroll & Spacing */}
+                  {readerMode === 'webtoon' && (
+                    <div className="pt-2 border-t border-zinc-800 space-y-3">
+                      <div>
+                        <span className="text-zinc-400 font-medium block mb-2">Rolagem Automática (Autoscroll)</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setIsAutoScrolling(!isAutoScrolling)}
+                            className={`flex-1 py-1.5 px-2.5 rounded-lg border font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer text-[11px] ${
+                              isAutoScrolling
+                                ? 'bg-rose-600 border-rose-500 text-white'
+                                : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:text-white'
+                            }`}
+                          >
+                            {isAutoScrolling ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3 text-rose-400" />}
+                            <span>{isAutoScrolling ? 'Pausar (A)' : 'Iniciar (A)'}</span>
+                          </button>
+                          <div className="flex items-center gap-0.5 bg-zinc-950 border border-zinc-800 rounded-lg p-0.5">
+                            {[1, 2, 3, 4, 5].map(spd => (
+                              <button
+                                key={spd}
+                                onClick={() => setAutoScrollSpeed(spd)}
+                                className={`w-5 h-5 rounded text-[10px] font-mono font-bold transition-colors cursor-pointer ${
+                                  autoScrollSpeed === spd ? 'bg-rose-500 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                                }`}
+                              >
+                                {spd}x
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="text-zinc-400 font-medium block mb-1.5">Espaçamento entre Páginas</span>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { label: '0px', val: 0 },
+                            { label: '8px', val: 8 },
+                            { label: '16px', val: 16 },
+                            { label: '32px', val: 32 }
+                          ].map(item => (
+                            <button
+                              key={item.val}
+                              onClick={() => setWebtoonGap(item.val)}
+                              className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] font-mono ${
+                                webtoonGap === item.val
+                                  ? 'border-rose-500 bg-rose-500/20 text-rose-300'
+                                  : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Visual Comfort: Brightness & Night Light Filter */}
+                  <div className="pt-2 border-t border-zinc-800 space-y-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-zinc-400 font-medium">Brilho da Imagem</span>
+                        <span className="text-zinc-500 font-mono text-[10px]">{brightness}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="100"
+                        step="5"
+                        value={brightness}
+                        onChange={(e) => setBrightness(Number(e.target.value))}
+                        className="w-full accent-rose-500 cursor-pointer"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-zinc-400 font-medium">Luz Noturna (Anti-Fadiga)</span>
+                        <span className="text-amber-400 font-mono text-[10px]">{nightLight}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="40"
+                        step="5"
+                        value={nightLight}
+                        onChange={(e) => setNightLight(Number(e.target.value))}
+                        className="w-full accent-amber-500 cursor-pointer"
+                      />
                     </div>
                   </div>
 
@@ -677,15 +954,27 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
                   {/* Offline Download & Cache Options */}
                   <div className="pt-2 border-t border-zinc-800 space-y-2">
-                    <span className="text-zinc-400 font-medium block mb-1">Leitura Offline</span>
-                    <a
-                      href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
-                      download
-                      className="flex items-center justify-center gap-1.5 w-full py-1.5 px-3 rounded-lg bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white transition-colors text-xs font-medium cursor-pointer"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      <span>Baixar Capítulo (.cbz)</span>
-                    </a>
+                    <span className="text-zinc-400 font-medium block mb-1">Baixar Capítulo</span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <a
+                        href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
+                        download
+                        className="flex items-center justify-center gap-1 w-full py-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white transition-colors text-[11px] font-medium cursor-pointer text-center"
+                        title="Baixar em formato ComicBook (.cbz) para leitores de quadrinhos"
+                      >
+                        <Download className="h-3 w-3" />
+                        <span>Baixar .CBZ</span>
+                      </a>
+                      <a
+                        href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=pdf`}
+                        download
+                        className="flex items-center justify-center gap-1 w-full py-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white transition-colors text-[11px] font-medium cursor-pointer text-center"
+                        title="Baixar em formato PDF de alta resolução"
+                      >
+                        <Download className="h-3 w-3" />
+                        <span>Baixar .PDF</span>
+                      </a>
+                    </div>
 
                     <button
                       onClick={handleToggleOfflineSave}
@@ -716,22 +1005,58 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   </div>
 
                   <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500">
-                    <span>Atalhos: ← → (Passar pág)</span>
-                    <span>F (Tela cheia)</span>
+                    <span>Atalhos: A (Autoscroll) · F (Tela Cheia)</span>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Download Chapter Action */}
-            <a
-              href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
-              download
-              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
-              title="Baixar capítulo (.cbz) para leitura offline"
+            {/* Download Chapter Actions */}
+            <div className="flex items-center gap-1 bg-zinc-950/80 border border-zinc-800 rounded-lg p-0.5 text-[10px] font-mono">
+              <a
+                href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
+                download
+                className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 rounded transition-colors"
+                title="Baixar capítulo em formato ComicBook (.cbz)"
+              >
+                CBZ
+              </a>
+              <span className="text-zinc-700">|</span>
+              <a
+                href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=pdf`}
+                download
+                className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 rounded transition-colors"
+                title="Baixar capítulo em documento PDF"
+              >
+                PDF
+              </a>
+            </div>
+
+            {/* Bookmark Current Page */}
+            <button
+              onClick={handleToggleBookmark}
+              className={`p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer ${
+                isCurrentPageBookmarked
+                  ? 'text-rose-400'
+                  : 'text-zinc-300 hover:text-rose-400'
+              }`}
+              title={
+                isCurrentPageBookmarked
+                  ? 'Página marcada! Clique para remover'
+                  : 'Marcar esta página (Atalho: tecla B)'
+              }
             >
-              <Download className="h-4 w-4" />
-            </a>
+              <Bookmark className={`h-4 w-4 ${isCurrentPageBookmarked ? 'fill-rose-500 text-rose-500' : ''}`} />
+            </button>
+
+            {/* View All Saved Bookmarks */}
+            <button
+              onClick={() => setShowBookmarksModal(true)}
+              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
+              title="Ver todas as páginas marcadas"
+            >
+              <BookmarkCheck className="h-4 w-4" />
+            </button>
 
             {/* Fullscreen Toggle */}
             <button
@@ -741,18 +1066,75 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             >
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </button>
+
+            {/* Keyboard Shortcuts Help */}
+            <button
+              onClick={() => setShowShortcutsModal(true)}
+              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
+              title="Atalhos de Teclado e Guia de Controles (Atalho: tecla ?)"
+            >
+              <HelpCircle className="h-4 w-4" />
+            </button>
           </div>
         </div>
       </header>
 
+      {/* Floating Autoscroll Control Bar */}
+      {isAutoScrolling && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-zinc-900/95 border border-rose-500/50 shadow-2xl backdrop-blur-md text-xs"
+        >
+          <div className="flex items-center gap-1.5 font-semibold text-white">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+            </span>
+            <span className="text-[11px]">Rolagem</span>
+            <span className="font-mono text-rose-300 font-bold">{autoScrollSpeed}x</span>
+          </div>
+
+          <div className="flex items-center gap-1 border-l border-zinc-700/80 pl-2">
+            <button
+              onClick={() => setAutoScrollSpeed(s => Math.max(1, s - 1))}
+              className="w-5 h-5 rounded flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-mono text-xs cursor-pointer"
+              title="Diminuir velocidade"
+            >
+              -
+            </button>
+            <button
+              onClick={() => setAutoScrollSpeed(s => Math.min(6, s + 1))}
+              className="w-5 h-5 rounded flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-mono text-xs cursor-pointer"
+              title="Aumentar velocidade"
+            >
+              +
+            </button>
+          </div>
+
+          <button
+            onClick={() => setIsAutoScrolling(false)}
+            className="ml-1 px-2.5 py-1 rounded-full bg-rose-600 hover:bg-rose-500 text-white font-semibold text-[11px] transition-colors cursor-pointer"
+          >
+            Pausar (A)
+          </button>
+        </div>
+      )}
+
       {/* 2. Reader Body */}
       <main
         onClick={() => setShowUi(prev => !prev)}
-        className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center p-2 sm:p-4"
+        style={{
+          filter: (brightness !== 100 || nightLight !== 0) ? `brightness(${brightness}%) sepia(${nightLight}%)` : undefined
+        }}
+        className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center p-2 sm:p-4 transition-[filter] duration-200"
       >
         {/* Webtoon / Vertical Cascade Mode */}
         {readerMode === 'webtoon' && (
-          <div ref={pagesContainerRef} className="w-full flex flex-col items-center max-w-4xl space-y-2">
+          <div
+            ref={pagesContainerRef}
+            style={{ gap: `${webtoonGap}px` }}
+            className="w-full flex flex-col items-center max-w-4xl"
+          >
             {pages.map((page, idx) => (
               <div
                 key={idx}
@@ -983,8 +1365,21 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   pageRefs.current[targetIdx]?.scrollIntoView({ behavior: 'smooth' });
                 }
               }}
-              className="w-20 sm:w-28 accent-rose-500 cursor-pointer"
+              className="w-16 sm:w-28 accent-rose-500 cursor-pointer"
             />
+
+            {/* Quick Bookmark Page button */}
+            <button
+              onClick={handleToggleBookmark}
+              className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+                isCurrentPageBookmarked
+                  ? 'text-rose-400 bg-rose-500/20'
+                  : 'text-zinc-400 hover:text-rose-400 hover:bg-zinc-800'
+              }`}
+              title={isCurrentPageBookmarked ? 'Remover marcador da página atual' : 'Marcar página atual (Atalho: B)'}
+            >
+              <Bookmark className={`h-3.5 w-3.5 ${isCurrentPageBookmarked ? 'fill-rose-500 text-rose-500' : ''}`} />
+            </button>
           </div>
 
           {/* Next Chapter */}
@@ -999,6 +1394,102 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           </button>
         </div>
       </footer>
+
+      {/* Bookmark notification toast */}
+      {bookmarkToast && (
+        <div className="fixed top-20 inset-x-0 mx-auto w-fit z-50 px-4 py-2 bg-zinc-900 border border-rose-500/40 text-rose-300 text-xs rounded-full shadow-2xl flex items-center gap-2 animate-in fade-in duration-200">
+          <Bookmark className="h-3.5 w-3.5 fill-rose-500 text-rose-500" />
+          <span>{bookmarkToast}</span>
+        </div>
+      )}
+
+      {/* Bookmark Note Dialog */}
+      {showBookmarkNoteDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setShowBookmarkNoteDialog(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-5 shadow-2xl text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <Bookmark className="h-4 w-4 text-rose-400 fill-rose-500/20" />
+                <h3 className="text-sm font-bold text-white">
+                  Marcar Página {currentPageIndex + 1}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowBookmarkNoteDialog(false)}
+                className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="py-3">
+              <label className="block text-xs text-zinc-400 mb-1.5">
+                Anotação ou citação (Opcional):
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={bookmarkNoteInput}
+                onChange={(e) => setBookmarkNoteInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleConfirmBookmarkWithNote();
+                }}
+                placeholder="Ex: Cena épica, revelação importante..."
+                className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+              <button
+                onClick={() => setShowBookmarkNoteDialog(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 bg-zinc-800/60 hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmBookmarkWithNote}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition-colors cursor-pointer shadow-md shadow-rose-950/40"
+              >
+                Salvar Marcador
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Keyboard Shortcuts Modal */}
+      <KeyboardShortcutsModal
+        isOpen={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+        readingDirection={readingDirection}
+        readerMode={readerMode}
+      />
+
+      {/* Page Bookmarks & Snapshots Modal */}
+      <PageBookmarksModal
+        isOpen={showBookmarksModal}
+        onClose={() => setShowBookmarksModal(false)}
+        currentMangaId={manga?.id}
+        onJumpToPage={(targetMangaId, targetChapterId, targetPageNum) => {
+          if (targetChapterId === chapterId) {
+            const idx = targetPageNum - 1;
+            setCurrentPageIndex(idx);
+            if (readerMode === 'webtoon' && pageRefs.current[idx]) {
+              pageRefs.current[idx]?.scrollIntoView({ behavior: 'smooth' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          } else {
+            onChangeChapter(targetChapterId);
+          }
+        }}
+      />
     </div>
   );
 };

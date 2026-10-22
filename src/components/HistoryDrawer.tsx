@@ -1,6 +1,8 @@
-import { X, BookOpen, Trash2, ArrowRight, Clock, Download } from 'lucide-react';
+import React from 'react';
+import { X, BookOpen, Trash2, ArrowRight, Clock, Download, HardDriveDownload } from 'lucide-react';
 import { ReadingProgress } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
+import { OfflineCacheService } from '../services/offlineCache.js';
 
 interface HistoryDrawerProps {
   isOpen: boolean;
@@ -74,9 +76,16 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <p className="text-xs text-zinc-400 mt-0.5">
-                        Capítulo <span className="font-mono text-zinc-300 tabular-nums">{item.chapterNumber}</span>
-                        {item.chapterTitle && ` · ${item.chapterTitle}`}
+                      <p className="text-xs text-zinc-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <span>
+                          Capítulo <span className="font-mono text-zinc-300 tabular-nums">{item.chapterNumber}</span>
+                          {item.chapterTitle && ` · ${item.chapterTitle}`}
+                        </span>
+                        {OfflineCacheService.isChapterSaved(item.chapterId) && (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.2 rounded font-medium">
+                            <HardDriveDownload className="h-2.5 w-2.5" /> Offline
+                          </span>
+                        )}
                       </p>
                       <p className="text-[11px] text-zinc-500 mt-1 font-mono tabular-nums">
                         Página {item.pageNumber} de {item.totalPages} ({percent}%)

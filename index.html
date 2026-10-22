@@ -3,6 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        // Suppress benign Vite HMR WebSocket connection logs in preview iframe
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          if (args.length > 0) {
+            var msg = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].message ? args[0].message : String(args[0]));
+            if (msg.indexOf('WebSocket closed without opened') !== -1 || (msg.indexOf('[vite]') !== -1 && msg.indexOf('WebSocket') !== -1)) {
+              return;
+            }
+          }
+          origConsoleError.apply(console, args);
+        };
+        window.addEventListener('error', function(event) {
+          var message = event && (event.message || (event.error && event.error.message)) || '';
+          if (message.indexOf('WebSocket closed without opened') !== -1) {
+            event.stopImmediatePropagation();
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+          }
+        }, true);
+      })();
+    </script>
     <title>MangaReader</title>
     <meta name="description" content="Aplicação para descoberta e leitura de mangás com suporte a múltiplas fontes, catálogo unificado e leitor avançado." />
     <meta property="og:title" content="MangaReader" />
@@ -13,6 +36,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="MangaReader" />
+    <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />

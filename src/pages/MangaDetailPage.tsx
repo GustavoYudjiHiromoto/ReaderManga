@@ -15,28 +15,41 @@ import {
   Sparkles,
   Info,
   ChevronDown,
-  ChevronUp,
-  Download
+  Download,
+  HardDriveDownload,
+  Loader2,
+  Check,
+  Eye,
+  EyeOff,
+  Edit3,
+  X
 } from 'lucide-react';
-import { Manga, Chapter } from '../types/manga.js';
+import { Manga, Chapter, FavoriteManga, LibraryCategory } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
+import { OfflineCacheService } from '../services/offlineCache.js';
+import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
+import { MangaCard } from '../components/MangaCard.js';
 
 interface MangaDetailPageProps {
   mangaId: string;
   onBack: () => void;
   onReadChapter: (mangaId: string, chapterId: string) => void;
   onSelectManga?: (mangaId: string) => void;
+  onNavigateToSearch?: (query?: string, genre?: string) => void;
 }
 
 export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   mangaId,
   onBack,
   onReadChapter,
-  onSelectManga
+  onSelectManga,
+  onNavigateToSearch
 }) => {
   const [manga, setManga] = useState<Manga | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [recommendedManga, setRecommendedManga] = useState<Manga[]>([]);
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chaptersLoading, setChaptersLoading] = useState(true);
@@ -47,9 +60,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [selectedLang, setSelectedLang] = useState<string>('all');
   const [expandedVariantsChapterId, setExpandedVariantsChapterId] = useState<string | null>(null);
   const [isBookmarked, setIsBookmarked] = useState(false);
+  const [favoriteData, setFavoriteData] = useState<FavoriteManga | null>(null);
+  const [readChapters, setReadChapters] = useState<string[]>([]);
+  const [hideReadChapters, setHideReadChapters] = useState(false);
+  const [showScoreModal, setShowScoreModal] = useState(false);
+  const [modalScore, setModalScore] = useState<number>(10);
+  const [modalNotes, setModalNotes] = useState<string>('');
   const [showFullSynopsis, setShowFullSynopsis] = useState(false);
   const [copied, setCopied] = useState(false);
   const [coverSrc, setCoverSrc] = useState('');
+  const [savedOfflineChapterIds, setSavedOfflineChapterIds] = useState<string[]>(() => OfflineCacheService.getSavedChapterIds());
+  const [cachingOfflineIds, setCachingOfflineIds] = useState<Record<string, boolean>>({});
+  const [showBatchDownloadModal, setShowBatchDownloadModal] = useState(false);
 
   useEffect(() => {
     if (manga?.coverUrl) {
@@ -65,12 +87,27 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
   useEffect(() => {
     loadMangaDetails();
-    setIsBookmarked(HistoryService.isBookmarked(mangaId));
+    const fav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+    setIsBookmarked(Boolean(fav));
+    setFavoriteData(fav);
+    setReadChapters(HistoryService.getReadChapters());
+    setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
 
     const unsubscribe = HistoryService.subscribe(() => {
-      setIsBookmarked(HistoryService.isBookmarked(mangaId));
+      const updatedFav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+      setIsBookmarked(Boolean(updatedFav));
+      setFavoriteData(updatedFav);
+      setReadChapters(HistoryService.getReadChapters());
     });
-    return unsubscribe;
+
+    const unsubscribeOffline = OfflineCacheService.subscribe(() => {
+      setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
+    });
+
+    return () => {
+      unsubscribe();
+      unsubscribeOffline();
+    };
   }, [mangaId]);
 
   const loadChapters = async (isDeduplicated = deduplicate) => {
@@ -80,11 +117,54 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       const chaptersData = await MangaApi.getChapters(mangaId, { order: chapterOrder, deduplicate: isDeduplicated });
       setChapters(chaptersData);
     } catch (err) {
-      console.error(err);
-      setChaptersError((err as Error).message || 'Erro ao carregar capítulos da fonte.');
-      setChapters([]);
+      console.warn('Failed to load chapters online, checking offline cache:', err);
+      const offlineChapters = OfflineCacheService.getSavedChaptersForManga(mangaId);
+      if (offlineChapters.length > 0) {
+        setChapters(offlineChapters.map(oc => ({
+          id: oc.chapterId,
+          mangaId: oc.mangaId,
+          chapterNumber: oc.chapterNumber,
+          title: oc.chapterTitle,
+          pagesCount: oc.pageCount,
+          language: 'pt-br',
+          sourceId: 'offline',
+          externalChapterId: oc.chapterId
+        })));
+        setChaptersError(null);
+      } else {
+        setChaptersError((err as Error).message || 'Erro ao carregar capítulos da fonte.');
+        setChapters([]);
+      }
     } finally {
       setChaptersLoading(false);
+    }
+  };
+
+  const loadRecommendations = async (targetManga: Manga) => {
+    setLoadingRecommendations(true);
+    try {
+      const primaryGenre = targetManga.genres?.find(g => g !== 'Favorito' && g !== 'Offline');
+      const author = targetManga.authors?.[0];
+
+      const searchRes = await MangaApi.search(author || '', {
+        genre: primaryGenre,
+        limit: 12
+      });
+
+      let recs = (searchRes.data || []).filter(m => m.id !== targetManga.id);
+
+      if (recs.length < 6) {
+        const featured = await MangaApi.getFeatured();
+        const extra = featured.filter(m => m.id !== targetManga.id && !recs.some(r => r.id === m.id));
+        recs = [...recs, ...extra];
+      }
+
+      setRecommendedManga(recs.slice(0, 6));
+    } catch (err) {
+      console.warn('Failed to load recommended manga:', err);
+      setRecommendedManga([]);
+    } finally {
+      setLoadingRecommendations(false);
     }
   };
 
@@ -94,14 +174,66 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     try {
       const mangaData = await MangaApi.getMangaDetails(mangaId);
       setManga(mangaData);
+      loadRecommendations(mangaData);
     } catch (err) {
-      console.error(err);
-      setError((err as Error).message || 'Erro ao carregar detalhes do mangá.');
+      console.warn('Failed to load manga details online, checking offline cache:', err);
+      const offlineChapters = OfflineCacheService.getSavedChaptersForManga(mangaId);
+      if (offlineChapters.length > 0) {
+        setManga({
+          id: mangaId,
+          title: offlineChapters[0].mangaTitle,
+          coverUrl: offlineChapters[0].mangaCover,
+          altTitles: [],
+          synopsis: 'Obra visualizada no modo offline com capítulos salvos no armazenamento local.',
+          authors: ['Offline'],
+          artists: [],
+          genres: ['Offline'],
+          status: 'ongoing',
+          publicationInfo: {},
+          updatedAt: new Date(offlineChapters[0].savedAt).toISOString(),
+          sources: [
+            {
+              sourceId: 'offline',
+              sourceName: 'Cache Offline',
+              externalId: mangaId
+            }
+          ]
+        });
+        setError(null);
+      } else {
+        setError((err as Error).message || 'Erro ao carregar detalhes do mangá.');
+      }
     } finally {
       setLoading(false);
     }
 
     loadChapters();
+  };
+
+  const handleToggleOfflineSaveChapter = async (e: React.MouseEvent, chapter: Chapter) => {
+    e.stopPropagation();
+    if (cachingOfflineIds[chapter.id]) return;
+
+    const isSaved = savedOfflineChapterIds.includes(chapter.id);
+    if (isSaved) {
+      await OfflineCacheService.removeChapter(chapter.id);
+    } else {
+      setCachingOfflineIds(prev => ({ ...prev, [chapter.id]: true }));
+      try {
+        const pages = await MangaApi.getChapterPages(chapter.id);
+        await OfflineCacheService.cacheChapter(chapter.id, pages, {
+          mangaId: manga?.id || mangaId,
+          mangaTitle: manga?.title || 'Mangá',
+          mangaCover: manga?.coverUrl || '',
+          chapterNumber: chapter.chapterNumber,
+          chapterTitle: chapter.title
+        });
+      } catch (err) {
+        console.error('Failed to cache chapter offline:', err);
+      } finally {
+        setCachingOfflineIds(prev => ({ ...prev, [chapter.id]: false }));
+      }
+    }
   };
 
   const toggleSort = () => {
@@ -138,6 +270,34 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCategoryChange = (category: LibraryCategory) => {
+    HistoryService.updateFavoriteCategory(mangaId, category);
+  };
+
+  const handleSaveScore = () => {
+    HistoryService.updateFavoriteScore(mangaId, modalScore, modalNotes);
+    setShowScoreModal(false);
+  };
+
+  const handleToggleChapterRead = (e: React.MouseEvent, chapterId: string) => {
+    e.stopPropagation();
+    if (readChapters.includes(chapterId)) {
+      HistoryService.unmarkChapterAsRead(chapterId);
+    } else {
+      HistoryService.markChapterAsRead(chapterId);
+    }
+  };
+
+  const handleMarkAllRead = () => {
+    const ids = chapters.map(c => c.id);
+    HistoryService.markMultipleChaptersAsRead(ids);
+  };
+
+  const handleUnmarkAllRead = () => {
+    const ids = chapters.map(c => c.id);
+    HistoryService.unmarkMultipleChaptersAsRead(ids);
+  };
+
   const readingProgress = HistoryService.getProgress(mangaId);
 
   // Unique languages among loaded chapters
@@ -145,6 +305,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
   // Filtered chapters
   const filteredChapters = chapters.filter(c => {
+    if (hideReadChapters && readChapters.includes(c.id)) return false;
     if (selectedLang !== 'all' && c.language !== selectedLang) return false;
     if (!chapterSearch) return true;
     const q = chapterSearch.toLowerCase();
@@ -230,18 +391,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               {readingProgress ? (
                 <button
                   onClick={() => onReadChapter(manga.id, readingProgress.chapterId)}
-                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-colors cursor-pointer"
+                  className="w-full py-2.5 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-all cursor-pointer"
                 >
                   <Clock className="h-4 w-4" />
-                  <span>Continuar Cap. {readingProgress.chapterNumber}</span>
+                  <span>Continuar Cap. {readingProgress.chapterNumber} (Pág. {readingProgress.pageNumber})</span>
                 </button>
               ) : firstChapter ? (
                 <button
                   onClick={() => onReadChapter(manga.id, firstChapter.id)}
-                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-medium text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-colors cursor-pointer"
+                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-colors cursor-pointer"
                 >
                   <BookOpen className="h-4 w-4" />
-                  <span>Ler Capítulo {firstChapter.chapterNumber}</span>
+                  <span>Começar a Ler (Cap. {firstChapter.chapterNumber})</span>
                 </button>
               ) : null}
 
@@ -266,6 +427,42 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <Share2 className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {/* Status and Rating controls (when bookmarked) */}
+              {isBookmarked && (
+                <div className="pt-2 border-t border-zinc-800/80 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-400 text-[11px] font-medium">Status</span>
+                    <select
+                      value={favoriteData?.userCategory || 'reading'}
+                      onChange={(e) => handleCategoryChange(e.target.value as LibraryCategory)}
+                      className="px-2 py-1 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-rose-300 font-semibold focus:outline-none focus:border-rose-500 cursor-pointer"
+                    >
+                      <option value="reading">Lendo</option>
+                      <option value="plan_to_read">Quero Ler</option>
+                      <option value="completed">Completo</option>
+                      <option value="on_hold">Pausado</option>
+                      <option value="dropped">Abandonado</option>
+                    </select>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setModalScore(favoriteData?.userScore || 10);
+                      setModalNotes(favoriteData?.userNotes || '');
+                      setShowScoreModal(true);
+                    }}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-amber-500/40 text-xs font-medium text-zinc-300 flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Star className={`h-3.5 w-3.5 ${favoriteData?.userScore ? 'fill-amber-400 text-amber-400' : 'text-zinc-500'}`} />
+                      <span>{favoriteData?.userScore ? `Minha Nota: ${favoriteData.userScore}/10` : 'Avaliar obra'}</span>
+                    </span>
+                    <Edit3 className="h-3 w-3 text-zinc-500" />
+                  </button>
+                </div>
+              )}
+
               {copied && (
                 <p className="text-[11px] text-emerald-400 text-center">Link copiado para a área de transferência!</p>
               )}
@@ -331,11 +528,25 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 mb-6 text-xs">
               <div>
                 <span className="text-zinc-500 block mb-0.5">Autor</span>
-                <span className="font-medium text-zinc-200 line-clamp-1">{manga.authors.join(', ')}</span>
+                <button
+                  type="button"
+                  onClick={() => onNavigateToSearch?.(manga.authors.join(' '))}
+                  className="font-medium text-zinc-200 hover:text-rose-400 transition-colors text-left line-clamp-1 cursor-pointer"
+                  title="Pesquisar outras obras deste autor"
+                >
+                  {manga.authors.join(', ')}
+                </button>
               </div>
               <div>
                 <span className="text-zinc-500 block mb-0.5">Artista</span>
-                <span className="font-medium text-zinc-200 line-clamp-1">{manga.artists.join(', ')}</span>
+                <button
+                  type="button"
+                  onClick={() => onNavigateToSearch?.(manga.artists.join(' '))}
+                  className="font-medium text-zinc-200 hover:text-rose-400 transition-colors text-left line-clamp-1 cursor-pointer"
+                  title="Pesquisar outras obras deste artista"
+                >
+                  {manga.artists.join(', ')}
+                </button>
               </div>
               <div>
                 <span className="text-zinc-500 block mb-0.5">Revista / Veículo</span>
@@ -347,12 +558,20 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               </div>
             </div>
 
-            {/* Unboxed Genres list */}
-            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300 mb-6">
-              <span className="text-zinc-500">Gêneros:</span>
-              <span className="font-medium text-zinc-300">
-                {manga.genres.join(' · ')}
-              </span>
+            {/* Clickable Genres Tags */}
+            <div className="flex flex-wrap items-center gap-1.5 mb-6">
+              <span className="text-xs text-zinc-500 mr-1">Gêneros:</span>
+              {manga.genres.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => onNavigateToSearch?.('', g)}
+                  className="px-2.5 py-1 rounded-lg bg-zinc-900/80 hover:bg-rose-950/30 text-zinc-300 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 text-xs font-medium transition-all cursor-pointer shadow-sm"
+                  title={`Ver catálogo filtrado por ${g}`}
+                >
+                  #{g}
+                </button>
+              ))}
             </div>
 
             {/* Synopsis */}
@@ -513,6 +732,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 >
                   <ArrowUpDown className="h-3.5 w-3.5 text-rose-400" />
                   <span>{chapterOrder === 'asc' ? '1 → Fim' : 'Fim → 1'}</span>
+                </button>
+
+                {/* Batch Download Button */}
+                <button
+                  onClick={() => setShowBatchDownloadModal(true)}
+                  disabled={chapters.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 rounded-lg text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer disabled:opacity-40"
+                  title="Baixar múltiplos capítulos para leitura offline em lote"
+                >
+                  <HardDriveDownload className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">Baixar em Lote</span>
+                  <span className="sm:hidden">Lote</span>
                 </button>
               </div>
             </div>
@@ -688,14 +919,49 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           </button>
                         )}
 
+                        {/* Offline PWA Cache Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleOfflineSaveChapter(e, chapter)}
+                          disabled={Boolean(cachingOfflineIds[chapter.id])}
+                          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                            savedOfflineChapterIds.includes(chapter.id)
+                              ? 'text-emerald-400 bg-emerald-500/10 hover:bg-rose-500/10 hover:text-rose-400'
+                              : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
+                          }`}
+                          title={
+                            savedOfflineChapterIds.includes(chapter.id)
+                              ? 'Salvo offline no Cache do PWA (Clique para remover)'
+                              : 'Salvar no Cache do PWA para leitura 100% offline'
+                          }
+                        >
+                          {cachingOfflineIds[chapter.id] ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+                          ) : (
+                            <HardDriveDownload className={`h-4 w-4 ${savedOfflineChapterIds.includes(chapter.id) ? 'fill-emerald-500/20' : ''}`} />
+                          )}
+                        </button>
+
+                        {/* Download CBZ */}
                         <a
                           href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
                           download
                           onClick={(e) => e.stopPropagation()}
-                          className="p-1.5 text-zinc-500 hover:text-rose-400 transition-colors"
-                          title="Baixar capítulo (.cbz)"
+                          className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                          title="Baixar capítulo em formato ComicBook (.cbz)"
                         >
-                          <Download className="h-4 w-4" />
+                          CBZ
+                        </a>
+
+                        {/* Download PDF */}
+                        <a
+                          href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=pdf`}
+                          download
+                          onClick={(e) => e.stopPropagation()}
+                          className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                          title="Baixar capítulo em documento PDF"
+                        >
+                          PDF
                         </a>
 
                         <button
@@ -776,10 +1042,19 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                                 href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=cbz`}
                                 download
                                 onClick={(e) => e.stopPropagation()}
-                                className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
+                                className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
                                 title="Baixar esta versão (.cbz)"
                               >
-                                <Download className="h-3.5 w-3.5" />
+                                CBZ
+                              </a>
+                              <a
+                                href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=pdf`}
+                                download
+                                onClick={(e) => e.stopPropagation()}
+                                className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                                title="Baixar esta versão (.pdf)"
+                              >
+                                PDF
                               </a>
                               <button
                                 onClick={() => onReadChapter(manga.id, v.id)}
@@ -798,7 +1073,126 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             </div>
           )}
         </section>
+
+        {/* Recommended & Similar Manga Section */}
+        {recommendedManga.length > 0 && (
+          <section className="mt-14 pt-8 border-t border-zinc-800">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-amber-400" />
+                  <span>Obras Relacionadas & Recomendações</span>
+                </h3>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Títulos similares com base em temática, autores e gêneros compartilhados
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {recommendedManga.map((rec) => (
+                <MangaCard
+                  key={rec.id}
+                  manga={rec}
+                  onSelect={(id) => {
+                    onSelectManga?.(id);
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  onQuickRead={(id) => onReadChapter(id, '')}
+                />
+              ))}
+            </div>
+          </section>
+        )}
       </div>
+
+      {/* Batch Download Modal for Offline Caching */}
+      {manga && (
+        <BatchDownloadModal
+          isOpen={showBatchDownloadModal}
+          onClose={() => setShowBatchDownloadModal(false)}
+          manga={manga}
+          chapters={chapters}
+          readChapterIds={readChapters}
+          savedChapterIds={savedOfflineChapterIds}
+        />
+      )}
+
+      {/* Modal for User Rating & Personal Notes */}
+      {showScoreModal && manga && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setShowScoreModal(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <Star className="h-5 w-5 text-amber-400 fill-amber-400" />
+                <h3 className="text-sm font-bold text-white line-clamp-1">
+                  Avaliar: {manga.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowScoreModal(false)}
+                className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="py-4 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-2">
+                  Sua Nota (1 a 10):{' '}
+                  <span className="font-mono text-amber-400 font-bold text-sm">
+                    {modalScore} / 10
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={modalScore}
+                  onChange={(e) => setModalScore(parseInt(e.target.value, 10))}
+                  className="w-full accent-amber-400 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                  Notas Pessoais (Opcional):
+                </label>
+                <textarea
+                  rows={3}
+                  value={modalNotes}
+                  onChange={(e) => setModalNotes(e.target.value)}
+                  placeholder="Ex: Parei no arco do torneio, animação muito fiel..."
+                  className="w-full rounded-lg bg-zinc-950 border border-zinc-800 p-2.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+              <button
+                onClick={() => setShowScoreModal(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 bg-zinc-800/60 hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveScore}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition-colors shadow-md shadow-rose-950/40 cursor-pointer"
+              >
+                Salvar Avaliação
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

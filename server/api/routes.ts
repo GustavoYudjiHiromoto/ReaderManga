@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { ZipArchive } from 'archiver';
+import PDFDocument from 'pdfkit';
+import sharp from 'sharp';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
 import { HttpError } from '../errors/HttpError.js';
 import { globalCache } from '../cache/CacheService.js';
@@ -309,7 +311,8 @@ apiRouter.get(/^\/chapters\/(.+)\/pages$/, async (req: Request, res: Response) =
 apiRouter.get(/^\/chapters\/(.+)\/download$/, async (req: Request, res: Response) => {
   try {
     const internalChapterId = req.params[0] || (req.params as any).id;
-    const format = (req.query.format as string) === 'zip' ? 'zip' : 'cbz';
+    const reqFormat = (req.query.format as string)?.toLowerCase();
+    const format = reqFormat === 'pdf' ? 'pdf' : reqFormat === 'zip' ? 'zip' : 'cbz';
     const pages = await sourceRegistry.getChapterPages(internalChapterId);
 
     if (!pages || pages.length === 0) {
@@ -341,6 +344,47 @@ apiRouter.get(/^\/chapters\/(.+)\/download$/, async (req: Request, res: Response
     const safeTitle = mangaTitle.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 40);
     const filename = `${safeTitle}_cap_${chapterNum}.${format}`;
 
+    // PDF Generation Flow
+    if (format === 'pdf') {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'no-cache');
+
+      const doc = new PDFDocument({ autoFirstPage: false });
+      doc.pipe(res);
+
+      const chunkSize = 4;
+      for (let i = 0; i < pages.length; i += chunkSize) {
+        const chunk = pages.slice(i, i + chunkSize);
+        const results = await Promise.all(
+          chunk.map(async (page) => {
+            const res = await fetchImageBuffer(page.imageUrl);
+            return { pageNumber: page.pageNumber, data: res };
+          })
+        );
+
+        for (const item of results) {
+          if (item.data?.buffer) {
+            try {
+              let imgBuffer = item.data.buffer;
+              if (item.data.contentType.includes('webp')) {
+                imgBuffer = await sharp(item.data.buffer).jpeg({ quality: 90 }).toBuffer();
+              }
+              const img = (doc as any).openImage(imgBuffer);
+              doc.addPage({ size: [img.width, img.height], margin: 0 });
+              doc.image(img, 0, 0, { width: img.width, height: img.height });
+            } catch (pdfErr) {
+              console.warn(`PDF error embedding page ${item.pageNumber}:`, pdfErr);
+            }
+          }
+        }
+      }
+
+      doc.end();
+      return;
+    }
+
+    // CBZ / ZIP Archive Flow
     const contentType = format === 'cbz' ? 'application/vnd.comicbook+zip' : 'application/zip';
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

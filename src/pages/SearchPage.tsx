@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Layers, ArrowRight, Shield, ShieldAlert, Check } from 'lucide-react';
+import { Search, X, Filter, BookOpen, RefreshCw, Layers, ArrowRight, Shield, ShieldAlert, Check, Dices } from 'lucide-react';
 import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
@@ -163,6 +163,17 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     executeSearch(query, selectedSource, selectedGenre, safeSearch, nextAvail);
   };
 
+  const handleRandomManga = async () => {
+    try {
+      const pool = results.length > 0 ? results : (await MangaApi.getFeatured());
+      if (pool.length === 0) return;
+      const chosen = pool[Math.floor(Math.random() * pool.length)];
+      onSelectManga(chosen.id);
+    } catch (err) {
+      console.warn('Failed to pick random manga:', err);
+    }
+  };
+
   const POPULAR_SEARCH_TERMS = ['Frieren', 'Chainsaw Man', 'One-Punch Man', 'Solo Leveling', 'Berserk', 'Spy x Family', 'Jujutsu', 'One Piece'];
   const GENRES = ['all', 'Ação', 'Fantasia', 'Comédia', 'Aventura', 'Drama', 'Sobrenatural', 'Histórico', 'Horror', 'Sci-Fi', 'Romance', 'Mistério'];
 
@@ -276,6 +287,16 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               >
                 <BookOpen className="h-3.5 w-3.5 text-zinc-400" />
                 <span>{onlyAvailable ? 'Apenas com Capítulos' : 'Todos os Catálogos'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRandomManga}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 hover:border-amber-500/60 bg-zinc-900 text-amber-300 hover:text-amber-200 transition-all cursor-pointer shadow-sm"
+                title="Sortear uma obra aleatória"
+              >
+                <Dices className="h-3.5 w-3.5 text-amber-400" />
+                <span>Surpreenda-me</span>
               </button>
             </div>
           </div>

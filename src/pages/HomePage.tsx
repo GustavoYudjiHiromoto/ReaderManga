@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Sparkles, Flame, Clock, Search, ArrowRight, Star, RefreshCw } from 'lucide-react';
+import { BookOpen, Sparkles, Flame, Clock, Search, ArrowRight, Star, RefreshCw, Dices } from 'lucide-react';
 import { Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
@@ -149,6 +149,14 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
+  const handleRandomManga = () => {
+    const pool = catalogManga.length > 0 ? catalogManga : featuredManga;
+    if (pool.length === 0) return;
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    const chosen = pool[randomIndex];
+    onSelectManga(chosen.id);
+  };
+
   // Dominant spotlight manga: prioritize readable, safe featured manga
   const heroManga = featuredManga.find(m => m.hasAvailableChapters !== false && !m.isAdult) || featuredManga[0];
   const [heroCoverSrc, setHeroCoverSrc] = useState('');
@@ -269,6 +277,15 @@ export const HomePage: React.FC<HomePageProps> = ({
                   >
                     Ver Informações e Capítulos
                   </button>
+
+                  <button
+                    onClick={handleRandomManga}
+                    className="px-4 py-2.5 bg-zinc-900/90 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 rounded-lg font-medium text-sm border border-amber-500/30 hover:border-amber-500/50 transition-colors flex items-center gap-2 cursor-pointer shadow-sm"
+                    title="Sortear uma obra aleatória do catálogo"
+                  >
+                    <Dices className="h-4 w-4 text-amber-400" />
+                    <span>Surpreenda-me</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -351,8 +368,18 @@ export const HomePage: React.FC<HomePageProps> = ({
               </p>
             </div>
 
-            {/* Source Segmented Control */}
-            <div className="flex flex-wrap items-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                onClick={handleRandomManga}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-amber-500/30 hover:border-amber-500/50 text-amber-300 hover:text-amber-200 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+                title="Sortear um mangá aleatório do catálogo"
+              >
+                <Dices className="h-3.5 w-3.5 text-amber-400" />
+                <span>Aleatório</span>
+              </button>
+
+              {/* Source Segmented Control */}
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-zinc-900 rounded-lg border border-zinc-800">
               <button
                 onClick={() => handleSourceChange('all')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
@@ -382,6 +409,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   </button>
                 );
               })}
+              </div>
             </div>
           </div>
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Navbar } from './components/Navbar.js';
 import { Footer } from './components/Footer.js';
 import { HistoryDrawer } from './components/HistoryDrawer.js';
+import { DownloadsModal } from './components/DownloadsModal.js';
 import { OfflineIndicator } from './components/OfflineIndicator.js';
 import { HomePage } from './pages/HomePage.js';
 import { SearchPage } from './pages/SearchPage.js';
@@ -10,6 +11,7 @@ import { ReaderPage } from './pages/ReaderPage.js';
 import { ApiDocPage } from './pages/ApiDocPage.js';
 import { FavoritesPage } from './pages/FavoritesPage.js';
 import { HistoryService } from './services/history.js';
+import { OfflineCacheService } from './services/offlineCache.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
 
 type TabType = 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader';
@@ -77,8 +79,10 @@ export default function App() {
   const [inAppHistoryDepth, setInAppHistoryDepth] = useState<number>(0);
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
+  const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
 
   // Scroll to catalog section helper
   const scrollToCatalog = () => {
@@ -98,6 +102,11 @@ export default function App() {
     const unsubscribeHistory = HistoryService.subscribe(() => {
       setHistory(HistoryService.getHistory());
       setFavorites(HistoryService.getFavorites());
+    });
+
+    // Subscribe to offline cache changes
+    const unsubscribeOffline = OfflineCacheService.subscribe(() => {
+      setOfflineCount(OfflineCacheService.getAllSavedChapters().length);
     });
 
     // Set initial state in browser history if not present
@@ -146,6 +155,7 @@ export default function App() {
     return () => {
       window.removeEventListener('popstate', handlePopState);
       unsubscribeHistory();
+      unsubscribeOffline();
     };
   }, []);
 
@@ -279,8 +289,10 @@ export default function App() {
           currentTab={currentTab}
           onNavigate={handleNavigate}
           onOpenHistory={() => setIsHistoryOpen(true)}
+          onOpenDownloads={() => setIsDownloadsOpen(true)}
           historyCount={history.length}
           favoritesCount={favorites.length}
+          offlineCount={offlineCount}
         />
       )}
 
@@ -315,6 +327,7 @@ export default function App() {
             onSelectManga={(mangaId) => handleSelectManga(mangaId, 'favorites')}
             onReadChapter={handleReadChapter}
             onNavigateToCatalog={() => handleNavigate('catalog')}
+            onOpenDownloads={() => setIsDownloadsOpen(true)}
           />
         </div>
 
@@ -325,6 +338,20 @@ export default function App() {
             onBack={handleBackFromDetail}
             onReadChapter={handleReadChapter}
             onSelectManga={(id) => handleSelectManga(id, mangaDetailOrigin)}
+            onNavigateToSearch={(query, genre) => {
+              if (genre) {
+                setSearchInitialQuery('');
+                window.history.pushState(
+                  { tab: 'search', depth: inAppHistoryDepth + 1 },
+                  '',
+                  `/search?genre=${encodeURIComponent(genre)}`
+                );
+                setCurrentTab('search');
+              } else {
+                setSearchInitialQuery(query || '');
+                handleNavigate('search');
+              }
+            }}
           />
         )}
 
@@ -363,6 +390,14 @@ export default function App() {
         history={history}
         onResume={handleResumeProgress}
         onRemove={handleRemoveHistory}
+      />
+
+      {/* Offline Downloads & Cache Storage Modal */}
+      <DownloadsModal
+        isOpen={isDownloadsOpen}
+        onClose={() => setIsDownloadsOpen(false)}
+        onReadChapter={handleReadChapter}
+        onNavigateToCatalog={() => handleNavigate('catalog')}
       />
 
       {/* Floating Offline Notification */}

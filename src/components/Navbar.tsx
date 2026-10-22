@@ -1,21 +1,25 @@
 import React from 'react';
-import { BookOpen, Search, Layers, Clock, Bookmark, Sparkles } from 'lucide-react';
+import { BookOpen, Search, Layers, Clock, Bookmark, Sparkles, HardDriveDownload } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface NavbarProps {
   currentTab: 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader';
   onNavigate: (tab: 'home' | 'catalog' | 'search' | 'favorites' | 'api') => void;
   onOpenHistory: () => void;
+  onOpenDownloads?: () => void;
   historyCount: number;
   favoritesCount?: number;
+  offlineCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onNavigate,
   onOpenHistory,
+  onOpenDownloads,
   historyCount,
-  favoritesCount = 0
+  favoritesCount = 0,
+  offlineCount = 0
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md">
@@ -106,6 +110,22 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <PWAInstallButton />
+
+          {onOpenDownloads && (
+            <button
+              onClick={onOpenDownloads}
+              className="relative flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-300 bg-zinc-900 hover:bg-zinc-800 hover:text-zinc-100 border border-zinc-800 transition-colors cursor-pointer"
+              title="Capítulos salvos para leitura offline"
+            >
+              <HardDriveDownload className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Offline</span>
+              {offlineCount > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono tabular-nums">
+                  {offlineCount}
+                </span>
+              )}
+            </button>
+          )}
 
           <button
             onClick={onOpenHistory}

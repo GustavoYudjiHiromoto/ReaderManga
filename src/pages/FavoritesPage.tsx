@@ -16,18 +16,25 @@ import {
   ArrowUpDown,
   Bell,
   Clock,
-  X
+  X,
+  Star,
+  Tag,
+  Edit3,
+  HardDriveDownload
 } from 'lucide-react';
-import { FavoriteManga, Manga, ReadingProgress } from '../types/manga.js';
+import { FavoriteManga, Manga, ReadingProgress, LibraryCategory } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
 import { ReadingStatsSummary } from '../components/ReadingStatsSummary.js';
+import { OfflineCacheService } from '../services/offlineCache.js';
+import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
 
 interface FavoritesPageProps {
   onSelectManga: (mangaId: string) => void;
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   onNavigateToCatalog: () => void;
+  onOpenDownloads?: () => void;
 }
 
 interface UpdateInfo {
@@ -37,20 +44,38 @@ interface UpdateInfo {
   lastReadNumber?: string;
 }
 
+const CATEGORY_LABELS: Record<LibraryCategory, { label: string; color: string; badgeBg: string }> = {
+  reading: { label: 'Lendo', color: 'text-rose-400', badgeBg: 'bg-rose-500/10 border-rose-500/30' },
+  plan_to_read: { label: 'Quero Ler', color: 'text-sky-400', badgeBg: 'bg-sky-500/10 border-sky-500/30' },
+  completed: { label: 'Completo', color: 'text-emerald-400', badgeBg: 'bg-emerald-500/10 border-emerald-500/30' },
+  on_hold: { label: 'Pausado', color: 'text-amber-400', badgeBg: 'bg-amber-500/10 border-amber-500/30' },
+  dropped: { label: 'Abandonado', color: 'text-zinc-500', badgeBg: 'bg-zinc-800/40 border-zinc-700/30' }
+};
+
 export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   onSelectManga,
   onReadChapter,
-  onNavigateToCatalog
+  onNavigateToCatalog,
+  onOpenDownloads
 }) => {
   const [favorites, setFavorites] = useState<FavoriteManga[]>([]);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [offlineChaptersCount, setOfflineChaptersCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
+  const [pageBookmarksCount, setPageBookmarksCount] = useState<number>(() => HistoryService.getPageBookmarks().length);
+  const [showBookmarksModal, setShowBookmarksModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Search, filter & sort states
+  // Search, filter, category & sort states
+  const [selectedCategory, setSelectedCategory] = useState<'all' | LibraryCategory>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSource, setSelectedSource] = useState('all');
-  const [sortBy, setSortBy] = useState<'recent' | 'title-asc' | 'title-desc'>('recent');
+  const [sortBy, setSortBy] = useState<'recent' | 'title-asc' | 'title-desc' | 'score-desc'>('recent');
   const [filterOnlyUnread, setFilterOnlyUnread] = useState(false);
+
+  // Score & Notes Modal state
+  const [editingScoreManga, setEditingScoreManga] = useState<FavoriteManga | null>(null);
+  const [modalScore, setModalScore] = useState<number>(10);
+  const [modalNotes, setModalNotes] = useState<string>('');
 
   // Live update tracker state
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
@@ -60,13 +85,23 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   useEffect(() => {
     // Initial load
     setFavorites(HistoryService.getFavorites());
+    setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
+    setPageBookmarksCount(HistoryService.getPageBookmarks().length);
 
     // Subscribe to real-time changes
-    const unsubscribe = HistoryService.subscribe(() => {
+    const unsubscribeHistory = HistoryService.subscribe(() => {
       setFavorites(HistoryService.getFavorites());
+      setPageBookmarksCount(HistoryService.getPageBookmarks().length);
     });
 
-    return unsubscribe;
+    const unsubscribeOffline = OfflineCacheService.subscribe(() => {
+      setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
+    });
+
+    return () => {
+      unsubscribeHistory();
+      unsubscribeOffline();
+    };
   }, []);
 
   const handleExport = () => {
@@ -74,6 +109,15 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     setNotification({
       type: 'success',
       message: 'Backup da biblioteca exportado com sucesso!'
+    });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
+  const handleExportTachiyomi = () => {
+    HistoryService.downloadTachiyomiBackupFile();
+    setNotification({
+      type: 'success',
+      message: 'Backup formatado para Tachiyomi e Mihon exportado com sucesso!'
     });
     setTimeout(() => setNotification(null), 4000);
   };
@@ -108,6 +152,28 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const handleRemove = (e: React.MouseEvent, mangaId: string) => {
     e.stopPropagation();
     HistoryService.removeFavorite(mangaId);
+  };
+
+  const handleChangeCategory = (mangaId: string, category: LibraryCategory) => {
+    HistoryService.updateFavoriteCategory(mangaId, category);
+  };
+
+  const openScoreModal = (e: React.MouseEvent, fav: FavoriteManga) => {
+    e.stopPropagation();
+    setEditingScoreManga(fav);
+    setModalScore(fav.userScore || 10);
+    setModalNotes(fav.userNotes || '');
+  };
+
+  const handleSaveScoreModal = () => {
+    if (!editingScoreManga) return;
+    HistoryService.updateFavoriteScore(editingScoreManga.mangaId, modalScore, modalNotes);
+    setEditingScoreManga(null);
+    setNotification({
+      type: 'success',
+      message: `Avaliação e notas salvas para ${editingScoreManga.title}!`
+    });
+    setTimeout(() => setNotification(null), 3000);
   };
 
   const handleQuickRead = async (mangaId: string) => {
@@ -235,9 +301,24 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     };
   };
 
+  // Category counts
+  const categoryCounts = {
+    all: favorites.length,
+    reading: favorites.filter(f => (f.userCategory || 'reading') === 'reading').length,
+    plan_to_read: favorites.filter(f => f.userCategory === 'plan_to_read').length,
+    completed: favorites.filter(f => f.userCategory === 'completed').length,
+    on_hold: favorites.filter(f => f.userCategory === 'on_hold').length,
+    dropped: favorites.filter(f => f.userCategory === 'dropped').length
+  };
+
   // Filter & sort logic
   const filteredFavorites = favorites
     .filter((fav) => {
+      // Category filter
+      if (selectedCategory !== 'all') {
+        const cat = fav.userCategory || 'reading';
+        if (cat !== selectedCategory) return false;
+      }
       // Search term
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
@@ -266,6 +347,9 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       if (sortBy === 'title-desc') {
         return b.title.localeCompare(a.title);
       }
+      if (sortBy === 'score-desc') {
+        return (b.userScore || 0) - (a.userScore || 0);
+      }
       return (b.updatedAt || 0) - (a.updatedAt || 0);
     });
 
@@ -287,7 +371,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               </h1>
             </div>
             <p className="text-xs sm:text-sm text-zinc-400">
-              Suas obras favoritas salvas localmente para acesso rápido, acompanhamento e estatísticas
+              Suas obras favoritas salvas localmente para acesso rápido, organização por status e acompanhamento
             </p>
           </div>
 
@@ -315,21 +399,65 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             {/* Export Backup Button */}
             <button
               onClick={handleExport}
-              title="Exportar backup completo de favoritos e histórico em arquivo JSON"
+              title="Exportar backup completo (MangaReader JSON)"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
             >
               <Download className="h-3.5 w-3.5 text-rose-400" />
-              <span className="hidden sm:inline">Exportar</span>
+              <span className="hidden sm:inline">Exportar JSON</span>
+              <span className="sm:hidden">JSON</span>
+            </button>
+
+            {/* Export Tachiyomi / Mihon Button */}
+            <button
+              onClick={handleExportTachiyomi}
+              title="Exportar biblioteca em formato compatível com Tachiyomi e Mihon"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-amber-500/40 text-xs text-amber-300 hover:text-amber-200 font-medium transition-colors cursor-pointer"
+            >
+              <Download className="h-3.5 w-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Tachiyomi/Mihon</span>
+              <span className="sm:hidden">Mihon</span>
             </button>
 
             {/* Import Backup Button */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              title="Importar e mesclar backup de biblioteca de arquivo JSON"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+              title="Importar e mesclar backup de biblioteca (MangaReader ou Tachiyomi/Mihon)"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
             >
               <Upload className="h-3.5 w-3.5 text-emerald-400" />
               <span className="hidden sm:inline">Restaurar</span>
+            </button>
+
+            {/* Downloads Offline Button */}
+            {onOpenDownloads && (
+              <button
+                onClick={onOpenDownloads}
+                title="Ver e gerenciar capítulos salvos para leitura offline"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+              >
+                <HardDriveDownload className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">Offline</span>
+                {offlineChaptersCount > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono tabular-nums">
+                    {offlineChaptersCount}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* Page Bookmarks Button */}
+            <button
+              onClick={() => setShowBookmarksModal(true)}
+              title="Ver todas as páginas marcadas na leitura"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+            >
+              <Bookmark className="h-3.5 w-3.5 text-rose-400" />
+              <span className="hidden sm:inline">Marcadores</span>
+              {pageBookmarksCount > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
+                  {pageBookmarksCount}
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -369,6 +497,37 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         {/* Reading Stats Summary Dashboard */}
         <ReadingStatsSummary favoritesCount={favorites.length} />
 
+        {/* Category Navigation Tabs (AniList / MAL Style) */}
+        {favorites.length > 0 && (
+          <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-zinc-800/80 pb-3">
+            {[
+              { id: 'all', label: 'Todos', count: categoryCounts.all },
+              { id: 'reading', label: 'Lendo', count: categoryCounts.reading },
+              { id: 'plan_to_read', label: 'Quero Ler', count: categoryCounts.plan_to_read },
+              { id: 'completed', label: 'Completos', count: categoryCounts.completed },
+              { id: 'on_hold', label: 'Pausados', count: categoryCounts.on_hold },
+              { id: 'dropped', label: 'Abandonados', count: categoryCounts.dropped }
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setSelectedCategory(tab.id as any)}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  selectedCategory === tab.id
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40'
+                    : 'bg-zinc-900/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono tabular-nums ${
+                  selectedCategory === tab.id ? 'bg-white/20 text-white' : 'bg-zinc-800 text-zinc-400'
+                }`}>
+                  {tab.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Filter & Search Toolbar (Only when library has items) */}
         {favorites.length > 0 && (
           <div className="mb-6 space-y-3.5 p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/70">
@@ -407,6 +566,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     <option value="recent">Mais Recentes</option>
                     <option value="title-asc">Título (A-Z)</option>
                     <option value="title-desc">Título (Z-A)</option>
+                    <option value="score-desc">Melhor Avaliação</option>
                   </select>
                 </div>
               </div>
@@ -478,10 +638,11 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         ) : filteredFavorites.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 px-4 text-center bg-zinc-900/20 rounded-2xl border border-zinc-800/40 my-6">
             <Search className="h-8 w-8 text-zinc-600 mb-2" />
-            <h3 className="text-sm font-semibold text-zinc-300">Nenhuma obra encontrada nos filtros</h3>
-            <p className="text-xs text-zinc-500 mt-1">Tente ajustar o termo de pesquisa ou a fonte selecionada.</p>
+            <h3 className="text-sm font-semibold text-zinc-300">Nenhuma obra encontrada nesta categoria/filtro</h3>
+            <p className="text-xs text-zinc-500 mt-1">Tente selecionar outra aba de status ou limpar o termo de pesquisa.</p>
             <button
               onClick={() => {
+                setSelectedCategory('all');
                 setSearchQuery('');
                 setSelectedSource('all');
                 setFilterOnlyUnread(false);
@@ -497,6 +658,8 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             {filteredFavorites.map((fav) => {
               const updateInfo = updatesMap[fav.mangaId];
               const progress = HistoryService.getProgress(fav.mangaId);
+              const currentCat = fav.userCategory || 'reading';
+              const catMeta = CATEGORY_LABELS[currentCat] || CATEGORY_LABELS.reading;
 
               return (
                 <div key={fav.mangaId} className="group relative flex flex-col">
@@ -526,6 +689,27 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                       </button>
                     )}
 
+                    {/* Floating User Rating Badge */}
+                    {fav.userScore ? (
+                      <button
+                        onClick={(e) => openScoreModal(e, fav)}
+                        title="Ver ou editar avaliação pessoal"
+                        className="absolute bottom-2 left-2 z-20 flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-950/90 border border-amber-500/50 text-amber-400 text-[10px] font-bold shadow-lg backdrop-blur-sm cursor-pointer hover:border-amber-400"
+                      >
+                        <Star className="h-3 w-3 fill-amber-400" />
+                        <span>{fav.userScore}/10</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => openScoreModal(e, fav)}
+                        title="Avaliar esta obra (1-10 estrelas)"
+                        className="absolute bottom-2 left-2 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-zinc-950/80 border border-zinc-800 text-zinc-400 text-[10px] opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm cursor-pointer hover:text-amber-400 hover:border-amber-500/50"
+                      >
+                        <Star className="h-3 w-3" />
+                        <span>Avaliar</span>
+                      </button>
+                    )}
+
                     {/* Remove button badge */}
                     <button
                       onClick={(e) => handleRemove(e, fav.mangaId)}
@@ -536,25 +720,143 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     </button>
                   </div>
 
-                  {/* Reading Progress Indicator underneath card */}
-                  {progress && (
-                    <div className="mt-1.5 px-1 flex items-center justify-between text-[10px] text-zinc-400 font-mono">
-                      <span className="flex items-center gap-1">
-                        <Clock className="h-3 w-3 text-rose-400/80" />
-                        Lido: Cap. {progress.chapterNumber}
-                      </span>
-                      {updateInfo?.latestChapterNumber && (
-                        <span className="text-zinc-500">
-                          Recente: {updateInfo.latestChapterNumber}
-                        </span>
-                      )}
+                  {/* Category Status & Progress underneath card */}
+                  <div className="mt-2 flex flex-col gap-1 px-0.5">
+                    <div className="flex items-center justify-between gap-1">
+                      {/* Category Selector Pill */}
+                      <select
+                        value={currentCat}
+                        onChange={(e) => handleChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${catMeta.badgeBg} ${catMeta.color} bg-zinc-950 cursor-pointer focus:outline-none`}
+                        title="Alterar status de leitura"
+                      >
+                        <option value="reading" className="bg-zinc-900 text-rose-300">Lendo</option>
+                        <option value="plan_to_read" className="bg-zinc-900 text-sky-300">Quero Ler</option>
+                        <option value="completed" className="bg-zinc-900 text-emerald-300">Completo</option>
+                        <option value="on_hold" className="bg-zinc-900 text-amber-300">Pausado</option>
+                        <option value="dropped" className="bg-zinc-900 text-zinc-400">Abandonado</option>
+                      </select>
+
+                      {/* Edit score icon */}
+                      <button
+                        onClick={(e) => openScoreModal(e, fav)}
+                        title="Adicionar nota ou avaliação"
+                        className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
+                      >
+                        <Edit3 className="h-3 w-3" />
+                      </button>
                     </div>
-                  )}
+
+                    {/* Reading Progress Chapter */}
+                    {progress && (
+                      <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono">
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-2.5 w-2.5 text-rose-400/80" />
+                          Lido: Cap. {progress.chapterNumber}
+                        </span>
+                        {updateInfo?.latestChapterNumber && (
+                          <span className="text-zinc-500">
+                            Recente: {updateInfo.latestChapterNumber}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
+
+        {/* Modal for User Rating & Notes */}
+        {editingScoreManga && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Star className="h-5 w-5 text-amber-400 fill-amber-400" />
+                  <h3 className="text-sm font-bold text-white line-clamp-1">
+                    Avaliar: {editingScoreManga.title}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setEditingScoreManga(null)}
+                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {/* Score slider or buttons (1 to 10) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs text-zinc-400 font-medium">Nota Pessoal</label>
+                    <span className="text-sm font-extrabold text-amber-400 font-mono">
+                      ⭐ {modalScore} / 10
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    step="1"
+                    value={modalScore}
+                    onChange={(e) => setModalScore(Number(e.target.value))}
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-zinc-500 font-mono mt-1">
+                    <span>1 (Ruim)</span>
+                    <span>5 (Médio)</span>
+                    <span>10 (Obra-prima)</span>
+                  </div>
+                </div>
+
+                {/* Notes input */}
+                <div>
+                  <label className="text-xs text-zinc-400 font-medium block mb-1.5">
+                    Anotações Pessoais (Opcional)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={modalNotes}
+                    onChange={(e) => setModalNotes(e.target.value)}
+                    placeholder="Ex: Arte impressionante no arco atual, reler volume 3..."
+                    className="w-full p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-amber-500/60"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-6 flex items-center justify-end gap-2.5 pt-3 border-t border-zinc-800">
+                <button
+                  onClick={() => setEditingScoreManga(null)}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleSaveScoreModal}
+                  className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold shadow-md shadow-amber-950/50 transition-colors cursor-pointer"
+                >
+                  Salvar Avaliação
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal for Page Bookmarks & Snapshots */}
+        <PageBookmarksModal
+          isOpen={showBookmarksModal}
+          onClose={() => setShowBookmarksModal(false)}
+          onJumpToPage={(mangaId, chapterId) => {
+            if (onReadChapter) {
+              onReadChapter(mangaId, chapterId);
+            } else {
+              onSelectManga(mangaId);
+            }
+          }}
+        />
       </div>
     </div>
   );

@@ -108,6 +108,8 @@ export interface ReadingProgress {
   updatedAt: number;
 }
 
+export type LibraryCategory = 'reading' | 'plan_to_read' | 'completed' | 'on_hold' | 'dropped';
+
 export interface FavoriteManga {
   mangaId: string;
   title: string;
@@ -118,6 +120,9 @@ export interface FavoriteManga {
   authors?: string[];
   genres?: string[];
   status?: MangaStatus;
+  userCategory?: LibraryCategory;
+  userScore?: number; // 1 to 10
+  userNotes?: string;
   updatedAt: number;
 }
 
@@ -131,6 +136,20 @@ export interface ReadingStats {
   lastReadDate?: string;
 }
 
+export interface PageBookmark {
+  id: string; // e.g., 'bm_1730000000_xyz'
+  mangaId: string;
+  mangaTitle: string;
+  mangaCover: string;
+  chapterId: string;
+  chapterNumber: string;
+  chapterTitle?: string;
+  pageNumber: number; // 1-based page index
+  imageUrl: string;
+  note?: string;
+  createdAt: number;
+}
+
 export interface LibraryBackup {
   version: number;
   exportedAt: string;
@@ -139,4 +158,5 @@ export interface LibraryBackup {
   history: ReadingProgress[];
   stats?: ReadingStats;
   readChapters?: string[];
+  pageBookmarks?: PageBookmark[];
 }

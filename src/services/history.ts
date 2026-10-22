@@ -1,9 +1,10 @@
-import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats } from '../types/manga.js';
+import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark } from '../types/manga.js';
 
 const STORAGE_KEY = 'manga_reader_history_v1';
 const BOOKMARKS_KEY = 'manga_reader_bookmarks_v1';
 const STATS_KEY = 'manga_reader_reading_stats_v1';
 const READ_CHAPTERS_KEY = 'manga_reader_read_chapters_v1';
+const PAGE_BOOKMARKS_KEY = 'manga_reader_page_bookmarks_v1';
 
 type HistoryListener = () => void;
 const listeners = new Set<HistoryListener>();
@@ -42,7 +43,8 @@ if (typeof window !== 'undefined') {
       event.key === STORAGE_KEY ||
       event.key === BOOKMARKS_KEY ||
       event.key === STATS_KEY ||
-      event.key === READ_CHAPTERS_KEY
+      event.key === READ_CHAPTERS_KEY ||
+      event.key === PAGE_BOOKMARKS_KEY
     ) {
       notifyListeners();
     }
@@ -95,6 +97,46 @@ export const HistoryService = {
     } catch (e) {
       console.warn('Failed to mark chapter as read', e);
     }
+  },
+
+  unmarkChapterAsRead(chapterId: string): void {
+    if (!chapterId) return;
+    try {
+      const list = this.getReadChapters().filter(id => id !== chapterId);
+      localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to unmark chapter as read', e);
+    }
+  },
+
+  markMultipleChaptersAsRead(chapterIds: string[]): void {
+    if (!chapterIds || chapterIds.length === 0) return;
+    try {
+      const current = this.getReadChapters();
+      const set = new Set([...current, ...chapterIds]);
+      localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(set)));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to mark multiple chapters as read', e);
+    }
+  },
+
+  unmarkMultipleChaptersAsRead(chapterIds: string[]): void {
+    if (!chapterIds || chapterIds.length === 0) return;
+    try {
+      const toRemove = new Set(chapterIds);
+      const list = this.getReadChapters().filter(id => !toRemove.has(id));
+      localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to unmark multiple chapters as read', e);
+    }
+  },
+
+  isChapterRead(chapterId: string): boolean {
+    if (!chapterId) return false;
+    return this.getReadChapters().includes(chapterId);
   },
 
   addReadingTime(seconds: number): void {
@@ -255,6 +297,9 @@ export const HistoryService = {
           authors: item.authors || [],
           genres: item.genres || [],
           status: item.status,
+          userCategory: item.userCategory || 'reading',
+          userScore: typeof item.userScore === 'number' ? item.userScore : undefined,
+          userNotes: typeof item.userNotes === 'string' ? item.userNotes : undefined,
           updatedAt: item.updatedAt || Date.now()
         };
       });
@@ -294,6 +339,7 @@ export const HistoryService = {
           title: 'Mangá Salvo',
           coverUrl: '',
           sourceName: 'MangaReader',
+          userCategory: 'reading',
           updatedAt: Date.now()
         } : {
           mangaId,
@@ -305,6 +351,9 @@ export const HistoryService = {
           authors: mangaOrId.authors || [],
           genres: mangaOrId.genres || [],
           status: mangaOrId.status,
+          userCategory: mangaOrId.userCategory || 'reading',
+          userScore: mangaOrId.userScore,
+          userNotes: mangaOrId.userNotes,
           updatedAt: Date.now()
         };
         updated = [newFav, ...favorites];
@@ -315,6 +364,37 @@ export const HistoryService = {
       return !exists;
     } catch {
       return false;
+    }
+  },
+
+  updateFavoriteCategory(mangaId: string, category: LibraryCategory): void {
+    try {
+      const favorites = this.getFavorites();
+      const updated = favorites.map(fav =>
+        fav.mangaId === mangaId ? { ...fav, userCategory: category, updatedAt: Date.now() } : fav
+      );
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to update favorite category', e);
+    }
+  },
+
+  updateFavoriteScore(mangaId: string, score?: number, notes?: string): void {
+    try {
+      const favorites = this.getFavorites();
+      const updated = favorites.map(fav =>
+        fav.mangaId === mangaId ? {
+          ...fav,
+          userScore: score,
+          userNotes: notes !== undefined ? notes : fav.userNotes,
+          updatedAt: Date.now()
+        } : fav
+      );
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to update favorite score', e);
     }
   },
 
@@ -333,6 +413,78 @@ export const HistoryService = {
   },
 
   /**
+   * Page-level bookmarks & highlights
+   */
+  getPageBookmarks(): PageBookmark[] {
+    try {
+      const data = localStorage.getItem(PAGE_BOOKMARKS_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  getPageBookmarksForManga(mangaId: string): PageBookmark[] {
+    return this.getPageBookmarks().filter(b => b.mangaId === mangaId);
+  },
+
+  isPageBookmarked(chapterId: string, pageNumber: number): boolean {
+    return this.getPageBookmarks().some(b => b.chapterId === chapterId && b.pageNumber === pageNumber);
+  },
+
+  getPageBookmark(chapterId: string, pageNumber: number): PageBookmark | undefined {
+    return this.getPageBookmarks().find(b => b.chapterId === chapterId && b.pageNumber === pageNumber);
+  },
+
+  addPageBookmark(bookmark: Omit<PageBookmark, 'id' | 'createdAt'>): PageBookmark {
+    const list = this.getPageBookmarks();
+    const existingIndex = list.findIndex(b => b.chapterId === bookmark.chapterId && b.pageNumber === bookmark.pageNumber);
+    const newBookmark: PageBookmark = {
+      ...bookmark,
+      id: existingIndex >= 0 ? list[existingIndex].id : `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: existingIndex >= 0 ? list[existingIndex].createdAt : Date.now()
+    };
+
+    let updatedList: PageBookmark[];
+    if (existingIndex >= 0) {
+      updatedList = [...list];
+      updatedList[existingIndex] = newBookmark;
+    } else {
+      updatedList = [newBookmark, ...list];
+    }
+
+    try {
+      localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(updatedList));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to save page bookmark', e);
+    }
+    return newBookmark;
+  },
+
+  removePageBookmark(bookmarkId: string): void {
+    const list = this.getPageBookmarks().filter(b => b.id !== bookmarkId);
+    try {
+      localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to remove page bookmark', e);
+    }
+  },
+
+  removePageBookmarkByPage(chapterId: string, pageNumber: number): void {
+    const list = this.getPageBookmarks().filter(b => !(b.chapterId === chapterId && b.pageNumber === pageNumber));
+    try {
+      localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
+      notifyListeners();
+    } catch (e) {
+      console.warn('Failed to remove page bookmark', e);
+    }
+  },
+
+  /**
    * Export all user data (favorites + reading history) as a structured backup object
    */
   createBackup(): LibraryBackup {
@@ -343,7 +495,8 @@ export const HistoryService = {
       favorites: this.getFavorites(),
       history: this.getHistory(),
       stats: this.getReadingStats(),
-      readChapters: this.getReadChapters()
+      readChapters: this.getReadChapters(),
+      pageBookmarks: this.getPageBookmarks()
     };
   },
 
@@ -360,6 +513,68 @@ export const HistoryService = {
     const dateStr = new Date().toISOString().slice(0, 10);
     a.href = url;
     a.download = `mangareader-backup-${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
+  /**
+   * Generates a standard Tachiyomi / Mihon v2 compatible backup structure
+   */
+  createTachiyomiBackup(): object {
+    const favorites = this.getFavorites();
+    const mangas = favorites.map(fav => {
+      const categoryName = 
+        fav.userCategory === 'reading' ? 'Lendo' :
+        fav.userCategory === 'completed' ? 'Completo' :
+        fav.userCategory === 'plan_to_read' ? 'Quero Ler' :
+        fav.userCategory === 'on_hold' ? 'Pausado' :
+        fav.userCategory === 'dropped' ? 'Abandonado' : 'Favoritos';
+
+      return {
+        source: fav.sourceId === 'mangadex' ? 1 : 2,
+        url: `/manga/${fav.mangaId}`,
+        title: fav.title,
+        artist: fav.authors?.[0] || '',
+        author: fav.authors?.[0] || '',
+        description: fav.userNotes || '',
+        genre: fav.genres || [],
+        status: fav.status === 'completed' ? 2 : 1,
+        thumbnailUrl: fav.coverUrl,
+        favorite: true,
+        categories: [categoryName],
+        viewer: 1,
+        chapters: []
+      };
+    });
+
+    return {
+      version: 2,
+      mangas,
+      categories: [
+        { name: 'Lendo', order: 0 },
+        { name: 'Quero Ler', order: 1 },
+        { name: 'Completo', order: 2 },
+        { name: 'Pausado', order: 3 },
+        { name: 'Abandonado', order: 4 }
+      ]
+    };
+  },
+
+  /**
+   * Triggers browser download of Tachiyomi / Mihon JSON backup file
+   */
+  downloadTachiyomiBackupFile(): void {
+    if (typeof window === 'undefined') return;
+    const backup = this.createTachiyomiBackup();
+    const jsonStr = JSON.stringify(backup, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `tachiyomi-mihon-backup-${dateStr}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -389,6 +604,46 @@ export const HistoryService = {
 
       if (Array.isArray(data.favorites)) {
         importedFavorites = data.favorites;
+      } else if (Array.isArray(data.mangas)) {
+        // Tachiyomi / Mihon v2 backup format
+        data.mangas.forEach((tm: any) => {
+          if (!tm || !tm.title) return;
+          const cleanTitle = tm.title;
+          const id = tm.url
+            ? tm.url.replace(/^\/manga\//, '')
+            : `mr_tachiyomi_${cleanTitle.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+
+          let cat: LibraryCategory = 'reading';
+          if (Array.isArray(tm.categories) && tm.categories.length > 0) {
+            const catStr = String(tm.categories[0]).toLowerCase();
+            if (catStr.includes('complet')) cat = 'completed';
+            else if (catStr.includes('plan') || catStr.includes('quero')) cat = 'plan_to_read';
+            else if (catStr.includes('hold') || catStr.includes('paus')) cat = 'on_hold';
+            else if (catStr.includes('drop') || catStr.includes('abandon')) cat = 'dropped';
+          }
+
+          importedFavorites.push({
+            mangaId: id,
+            title: cleanTitle,
+            coverUrl: tm.thumbnailUrl || tm.thumbnail_url || '',
+            authors: tm.author ? [tm.author] : [],
+            genres: Array.isArray(tm.genre) ? tm.genre : [],
+            userCategory: cat,
+            userNotes: tm.description || undefined,
+            status: tm.status === 2 ? 'completed' : 'ongoing',
+            sourceName: 'Tachiyomi/Mihon',
+            updatedAt: Date.now()
+          });
+
+          if (Array.isArray(tm.chapters)) {
+            tm.chapters.forEach((ch: any) => {
+              if (ch.read && ch.url) {
+                const chId = ch.url.replace(/^\/chapter\//, '');
+                if (chId) this.markChapterAsRead(chId);
+              }
+            });
+          }
+        });
       } else if (Array.isArray(data.bookmarks)) {
         importedFavorites = data.bookmarks.map((b: any) =>
           typeof b === 'string' ? { mangaId: b, title: 'Mangá Salvo', coverUrl: '', updatedAt: Date.now() } : b
@@ -429,6 +684,9 @@ export const HistoryService = {
           authors: f.authors || existing?.authors || [],
           genres: f.genres || existing?.genres || [],
           status: f.status || existing?.status,
+          userCategory: f.userCategory || existing?.userCategory || 'reading',
+          userScore: typeof f.userScore === 'number' ? f.userScore : existing?.userScore,
+          userNotes: typeof f.userNotes === 'string' ? f.userNotes : existing?.userNotes,
           updatedAt: Math.max(f.updatedAt || 0, existing?.updatedAt || 0) || Date.now()
         });
       });
@@ -475,6 +733,19 @@ export const HistoryService = {
             lastReadDate: data.stats.lastReadDate || new Date().toISOString()
           }));
         }
+      }
+
+      // Merge Page Bookmarks if present
+      if (Array.isArray(data.pageBookmarks)) {
+        const currentBms = this.getPageBookmarks();
+        const bmMap = new Map<string, PageBookmark>();
+        currentBms.forEach(b => bmMap.set(`${b.chapterId}_${b.pageNumber}`, b));
+        data.pageBookmarks.forEach((b: PageBookmark) => {
+          if (b && b.chapterId && typeof b.pageNumber === 'number') {
+            bmMap.set(`${b.chapterId}_${b.pageNumber}`, b);
+          }
+        });
+        localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(Array.from(bmMap.values())));
       }
 
       notifyListeners();
