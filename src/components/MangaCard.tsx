@@ -49,7 +49,7 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
     >
       {/* Cover Image Container */}
       <div className="relative aspect-[3/4] w-full overflow-hidden bg-zinc-950">
-        {!imageError ? (
+        {!imageError && currentCover ? (
           <img
             src={currentCover}
             alt={`Capa de ${manga.title}`}
@@ -61,9 +61,39 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
             loading="lazy"
           />
         ) : (
-          <div className="flex h-full w-full flex-col items-center justify-center bg-zinc-900 p-4 text-center">
-            <BookOpen className="h-8 w-8 text-zinc-600 mb-2" />
-            <span className="text-xs text-zinc-400 font-medium line-clamp-2">{manga.title}</span>
+          <div className="relative h-full w-full flex flex-col justify-between p-4 overflow-hidden bg-gradient-to-br from-zinc-900 via-rose-950/20 to-zinc-950 border-b border-zinc-800">
+            {/* Japanese Kanji watermark in background */}
+            <div className="absolute -right-3 -bottom-4 text-7xl font-serif font-black text-white/[0.04] select-none pointer-events-none">
+              漫画
+            </div>
+            
+            {/* Top decorative spine */}
+            <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 uppercase tracking-widest border-b border-zinc-800/60 pb-1.5">
+              <span>VOL. 1</span>
+              <span>MANGA</span>
+            </div>
+
+            {/* Stylized title & icon */}
+            <div className="my-auto py-2 text-center">
+              <div className="mx-auto w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mb-2.5 shadow-inner">
+                <BookOpen className="h-5 w-5" />
+              </div>
+              <h4 className="font-serif font-bold text-xs sm:text-sm text-zinc-100 line-clamp-3 leading-snug px-1">
+                {manga.title}
+              </h4>
+              {manga.authors?.[0] && manga.authors[0] !== 'Autor Desconhecido' && (
+                <p className="text-[10px] text-zinc-400 font-light mt-1 truncate">
+                  {manga.authors[0]}
+                </p>
+              )}
+            </div>
+
+            {/* Bottom tag */}
+            <div className="pt-2 border-t border-zinc-800/60 text-center">
+              <span className="text-[9px] font-medium text-rose-300/80 uppercase tracking-wider">
+                {manga.genres?.[0] || 'Obra'}
+              </span>
+            </div>
           </div>
         )}
 

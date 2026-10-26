@@ -292,17 +292,33 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
       setManga(mangaData);
       setChapters(chaptersData);
-      setPages(pagesData);
-
       let foundChapter = chaptersData.find(c => c.id === chapterId);
       if (!foundChapter) {
         foundChapter = chaptersData.find(c => c.variants?.some(v => v.id === chapterId));
       }
       setCurrentChapter(foundChapter || null);
 
+      let effectivePages = pagesData;
+      // Auto-recover pages from alternative versions/sources if primary returned 0 pages
+      if (effectivePages.length === 0 && foundChapter?.variants && foundChapter.variants.length > 0) {
+        for (const variant of foundChapter.variants) {
+          try {
+            const altPages = await MangaApi.getChapterPages(variant.id);
+            if (altPages && altPages.length > 0) {
+              effectivePages = altPages;
+              showToast(`Alternado para versão ${variant.sourceName || variant.sourceId}`);
+              break;
+            }
+          } catch {
+            // try next variant
+          }
+        }
+      }
+      setPages(effectivePages);
+
       // Check saved progress
       const saved = HistoryService.getProgress(mangaId);
-      if (saved && saved.chapterId === chapterId && saved.pageNumber <= pagesData.length) {
+      if (saved && saved.chapterId === chapterId && saved.pageNumber <= effectivePages.length) {
         setCurrentPageIndex(Math.max(0, saved.pageNumber - 1));
       } else {
         setCurrentPageIndex(0);

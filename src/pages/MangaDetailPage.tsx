@@ -69,6 +69,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [showFullSynopsis, setShowFullSynopsis] = useState(false);
   const [copied, setCopied] = useState(false);
   const [coverSrc, setCoverSrc] = useState('');
+  const [coverError, setCoverError] = useState(false);
   const [savedOfflineChapterIds, setSavedOfflineChapterIds] = useState<string[]>(() => OfflineCacheService.getSavedChapterIds());
   const [cachingOfflineIds, setCachingOfflineIds] = useState<Record<string, boolean>>({});
   const [showBatchDownloadModal, setShowBatchDownloadModal] = useState(false);
@@ -76,12 +77,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   useEffect(() => {
     if (manga?.coverUrl) {
       setCoverSrc(manga.coverUrl);
+      setCoverError(false);
     }
   }, [manga?.coverUrl]);
 
   const handleCoverError = () => {
     if (coverSrc && !coverSrc.startsWith('/api/proxy/image') && coverSrc.startsWith('http')) {
       setCoverSrc(`/api/proxy/image?url=${encodeURIComponent(coverSrc)}`);
+    } else {
+      setCoverError(true);
     }
   };
 
@@ -377,13 +381,38 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           {/* Left Column: Cover & Primary Action Controls */}
           <div className="md:col-span-4 lg:col-span-3 flex flex-col items-center md:items-start">
             <div className="w-56 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0">
-              <img
-                src={coverSrc || manga.coverUrl}
-                alt={manga.title}
-                referrerPolicy="no-referrer"
-                onError={handleCoverError}
-                className="h-full w-full object-cover"
-              />
+              {!coverError && (coverSrc || manga.coverUrl) ? (
+                <img
+                  src={coverSrc || manga.coverUrl}
+                  alt={manga.title}
+                  referrerPolicy="no-referrer"
+                  onError={handleCoverError}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="relative h-full w-full flex flex-col justify-between p-5 overflow-hidden bg-gradient-to-br from-zinc-900 via-rose-950/20 to-zinc-950">
+                  <div className="absolute -right-3 -bottom-4 text-8xl font-serif font-black text-white/[0.04] select-none pointer-events-none">
+                    漫画
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500 uppercase tracking-widest border-b border-zinc-800/60 pb-2">
+                    <span>VOL. 1</span>
+                    <span>MANGA</span>
+                  </div>
+                  <div className="my-auto py-4 text-center">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mb-3 shadow-inner">
+                      <BookOpen className="h-6 w-6" />
+                    </div>
+                    <h3 className="font-serif font-bold text-sm text-zinc-100 line-clamp-3 leading-snug px-2">
+                      {manga.title}
+                    </h3>
+                  </div>
+                  <div className="pt-2 border-t border-zinc-800/60 text-center">
+                    <span className="text-[10px] font-medium text-rose-300/80 uppercase tracking-wider">
+                      {manga.genres?.[0] || 'Obra'}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Quick Action Buttons */}
@@ -404,7 +433,11 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <BookOpen className="h-4 w-4" />
                   <span>Começar a Ler (Cap. {firstChapter.chapterNumber})</span>
                 </button>
-              ) : null}
+              ) : (
+                <div className="w-full py-2.5 px-3 rounded-lg bg-zinc-900/80 border border-zinc-800 text-center text-xs text-zinc-400 font-light">
+                  Nenhum capítulo legível neste provedor no momento
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <button

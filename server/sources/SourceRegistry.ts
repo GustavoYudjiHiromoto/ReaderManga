@@ -5,7 +5,7 @@ import { ComickProvider } from './ComickProvider.js';
 import { MangaPillProvider } from './MangaPillProvider.js';
 import { WeebCentralProvider } from './WeebCentralProvider.js';
 import { HttpError } from '../errors/HttpError.js';
-import { deduplicateAndGroupChapters } from './ChapterDeduplicator.js';
+import { deduplicateAndGroupChapters, normalizeChapterNumber } from './ChapterDeduplicator.js';
 
 function normalizeTitle(t: string): string {
   if (!t) return '';
@@ -407,6 +407,49 @@ export class SourceRegistry {
 
     let chapters = await source.getChapters(parsed.externalId, language);
 
+    // If primary source returned 0 chapters, federate from alternative sources matching by title
+    if (chapters.length === 0) {
+      try {
+        const manga = await source.getMangaDetails(parsed.externalId).catch(() => null);
+        const searchTitle = manga?.title || parsed.externalId.replace(/[-_]/g, ' ');
+        if (searchTitle && searchTitle.length > 2) {
+          for (const [altSourceId, altSource] of this.sources.entries()) {
+            if (altSourceId === parsed.sourceId) continue;
+            try {
+              const searchResults = await altSource.search(searchTitle);
+              const list = Array.isArray(searchResults.mangaList) ? searchResults.mangaList : [];
+              const matched = list.find((m: Manga) => areSameManga(m, {
+                title: searchTitle,
+                id: '',
+                altTitles: manga?.altTitles || [],
+                coverUrl: '',
+                synopsis: '',
+                authors: [],
+                artists: [],
+                genres: [],
+                status: 'ongoing',
+                publicationInfo: {},
+                updatedAt: '',
+                sources: []
+              }));
+              if (matched) {
+                const altExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
+                const altChs = await altSource.getChapters(altExtId, language);
+                if (altChs && altChs.length > 0) {
+                  chapters = [...chapters, ...altChs];
+                  break;
+                }
+              }
+            } catch {
+              // try next alternative source
+            }
+          }
+        }
+      } catch (federateErr) {
+        console.warn('[SourceRegistry] Chapter federation error:', federateErr);
+      }
+    }
+
     if (options?.deduplicate !== false) {
       chapters = deduplicateAndGroupChapters(chapters);
     }
@@ -475,7 +518,67 @@ export class SourceRegistry {
       return [];
     }
 
-    return await source.getChapterPages(parsed.externalChapterId);
+    try {
+      const pages = await source.getChapterPages(parsed.externalChapterId);
+      if (pages && pages.length > 0) {
+        return pages;
+      }
+    } catch (err) {
+      console.warn(`[SourceRegistry] Source '${parsed.sourceId}' failed for chapter ${parsed.externalChapterId}:`, (err as Error).message);
+    }
+
+    // Universal Cross-Source Auto-Failover:
+    // If the chapter's native source failed or returned 0 pages, attempt recovery from alternative sources for the same chapter number
+    try {
+      const manga = await this.getMangaById(`mr_${parsed.sourceId}_${parsed.externalMangaId}`).catch(() => null);
+      const searchTitle = manga?.title || parsed.externalMangaId.replace(/[-_]/g, ' ');
+
+      const numMatch = parsed.externalChapterId.match(/(\d+(?:\.\d+)?)/);
+      const targetNum = numMatch ? numMatch[1] : null;
+
+      if (searchTitle && targetNum) {
+        for (const [altSourceId, altSource] of this.sources.entries()) {
+          if (altSourceId === parsed.sourceId) continue;
+          try {
+            const searchResults = await altSource.search(searchTitle);
+            const list = Array.isArray(searchResults.mangaList) ? searchResults.mangaList : [];
+            const matched = list.find((m: Manga) => areSameManga(m, {
+              title: searchTitle,
+              id: '',
+              altTitles: manga?.altTitles || [],
+              coverUrl: '',
+              synopsis: '',
+              authors: [],
+              artists: [],
+              genres: [],
+              status: 'ongoing',
+              publicationInfo: {},
+              updatedAt: '',
+              sources: []
+            }));
+
+            if (matched) {
+              const altMangaExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
+              const altChapters = await altSource.getChapters(altMangaExtId);
+              const matchingChapter = altChapters.find(c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum));
+              if (matchingChapter) {
+                const altPages = await altSource.getChapterPages(matchingChapter.externalChapterId);
+                if (altPages && altPages.length > 0) {
+                  console.log(`[SourceRegistry] Auto-failover: recovered chapter ${targetNum} via '${altSourceId}'!`);
+                  return altPages;
+                }
+              }
+            }
+          } catch {
+            // try next source
+          }
+        }
+      }
+    } catch (failoverErr) {
+      console.warn('[SourceRegistry] Cross-source failover error:', failoverErr);
+    }
+
+    return [];
   }
 
   /**
