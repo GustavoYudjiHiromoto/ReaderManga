@@ -513,18 +513,16 @@ export class SourceRegistry {
           }
         }
       }
-
-      // 4. Se nenhuma fonte possuir páginas, retorne []
-      return [];
-    }
-
-    try {
-      const pages = await source.getChapterPages(parsed.externalChapterId);
-      if (pages && pages.length > 0) {
-        return pages;
+      // Se Comick e MangaDex não tiverem páginas, continue para o failover universal com MangaPill e WeebCentral!
+    } else {
+      try {
+        const pages = await source.getChapterPages(parsed.externalChapterId);
+        if (pages && pages.length > 0) {
+          return pages;
+        }
+      } catch (err) {
+        console.warn(`[SourceRegistry] Source '${parsed.sourceId}' failed for chapter ${parsed.externalChapterId}:`, (err as Error).message);
       }
-    } catch (err) {
-      console.warn(`[SourceRegistry] Source '${parsed.sourceId}' failed for chapter ${parsed.externalChapterId}:`, (err as Error).message);
     }
 
     // Universal Cross-Source Auto-Failover:
@@ -533,8 +531,26 @@ export class SourceRegistry {
       const manga = await this.getMangaById(`mr_${parsed.sourceId}_${parsed.externalMangaId}`).catch(() => null);
       const searchTitle = manga?.title || parsed.externalMangaId.replace(/[-_]/g, ' ');
 
-      const numMatch = parsed.externalChapterId.match(/(\d+(?:\.\d+)?)/);
-      const targetNum = numMatch ? numMatch[1] : null;
+      // Determine real chapter number by checking the manga's chapters list
+      let targetNum: string | null = null;
+      try {
+        const chapters = await source.getChapters(parsed.externalMangaId).catch(() => []);
+        const ch = chapters.find(c => 
+          c.id === internalChapterId || 
+          c.externalChapterId === parsed.externalChapterId || 
+          c.variants?.some(v => v.id === internalChapterId || v.externalChapterId === parsed.externalChapterId)
+        );
+        if (ch) {
+          targetNum = ch.chapterNumber;
+        }
+      } catch {
+        // fallback
+      }
+
+      if (!targetNum) {
+        const numMatch = parsed.externalChapterId.match(/(\d+(?:\.\d+)?)/);
+        targetNum = numMatch ? numMatch[1] : null;
+      }
 
       if (searchTitle && targetNum) {
         for (const [altSourceId, altSource] of this.sources.entries()) {
@@ -560,11 +576,11 @@ export class SourceRegistry {
             if (matched) {
               const altMangaExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
               const altChapters = await altSource.getChapters(altMangaExtId);
-              const matchingChapter = altChapters.find(c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum));
+              const matchingChapter = altChapters.find(c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum!));
               if (matchingChapter) {
                 const altPages = await altSource.getChapterPages(matchingChapter.externalChapterId);
                 if (altPages && altPages.length > 0) {
-                  console.log(`[SourceRegistry] Auto-failover: recovered chapter ${targetNum} via '${altSourceId}'!`);
+                  console.log(`[SourceRegistry] Auto-failover: successfully recovered chapter ${targetNum} via '${altSourceId}'!`);
                   return altPages;
                 }
               }

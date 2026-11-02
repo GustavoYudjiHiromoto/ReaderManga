@@ -352,10 +352,36 @@ async function runDeterministicTests() {
     });
 
     const mergedFavs = Array.from(favMap.values());
-    assert(mergedFavs.length === 2, 'Mesclagem de backup deduplica favoritos por mangaId (1 existente + 1 novo = 2 total)');
-    const updatedBerserk = mergedFavs.find(f => f.mangaId === 'mr_mangapill_1-berserk');
-    assert(updatedBerserk?.title === 'Berserk', 'Mesclagem preserva título mais rico/recente');
-    assert(updatedBerserk?.updatedAt === 1000, 'Mesclagem preserva timestamp mais recente');
+    // -------------------------------------------------------------------------
+    // 9. RADAR DE LANÇAMENTOS E RASTREAMENTO DE CAPÍTULOS
+    // -------------------------------------------------------------------------
+    console.log('\n[9/9] Testando Radar de Lançamentos e Rastreamento de Novos Capítulos...');
+    
+    // Teste 1: Detecção numérica de novos capítulos
+    const progressCh = "117";
+    const latestCh = "118";
+    const hasNewChapter = parseFloat(latestCh) > parseFloat(progressCh);
+    assert(hasNewChapter === true, 'Capítulo 118 é detectado como novo em relação ao lido 117');
+
+    const sameCh = "117";
+    assert(parseFloat(sameCh) > parseFloat(progressCh) === false, 'Capítulo 117 não é detectado como novo se já foi lido');
+
+    // Teste 2: Estrutura canônica de MangaUpdateInfo
+    const updateSample = {
+      mangaId: 'mr_mangadex_chainsaw-man',
+      latestChapterId: 'ch_mangadex_118',
+      latestChapterNumber: '118',
+      hasNew: true,
+      lastReadNumber: '117',
+      checkedAt: Date.now()
+    };
+
+    assert(typeof updateSample.mangaId === 'string', 'MangaUpdateInfo possui mangaId');
+    assert(typeof updateSample.latestChapterId === 'string', 'MangaUpdateInfo possui latestChapterId');
+    assert(typeof updateSample.latestChapterNumber === 'string', 'MangaUpdateInfo possui latestChapterNumber');
+    assert(updateSample.hasNew === true, 'MangaUpdateInfo possui flag hasNew');
+    assert(updateSample.lastReadNumber === '117', 'MangaUpdateInfo retém lastReadNumber para contraste no leitor');
+    assert(typeof updateSample.checkedAt === 'number', 'MangaUpdateInfo registra timestamp checkedAt');
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

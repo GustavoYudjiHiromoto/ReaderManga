@@ -1,13 +1,23 @@
-import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark } from '../types/manga.js';
+import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark, Chapter } from '../types/manga.js';
 
 const STORAGE_KEY = 'manga_reader_history_v1';
 const BOOKMARKS_KEY = 'manga_reader_bookmarks_v1';
 const STATS_KEY = 'manga_reader_reading_stats_v1';
 const READ_CHAPTERS_KEY = 'manga_reader_read_chapters_v1';
 const PAGE_BOOKMARKS_KEY = 'manga_reader_page_bookmarks_v1';
+const CUSTOM_COLLECTIONS_KEY = 'manga_reader_custom_collections_v1';
 
 type HistoryListener = () => void;
 const listeners = new Set<HistoryListener>();
+
+export interface HistorySyncBridge {
+  onProgressSaved?: (progress: ReadingProgress) => void;
+  onFavoriteUpdated?: (fav: FavoriteManga) => void;
+  onFavoriteRemoved?: (mangaId: string) => void;
+  onLibraryStateChanged?: () => void;
+}
+
+let syncBridge: HistorySyncBridge | null = null;
 
 function notifyListeners() {
   listeners.forEach(fn => {
@@ -44,7 +54,8 @@ if (typeof window !== 'undefined') {
       event.key === BOOKMARKS_KEY ||
       event.key === STATS_KEY ||
       event.key === READ_CHAPTERS_KEY ||
-      event.key === PAGE_BOOKMARKS_KEY
+      event.key === PAGE_BOOKMARKS_KEY ||
+      event.key === CUSTOM_COLLECTIONS_KEY
     ) {
       notifyListeners();
     }
@@ -52,6 +63,10 @@ if (typeof window !== 'undefined') {
 }
 
 export const HistoryService = {
+  setSyncBridge(bridge: HistorySyncBridge) {
+    syncBridge = bridge;
+  },
+
   subscribe(listener: HistoryListener): () => void {
     listeners.add(listener);
     return () => {
@@ -93,6 +108,7 @@ export const HistoryService = {
         list.push(chapterId);
         localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
         notifyListeners();
+        syncBridge?.onLibraryStateChanged?.();
       }
     } catch (e) {
       console.warn('Failed to mark chapter as read', e);
@@ -105,6 +121,7 @@ export const HistoryService = {
       const list = this.getReadChapters().filter(id => id !== chapterId);
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
       notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to unmark chapter as read', e);
     }
@@ -117,6 +134,7 @@ export const HistoryService = {
       const set = new Set([...current, ...chapterIds]);
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(set)));
       notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to mark multiple chapters as read', e);
     }
@@ -129,9 +147,50 @@ export const HistoryService = {
       const list = this.getReadChapters().filter(id => !toRemove.has(id));
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
       notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to unmark multiple chapters as read', e);
     }
+  },
+
+  markChaptersUpTo(chapterId: string, allChapters: Chapter[]): void {
+    const targetChapter = allChapters.find(c => c.id === chapterId || c.variants?.some(v => v.id === chapterId));
+    if (!targetChapter) {
+      this.markChapterAsRead(chapterId);
+      return;
+    }
+    const targetNum = parseFloat(targetChapter.chapterNumber);
+    const idsToMark: string[] = [];
+    allChapters.forEach(c => {
+      const num = parseFloat(c.chapterNumber);
+      if (!isNaN(num) && !isNaN(targetNum)) {
+        if (num <= targetNum) {
+          idsToMark.push(c.id);
+          c.variants?.forEach(v => idsToMark.push(v.id));
+        }
+      } else if (c.id === chapterId) {
+        idsToMark.push(c.id);
+      }
+    });
+    this.markMultipleChaptersAsRead(idsToMark);
+  },
+
+  markAllChaptersAsRead(chapters: Chapter[]): void {
+    const ids: string[] = [];
+    chapters.forEach(c => {
+      ids.push(c.id);
+      c.variants?.forEach(v => ids.push(v.id));
+    });
+    this.markMultipleChaptersAsRead(ids);
+  },
+
+  unmarkAllChapters(chapters: Chapter[]): void {
+    const ids: string[] = [];
+    chapters.forEach(c => {
+      ids.push(c.id);
+      c.variants?.forEach(v => ids.push(v.id));
+    });
+    this.unmarkMultipleChaptersAsRead(ids);
   },
 
   isChapterRead(chapterId: string): boolean {
@@ -242,6 +301,8 @@ export const HistoryService = {
       }
 
       notifyListeners();
+      syncBridge?.onProgressSaved?.(updated);
+      syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to save reading history', e);
     }
@@ -331,6 +392,7 @@ export const HistoryService = {
       const exists = favorites.some(f => f.mangaId === mangaId);
 
       let updated: FavoriteManga[];
+      let createdFav: FavoriteManga | null = null;
       if (exists) {
         updated = favorites.filter(f => f.mangaId !== mangaId);
       } else {
@@ -356,11 +418,18 @@ export const HistoryService = {
           userNotes: mangaOrId.userNotes,
           updatedAt: Date.now()
         };
+        createdFav = newFav;
         updated = [newFav, ...favorites];
       }
 
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       notifyListeners();
+
+      if (exists) {
+        syncBridge?.onFavoriteRemoved?.(mangaId);
+      } else if (createdFav) {
+        syncBridge?.onFavoriteUpdated?.(createdFav);
+      }
       return !exists;
     } catch {
       return false;
@@ -375,6 +444,8 @@ export const HistoryService = {
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       notifyListeners();
+      const found = updated.find(f => f.mangaId === mangaId);
+      if (found) syncBridge?.onFavoriteUpdated?.(found);
     } catch (e) {
       console.warn('Failed to update favorite category', e);
     }
@@ -393,6 +464,8 @@ export const HistoryService = {
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       notifyListeners();
+      const found = updated.find(f => f.mangaId === mangaId);
+      if (found) syncBridge?.onFavoriteUpdated?.(found);
     } catch (e) {
       console.warn('Failed to update favorite score', e);
     }
@@ -403,6 +476,7 @@ export const HistoryService = {
       const favorites = this.getFavorites().filter(f => f.mangaId !== mangaId);
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
       notifyListeners();
+      syncBridge?.onFavoriteRemoved?.(mangaId);
     } catch (e) {
       console.warn('Failed to remove favorite', e);
     }
@@ -485,6 +559,82 @@ export const HistoryService = {
   },
 
   /**
+   * Custom Collections / Folders
+   */
+  getCustomCollections(): string[] {
+    try {
+      const data = localStorage.getItem(CUSTOM_COLLECTIONS_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  createCustomCollection(name: string): boolean {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const list = this.getCustomCollections();
+    if (list.some(c => c.toLowerCase() === trimmed.toLowerCase())) return false;
+    list.push(trimmed);
+    try {
+      localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(list));
+      notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  deleteCustomCollection(name: string): void {
+    const list = this.getCustomCollections().filter(c => c !== name);
+    try {
+      localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(list));
+      // Remove from favorites that reference this collection
+      const favorites = this.getFavorites();
+      let changed = false;
+      favorites.forEach(f => {
+        if (f.customCollections && f.customCollections.includes(name)) {
+          f.customCollections = f.customCollections.filter(c => c !== name);
+          changed = true;
+        }
+      });
+      if (changed) {
+        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      }
+      notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to delete custom collection', e);
+    }
+  },
+
+  toggleMangaInCollection(mangaId: string, collectionName: string): boolean {
+    const favorites = this.getFavorites();
+    const fav = favorites.find(f => f.mangaId === mangaId);
+    if (!fav) return false;
+    if (!fav.customCollections) fav.customCollections = [];
+    let isNowIn = false;
+    if (fav.customCollections.includes(collectionName)) {
+      fav.customCollections = fav.customCollections.filter(c => c !== collectionName);
+    } else {
+      fav.customCollections.push(collectionName);
+      isNowIn = true;
+    }
+    try {
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      notifyListeners();
+      syncBridge?.onFavoriteUpdated?.(fav);
+      syncBridge?.onLibraryStateChanged?.();
+      return isNowIn;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
    * Export all user data (favorites + reading history) as a structured backup object
    */
   createBackup(): LibraryBackup {
@@ -496,7 +646,8 @@ export const HistoryService = {
       history: this.getHistory(),
       stats: this.getReadingStats(),
       readChapters: this.getReadChapters(),
-      pageBookmarks: this.getPageBookmarks()
+      pageBookmarks: this.getPageBookmarks(),
+      customCollections: this.getCustomCollections()
     };
   },
 
@@ -746,6 +897,13 @@ export const HistoryService = {
           }
         });
         localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(Array.from(bmMap.values())));
+      }
+
+      // Merge Custom Collections if present
+      if (Array.isArray(data.customCollections)) {
+        const currentCols = this.getCustomCollections();
+        const set = new Set([...currentCols, ...data.customCollections.filter((c: any) => typeof c === 'string' && c.trim())]);
+        localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(Array.from(set)));
       }
 
       notifyListeners();

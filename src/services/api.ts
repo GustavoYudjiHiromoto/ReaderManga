@@ -41,11 +41,26 @@ export const MangaApi = {
     return json.data || [];
   },
 
-  async search(query: string, options?: { source?: string; genre?: string; limit?: number; offset?: number; page?: number; includeAdult?: boolean; onlyAvailable?: boolean }): Promise<SearchResponse> {
+  async search(query: string, options?: {
+    source?: string;
+    genre?: string;
+    genres?: string[];
+    status?: string;
+    limit?: number;
+    offset?: number;
+    page?: number;
+    includeAdult?: boolean;
+    onlyAvailable?: boolean;
+  }): Promise<SearchResponse> {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (options?.source && options.source !== 'all') params.set('source', options.source);
     if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
+    if (options?.status && options.status !== 'all') params.set('status', options.status);
+    if (options?.genres && options.genres.length > 0) {
+      params.set('genres', options.genres.join(','));
+      if (!options?.genre) params.set('genre', options.genres[0]);
+    }
     if (options?.limit) params.set('limit', options.limit.toString());
     if (options?.offset !== undefined) params.set('offset', options.offset.toString());
     if (options?.page !== undefined) params.set('page', options.page.toString());
@@ -96,5 +111,20 @@ export const MangaApi = {
     const res = await fetch('/api/recommendation-feed');
     if (!res.ok) throw new Error('Falha ao obter feed de recomendação');
     return await res.json();
+  },
+
+  async getRelatedRecommendations(manga: { id: string; genres?: string[]; authors?: string[] }): Promise<Manga[]> {
+    try {
+      const primaryGenre = manga.genres && manga.genres.length > 0 ? manga.genres[0] : '';
+      if (primaryGenre) {
+        const searchRes = await this.search('', { genre: primaryGenre, limit: 10 });
+        const filtered = (searchRes.data || []).filter(m => m.id !== manga.id);
+        if (filtered.length >= 3) return filtered.slice(0, 8);
+      }
+      const featured = await this.getFeatured();
+      return featured.filter(m => m.id !== manga.id).slice(0, 8);
+    } catch {
+      return [];
+    }
   }
 };

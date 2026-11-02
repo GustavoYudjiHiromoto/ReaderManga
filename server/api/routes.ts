@@ -299,7 +299,9 @@ apiRouter.get(/^\/chapters\/(.+)\/pages$/, async (req: Request, res: Response) =
       total: pages.length,
       data: pages
     };
-    globalCache.set(cacheKey, payload, 1800);
+    if (pages.length > 0) {
+      globalCache.set(cacheKey, payload, 1800);
+    }
     res.setHeader('X-Cache', 'MISS');
     res.json(payload);
   } catch (err) {

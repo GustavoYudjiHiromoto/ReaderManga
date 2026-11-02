@@ -1,21 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Star, Layers } from 'lucide-react';
-import { Manga } from '../types/manga.js';
+import { BookOpen, Star, Layers, Check } from 'lucide-react';
+import { Manga, ReadingProgress } from '../types/manga.js';
+import { HistoryService } from '../services/history.js';
+import { TrackerStatusBadge } from './TrackerStatusBadge.js';
 
 interface MangaCardProps {
   manga: Manga;
   onSelect: (mangaId: string) => void;
   onQuickRead?: (mangaId: string) => void;
+  showTrackerStatus?: boolean;
+  onOpenTrackers?: (mangaId?: string, mangaTitle?: string) => void;
 }
 
-export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRead }) => {
+export const MangaCard: React.FC<MangaCardProps> = ({
+  manga,
+  onSelect,
+  onQuickRead,
+  showTrackerStatus = true,
+  onOpenTrackers
+}) => {
   const [currentCover, setCurrentCover] = useState(manga.coverUrl);
   const [imageError, setImageError] = useState(false);
+  const [progress, setProgress] = useState<ReadingProgress | undefined>(() => HistoryService.getProgress(manga.id));
 
   useEffect(() => {
     setCurrentCover(manga.coverUrl);
     setImageError(false);
-  }, [manga.coverUrl]);
+    setProgress(HistoryService.getProgress(manga.id));
+
+    const unsub = HistoryService.subscribe(() => {
+      setProgress(HistoryService.getProgress(manga.id));
+    });
+    return unsub;
+  }, [manga.id, manga.coverUrl]);
 
   const handleImageError = () => {
     if (currentCover && !currentCover.startsWith('/api/proxy/image') && currentCover.startsWith('http')) {
@@ -129,8 +146,22 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
           </div>
         </div>
 
+        {/* Reading Progress Indicator Bar at bottom of cover */}
+        {progress && progress.chapterNumber && (
+          <div className="absolute inset-x-0 bottom-0 z-10 pointer-events-none">
+            <div className="h-1 w-full bg-zinc-950/80 overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-rose-500 to-rose-400 transition-all duration-300"
+                style={{
+                  width: `${Math.min(100, Math.max(15, Math.round(((parseFloat(progress.chapterNumber) || 1) / (parseFloat(manga.latestChapter || '100') || 100)) * 100)))}%`
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Quick Read / Details Hover Button */}
-        <div className="absolute inset-x-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+        <div className="absolute inset-x-3 bottom-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-20">
           {isAvailable && onQuickRead ? (
             <button
               onClick={(e) => {
@@ -140,7 +171,7 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
               className="w-full py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
             >
               <BookOpen className="h-3.5 w-3.5" />
-              Ler Agora
+              {progress ? `Continuar Cap. ${progress.chapterNumber}` : 'Ler Agora'}
             </button>
           ) : (
             <button
@@ -158,9 +189,20 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
 
       {/* Card Content */}
       <div className="flex flex-1 flex-col p-3.5">
-        <h3 className="font-semibold text-sm text-zinc-100 line-clamp-1 group-hover:text-rose-400 transition-colors">
-          {manga.title}
-        </h3>
+        <div className="flex items-center justify-between gap-1.5 min-w-0">
+          <h3 className="font-semibold text-sm text-zinc-100 line-clamp-1 group-hover:text-rose-400 transition-colors flex-1" title={manga.title}>
+            {manga.title}
+          </h3>
+          {showTrackerStatus !== false && (
+            <TrackerStatusBadge
+              mangaId={manga.id}
+              mangaTitle={manga.title}
+              size="sm"
+              onOpenTrackers={onOpenTrackers}
+              className="shrink-0"
+            />
+          )}
+        </div>
 
         {/* Clean unboxed metadata with dot separators */}
         <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-400">
@@ -171,11 +213,19 @@ export const MangaCard: React.FC<MangaCardProps> = ({ manga, onSelect, onQuickRe
               <span className="font-mono tabular-nums">{releaseYear}</span>
             </>
           )}
+          {progress?.chapterNumber && (
+            <>
+              <span aria-hidden="true" className="text-zinc-600">·</span>
+              <span className="font-mono text-rose-400 font-medium tabular-nums text-[11px]">
+                Lido: c.{progress.chapterNumber}
+              </span>
+            </>
+          )}
         </div>
 
         {/* Genres & chapter count */}
-        <div className="mt-2.5 pt-2.5 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
-          <span className="line-clamp-1 text-[11px] text-zinc-400">
+        <div className="mt-2.5 pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
+          <span className="line-clamp-1 text-[11px] text-zinc-500">
             {manga.genres.slice(0, 2).join(' · ')}
           </span>
           {isAvailable && manga.latestChapter ? (

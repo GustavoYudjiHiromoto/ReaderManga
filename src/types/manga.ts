@@ -105,6 +105,9 @@ export interface ReadingProgress {
   chapterTitle?: string;
   pageNumber: number;
   totalPages: number;
+  scrollRatio?: number; // 0.0 to 1.0 exact pixel scroll position in webtoon mode
+  scrollOffset?: number;
+  sourceId?: string;
   updatedAt: number;
 }
 
@@ -123,6 +126,7 @@ export interface FavoriteManga {
   userCategory?: LibraryCategory;
   userScore?: number; // 1 to 10
   userNotes?: string;
+  customCollections?: string[]; // e.g. ["Favoritos do Ano", "Para Reler"]
   updatedAt: number;
 }
 
@@ -159,4 +163,15 @@ export interface LibraryBackup {
   stats?: ReadingStats;
   readChapters?: string[];
   pageBookmarks?: PageBookmark[];
+  customCollections?: string[];
+}
+
+export interface MangaUpdateInfo {
+  mangaId: string;
+  latestChapterId: string;
+  latestChapterNumber: string;
+  latestChapterTitle?: string;
+  hasNew: boolean;
+  lastReadNumber?: string;
+  checkedAt: number;
 }

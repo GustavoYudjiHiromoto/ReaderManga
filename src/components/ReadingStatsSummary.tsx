@@ -1,14 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Clock, Layers, Sparkles, TrendingUp, Bookmark, Calendar } from 'lucide-react';
-import { HistoryService } from '../services/history';
-import { ReadingStats } from '../types/manga';
+import { BookOpen, Clock, Layers, Sparkles, TrendingUp, Bookmark, Calendar, BarChart3, ChevronDown, ChevronUp } from 'lucide-react';
+import { HistoryService } from '../services/history.js';
+import { ReadingStats } from '../types/manga.js';
+import { ReadingAnalytics } from './ReadingAnalytics.js';
 
 interface ReadingStatsSummaryProps {
   favoritesCount: number;
+  onExploreGenre?: (genre: string) => void;
+  defaultOpenAnalytics?: boolean;
 }
 
-export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({ favoritesCount }) => {
+export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({
+  favoritesCount,
+  onExploreGenre,
+  defaultOpenAnalytics = true
+}) => {
   const [stats, setStats] = useState<ReadingStats>(() => HistoryService.getReadingStats());
+  const [showAnalytics, setShowAnalytics] = useState(defaultOpenAnalytics);
 
   useEffect(() => {
     // Initial fetch
@@ -44,12 +52,23 @@ export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({ favori
           </div>
         </div>
 
-        {stats.lastReadDate && (
-          <div className="flex items-center gap-1.5 text-[11px] font-mono text-zinc-500 self-start sm:self-auto">
-            <Calendar className="h-3.5 w-3.5" />
-            <span>Última leitura: {new Date(stats.lastReadDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-          </div>
-        )}
+        <div className="flex items-center gap-3 self-start sm:self-auto flex-wrap">
+          {stats.lastReadDate && (
+            <div className="hidden lg:flex items-center gap-1.5 text-[11px] font-mono text-zinc-500">
+              <Calendar className="h-3.5 w-3.5" />
+              <span>Última leitura: {new Date(stats.lastReadDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+          )}
+          <button
+            onClick={() => setShowAnalytics(!showAnalytics)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800/90 hover:bg-zinc-700/90 border border-zinc-700/70 hover:border-rose-500/40 text-xs font-semibold text-zinc-200 hover:text-white transition-all shadow-sm cursor-pointer"
+            title={showAnalytics ? "Ocultar painel de gráficos de leitura" : "Exibir gráficos interativos de horas, gêneros e ritmo dos últimos 30 dias"}
+          >
+            <BarChart3 className="h-3.5 w-3.5 text-rose-400" />
+            <span>{showAnalytics ? 'Ocultar Gráficos' : 'Analytics (30 Dias)'}</span>
+            {showAnalytics ? <ChevronUp className="h-3.5 w-3.5 text-zinc-400" /> : <ChevronDown className="h-3.5 w-3.5 text-zinc-400" />}
+          </button>
+        </div>
       </div>
 
       {/* Grid of Key Stat Counters */}
@@ -140,7 +159,14 @@ export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({ favori
 
       </div>
 
-      {!hasActivity && (
+      {/* Dynamic 30-Day Recharts Analytics Dashboard */}
+      {showAnalytics && (
+        <div className="mt-6 pt-6 border-t border-zinc-800/80 animate-in fade-in duration-300">
+          <ReadingAnalytics onExploreGenre={onExploreGenre} />
+        </div>
+      )}
+
+      {!hasActivity && !showAnalytics && (
         <div className="mt-4 pt-3 border-t border-zinc-800/40 text-center sm:text-left">
           <p className="text-xs text-zinc-500">
             Dica: Ao ler capítulos no leitor integrado, suas páginas e tempo ativo serão computados automaticamente aqui.

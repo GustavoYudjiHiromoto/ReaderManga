@@ -10,12 +10,17 @@ import { MangaDetailPage } from './pages/MangaDetailPage.js';
 import { ReaderPage } from './pages/ReaderPage.js';
 import { ApiDocPage } from './pages/ApiDocPage.js';
 import { FavoritesPage } from './pages/FavoritesPage.js';
+import { ProfilePage } from './pages/ProfilePage.js';
 import { HistoryService } from './services/history.js';
 import { OfflineCacheService } from './services/offlineCache.js';
+import { UpdateTrackerService } from './services/updateTracker.js';
+import { TrackerService } from './services/trackerService.js';
+import { TrackerBackgroundService } from './services/trackerBackgroundService.js';
+import { TrackersModal } from './components/TrackersModal.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
 
-type TabType = 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader';
-type OriginType = 'search' | 'catalog' | 'favorites' | 'home';
+type TabType = 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
+type OriginType = 'search' | 'catalog' | 'favorites' | 'home' | 'profile';
 
 interface ParsedRoute {
   tab: TabType;
@@ -62,6 +67,10 @@ function parseLocation(): ParsedRoute {
     return { tab: 'favorites' };
   }
 
+  if (pathname === '/profile') {
+    return { tab: 'profile' };
+  }
+
   if (pathname === '/api' || pathname === '/api-docs') {
     return { tab: 'api' };
   }
@@ -80,9 +89,17 @@ export default function App() {
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
+  const [isTrackersOpen, setIsTrackersOpen] = useState(false);
+  const [trackersModalManga, setTrackersModalManga] = useState<{ id?: string; title?: string } | null>(null);
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
   const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
+  const [unreadUpdatesCount, setUnreadUpdatesCount] = useState<number>(() => UpdateTrackerService.getUnreadUpdatesCount());
+  const [trackersCount, setTrackersCount] = useState<number>(() => {
+    const ani = TrackerService.getAniListAccount().connected ? 1 : 0;
+    const mal = TrackerService.getMalAccount().connected ? 1 : 0;
+    return ani + mal;
+  });
 
   // Scroll to catalog section helper
   const scrollToCatalog = () => {
@@ -98,15 +115,34 @@ export default function App() {
   useEffect(() => {
     refreshHistory();
 
+    // Initialize silent background radar for new chapters
+    const cleanupRadar = UpdateTrackerService.initBackgroundRadar();
+
+    // Initialize background sync service for AniList & MyAnimeList
+    const cleanupTrackerSync = TrackerBackgroundService.initBackgroundSync();
+
     // Subscribe to reactive HistoryService changes (reading progress, bookmarks added/removed)
     const unsubscribeHistory = HistoryService.subscribe(() => {
       setHistory(HistoryService.getHistory());
       setFavorites(HistoryService.getFavorites());
+      setUnreadUpdatesCount(UpdateTrackerService.getUnreadUpdatesCount());
+    });
+
+    // Subscribe to update tracker changes
+    const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
+      setUnreadUpdatesCount(UpdateTrackerService.getUnreadUpdatesCount());
     });
 
     // Subscribe to offline cache changes
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
       setOfflineCount(OfflineCacheService.getAllSavedChapters().length);
+    });
+
+    // Subscribe to tracker changes
+    const unsubscribeTrackers = TrackerService.subscribe(() => {
+      const ani = TrackerService.getAniListAccount().connected ? 1 : 0;
+      const mal = TrackerService.getMalAccount().connected ? 1 : 0;
+      setTrackersCount(ani + mal);
     });
 
     // Set initial state in browser history if not present
@@ -151,11 +187,25 @@ export default function App() {
       }
     };
 
+    const handleOpenTrackersModal = (e: Event) => {
+      const customEvent = e as CustomEvent<{ mangaId?: string; mangaTitle?: string }>;
+      if (customEvent.detail) {
+        setTrackersModalManga({ id: customEvent.detail.mangaId, title: customEvent.detail.mangaTitle });
+      }
+      setIsTrackersOpen(true);
+    };
+
     window.addEventListener('popstate', handlePopState);
+    window.addEventListener('open-trackers-modal', handleOpenTrackersModal);
     return () => {
       window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('open-trackers-modal', handleOpenTrackersModal);
+      cleanupRadar();
+      cleanupTrackerSync();
       unsubscribeHistory();
+      unsubscribeUpdates();
       unsubscribeOffline();
+      unsubscribeTrackers();
     };
   }, []);
 
@@ -231,7 +281,7 @@ export default function App() {
     }
   };
 
-  const handleNavigate = (tab: 'home' | 'catalog' | 'search' | 'favorites' | 'api') => {
+  const handleNavigate = (tab: 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'profile') => {
     const nextDepth = inAppHistoryDepth + 1;
     setInAppHistoryDepth(nextDepth);
 
@@ -264,6 +314,13 @@ export default function App() {
       return;
     }
 
+    if (tab === 'profile') {
+      setCurrentTab('profile');
+      window.history.pushState({ tab: 'profile', depth: nextDepth }, '', '/profile');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
     if (tab === 'api') {
       setCurrentTab('api');
       window.history.pushState({ tab: 'api', depth: nextDepth }, '', '/api-docs');
@@ -290,9 +347,12 @@ export default function App() {
           onNavigate={handleNavigate}
           onOpenHistory={() => setIsHistoryOpen(true)}
           onOpenDownloads={() => setIsDownloadsOpen(true)}
+          onOpenTrackers={() => setIsTrackersOpen(true)}
           historyCount={history.length}
           favoritesCount={favorites.length}
           offlineCount={offlineCount}
+          unreadUpdatesCount={unreadUpdatesCount}
+          trackersCount={trackersCount}
         />
       )}
 
@@ -374,6 +434,30 @@ export default function App() {
           />
         )}
 
+        {/* Profile View */}
+        {currentTab === 'profile' && (
+          <ProfilePage
+            onNavigateToCatalog={() => handleNavigate('catalog')}
+            onNavigateToSearch={(query, genre) => {
+              if (genre) {
+                setSearchInitialQuery('');
+                window.history.pushState(
+                  { tab: 'search', depth: inAppHistoryDepth + 1 },
+                  '',
+                  `/search?genre=${encodeURIComponent(genre)}`
+                );
+                setCurrentTab('search');
+              } else {
+                setSearchInitialQuery(query || '');
+                handleNavigate('search');
+              }
+            }}
+            onSelectManga={(mangaId) => handleSelectManga(mangaId, 'profile')}
+            onReadChapter={handleReadChapter}
+            onOpenDownloads={() => setIsDownloadsOpen(true)}
+          />
+        )}
+
         {/* API Docs View */}
         {currentTab === 'api' && <ApiDocPage />}
       </main>
@@ -398,6 +482,17 @@ export default function App() {
         onClose={() => setIsDownloadsOpen(false)}
         onReadChapter={handleReadChapter}
         onNavigateToCatalog={() => handleNavigate('catalog')}
+      />
+
+      {/* External Trackers (AniList & MyAnimeList) Modal */}
+      <TrackersModal
+        isOpen={isTrackersOpen}
+        onClose={() => {
+          setIsTrackersOpen(false);
+          setTrackersModalManga(null);
+        }}
+        activeMangaId={trackersModalManga?.id || selectedMangaId || undefined}
+        activeMangaTitle={trackersModalManga?.title}
       />
 
       {/* Floating Offline Notification */}

@@ -25,7 +25,13 @@ import {
   HelpCircle,
   Bookmark,
   BookmarkCheck,
-  X
+  X,
+  Infinity as InfinityIcon,
+  ChevronsDown,
+  Sparkles,
+  ListFilter,
+  Search,
+  Clock
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -33,12 +39,18 @@ import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal.js';
 import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
+import { TrackersModal } from '../components/TrackersModal.js';
 
 interface ReaderPageProps {
   mangaId: string;
   chapterId: string;
   onBackToManga: () => void;
   onChangeChapter: (newChapterId: string) => void;
+}
+
+export interface ChapterSection {
+  chapter: Chapter;
+  pages: MangaPage[];
 }
 
 type ReaderMode = 'webtoon' | 'single' | 'double';
@@ -178,11 +190,29 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Settings
-  const [readerMode, setReaderMode] = useState<ReaderMode>('webtoon');
+  // Settings (respecting user preferences configured in Profile)
+  const [readerMode, setReaderMode] = useState<ReaderMode>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_mode') as ReaderMode) || 'webtoon';
+    } catch {
+      return 'webtoon';
+    }
+  });
   const [readerTheme, setReaderTheme] = useState<ReaderTheme>('dark');
-  const [pageFit, setPageFit] = useState<PageFit>('width');
-  const [readingDirection, setReadingDirection] = useState<ReadingDirection>('rtl');
+  const [pageFit, setPageFit] = useState<PageFit>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_page_fit') as PageFit) || 'width';
+    } catch {
+      return 'width';
+    }
+  });
+  const [readingDirection, setReadingDirection] = useState<ReadingDirection>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_direction') as ReadingDirection) || 'rtl';
+    } catch {
+      return 'rtl';
+    }
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [showUi, setShowUi] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -190,10 +220,145 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [cachingOffline, setCachingOffline] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
+  const [showTrackersModal, setShowTrackersModal] = useState(false);
   const [isCurrentPageBookmarked, setIsCurrentPageBookmarked] = useState(false);
   const [showBookmarkNoteDialog, setShowBookmarkNoteDialog] = useState(false);
   const [bookmarkNoteInput, setBookmarkNoteInput] = useState('');
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
+  const [showChapterDrawer, setShowChapterDrawer] = useState(false);
+  const [drawerSearch, setDrawerSearch] = useState('');
+  const [currentTime, setCurrentTime] = useState<string>(() => {
+    const d = new Date();
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  });
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const d = new Date();
+      setCurrentTime(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Infinite Continuous Vertical Scroll (Webtoon mode)
+  const [continuousScroll, setContinuousScroll] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('mr_reader_continuous_scroll');
+      return stored !== null ? stored !== 'false' : true;
+    } catch {
+      return true;
+    }
+  });
+  const [loadedSections, setLoadedSections] = useState<ChapterSection[]>([]);
+  const [isLoadingNextChapter, setIsLoadingNextChapter] = useState(false);
+  const isLoadingNextChapterRef = useRef(false);
+  const [nextChapterError, setNextChapterError] = useState<{ chapter: Chapter; error: string } | null>(null);
+
+  const toggleContinuousScroll = () => {
+    setContinuousScroll(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mr_reader_continuous_scroll', String(next));
+      } catch {}
+      showToast(
+        next
+          ? 'Rolagem infinita ativada: capítulos seguintes carregarão ao rolar'
+          : 'Rolagem infinita desativada'
+      );
+      return next;
+    });
+  };
+
+  // Mobile Touch Gestures & Zen Mode
+  const [isZenMode, setIsZenMode] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
+  const touchStartPos = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchDistRef = useRef<number | null>(null);
+  const lastTapTimeRef = useRef<number>(0);
+
+  const toggleZenMode = () => {
+    setIsZenMode(prev => {
+      const next = !prev;
+      showToast(next ? 'Modo Zen ativado (Toque duplo ou tecla Z para sair)' : 'Modo Zen desativado');
+      return next;
+    });
+  };
+
+  const handleReaderTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartPos.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        time: Date.now()
+      };
+    } else if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchDistRef.current = dist;
+    }
+  };
+
+  const handleReaderTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && touchDistRef.current !== null) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const ratio = dist / touchDistRef.current;
+      setZoomScale(prev => Math.min(2.5, Math.max(1, prev * (ratio > 1 ? 1.02 : 0.98))));
+      touchDistRef.current = dist;
+    }
+  };
+
+  const handleReaderTouchEnd = (e: React.TouchEvent) => {
+    touchDistRef.current = null;
+    if (!touchStartPos.current) return;
+
+    const changed = e.changedTouches[0];
+    if (!changed) return;
+
+    const diffX = changed.clientX - touchStartPos.current.x;
+    const diffY = changed.clientY - touchStartPos.current.y;
+    const elapsed = Date.now() - touchStartPos.current.time;
+
+    const now = Date.now();
+    // Detect double tap for Zen Mode (within 300ms)
+    if (Math.abs(diffX) < 15 && Math.abs(diffY) < 15 && elapsed < 250) {
+      if (now - lastTapTimeRef.current < 300) {
+        toggleZenMode();
+        lastTapTimeRef.current = 0;
+        touchStartPos.current = null;
+        return;
+      }
+      lastTapTimeRef.current = now;
+    }
+
+    // Detect horizontal swipe in single or double page mode
+    if (readerMode !== 'webtoon' && Math.abs(diffX) > 40 && Math.abs(diffY) < 60 && elapsed < 450) {
+      if (diffX < 0) {
+        // Swiped Left: next page in LTR, prev page in RTL
+        readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
+      } else {
+        // Swiped Right: prev page in LTR, next page in RTL
+        readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
+      }
+    }
+
+    touchStartPos.current = null;
+  };
+
+  const handleReaderDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, select, a')) return;
+    if (zoomScale !== 1) {
+      setZoomScale(1);
+      showToast('Zoom restaurado (1.0x)');
+    } else {
+      toggleZenMode();
+    }
+  };
 
   // Ergonomic Controls: Autoscroll, Webtoon Gap & Visual Comfort
   const [isAutoScrolling, setIsAutoScrolling] = useState(false);
@@ -201,6 +366,25 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [webtoonGap, setWebtoonGap] = useState<number>(0); // 0, 8, 16, 24, 32
   const [brightness, setBrightness] = useState<number>(100); // 60 to 100
   const [nightLight, setNightLight] = useState<number>(0); // 0 to 40
+  const [smartInvert, setSmartInvert] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mr_reader_smart_invert') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [endRecommendations, setEndRecommendations] = useState<Manga[]>([]);
+
+  const toggleSmartInvert = () => {
+    setSmartInvert(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mr_reader_smart_invert', String(next));
+      } catch {}
+      showToast(next ? 'Modo Noturno P&B ativado (Inversão Inteligente)' : 'Modo Noturno P&B desativado');
+      return next;
+    });
+  };
 
   // Container refs for scroll spy
   const pagesContainerRef = useRef<HTMLDivElement>(null);
@@ -315,11 +499,43 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         }
       }
       setPages(effectivePages);
+      if (foundChapter) {
+        setLoadedSections([{ chapter: foundChapter, pages: effectivePages }]);
+      } else {
+        setLoadedSections([{
+          chapter: {
+            id: chapterId,
+            mangaId,
+            chapterNumber: '1',
+            title: '',
+            language: 'pt-br',
+            sourceId: 'unknown',
+            externalChapterId: chapterId,
+            pagesCount: effectivePages.length
+          },
+          pages: effectivePages
+        }]);
+      }
+      setIsLoadingNextChapter(false);
+      isLoadingNextChapterRef.current = false;
+      setNextChapterError(null);
 
-      // Check saved progress
+      // Check saved progress & restore exact pixel scroll position
       const saved = HistoryService.getProgress(mangaId);
       if (saved && saved.chapterId === chapterId && saved.pageNumber <= effectivePages.length) {
         setCurrentPageIndex(Math.max(0, saved.pageNumber - 1));
+        if (readerMode === 'webtoon' && saved.scrollRatio && saved.scrollRatio > 0) {
+          setTimeout(() => {
+            const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+            if (maxScroll > 100) {
+              const targetY = saved.scrollOffset && saved.scrollOffset <= maxScroll
+                ? saved.scrollOffset
+                : saved.scrollRatio! * maxScroll;
+              window.scrollTo({ top: targetY, behavior: 'instant' });
+              showToast('Posição exata de rolagem restaurada');
+            }
+          }, 350);
+        }
       } else {
         setCurrentPageIndex(0);
       }
@@ -355,6 +571,10 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         setChapters([fallbackChapter]);
         setCurrentChapter(fallbackChapter);
         setPages(offlineItem.pages);
+        setLoadedSections([{ chapter: fallbackChapter, pages: offlineItem.pages }]);
+        setIsLoadingNextChapter(false);
+        isLoadingNextChapterRef.current = false;
+        setNextChapterError(null);
         setIsOfflineSaved(true);
         setError(null);
         return;
@@ -365,9 +585,19 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }
   };
 
-  // Save progress on page change
+  // Fetch recommendations when manga loads
+  useEffect(() => {
+    if (!manga) return;
+    MangaApi.getRelatedRecommendations(manga).then(recs => {
+      setEndRecommendations(recs);
+    }).catch(() => {});
+  }, [manga?.id]);
+
+  // Save progress on page change and scroll
   useEffect(() => {
     if (manga && currentChapter && pages.length > 0) {
+      const maxScroll = typeof window !== 'undefined' ? document.documentElement.scrollHeight - window.innerHeight : 0;
+      const scrollRatio = maxScroll > 0 ? window.scrollY / maxScroll : undefined;
       HistoryService.saveProgress({
         mangaId: manga.id,
         mangaTitle: manga.title,
@@ -376,10 +606,46 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         chapterNumber: currentChapter.chapterNumber,
         chapterTitle: currentChapter.title,
         pageNumber: currentPageIndex + 1,
-        totalPages: pages.length
+        totalPages: pages.length,
+        scrollRatio: typeof scrollRatio === 'number' && !isNaN(scrollRatio) ? Math.min(1, Math.max(0, scrollRatio)) : undefined,
+        scrollOffset: typeof window !== 'undefined' ? window.scrollY : undefined
       });
     }
   }, [currentPageIndex, manga, currentChapter, pages]);
+
+  // Debounced scroll listener in webtoon mode for exact position saving
+  useEffect(() => {
+    if (readerMode !== 'webtoon' || !manga || !currentChapter || pages.length === 0) return;
+
+    let timeoutId: any;
+    const handleScrollSave = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+        if (maxScroll > 150) {
+          const ratio = Math.min(1, Math.max(0, window.scrollY / maxScroll));
+          HistoryService.saveProgress({
+            mangaId: manga.id,
+            mangaTitle: manga.title,
+            mangaCover: manga.coverUrl,
+            chapterId: currentChapter.id,
+            chapterNumber: currentChapter.chapterNumber,
+            chapterTitle: currentChapter.title,
+            pageNumber: currentPageIndex + 1,
+            totalPages: pages.length,
+            scrollRatio: ratio,
+            scrollOffset: window.scrollY
+          });
+        }
+      }, 1000);
+    };
+
+    window.addEventListener('scroll', handleScrollSave, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScrollSave);
+      clearTimeout(timeoutId);
+    };
+  }, [readerMode, manga, currentChapter, pages, currentPageIndex]);
 
   // Active reading time tracking while reader tab is in focus
   useEffect(() => {
@@ -467,12 +733,26 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           return;
         }
       }
+      if (e.key === 'i' || e.key === 'I') {
+        if (readerMode === 'webtoon') {
+          toggleContinuousScroll();
+          return;
+        }
+      }
+      if (e.key === 'n' || e.key === 'N') {
+        toggleSmartInvert();
+        return;
+      }
       if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         setShowShortcutsModal(prev => !prev);
         return;
       }
       if (e.key === 'm' || e.key === 'M') {
         setShowUi(prev => !prev);
+        return;
+      }
+      if (e.key === 'z' || e.key === 'Z') {
+        toggleZenMode();
         return;
       }
       if (e.key === 'Escape') {
@@ -512,10 +792,74 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentPageIndex, pages.length, readerMode, readingDirection]);
 
+  // Load next chapter section for continuous vertical scroll
+  const loadNextChapterSection = async (nextChap: Chapter) => {
+    if (isLoadingNextChapterRef.current) return;
+    isLoadingNextChapterRef.current = true;
+    setIsLoadingNextChapter(true);
+    setNextChapterError(null);
+
+    try {
+      let nextPages = await MangaApi.getChapterPages(nextChap.id);
+      if (nextPages.length === 0 && nextChap.variants && nextChap.variants.length > 0) {
+        for (const variant of nextChap.variants) {
+          try {
+            const altPages = await MangaApi.getChapterPages(variant.id);
+            if (altPages && altPages.length > 0) {
+              nextPages = altPages;
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      if (nextPages.length === 0) {
+        const offline = OfflineCacheService.getOfflineChapter(nextChap.id);
+        if (offline && offline.pages && offline.pages.length > 0) {
+          nextPages = offline.pages;
+        }
+      }
+
+      if (nextPages.length === 0) {
+        setNextChapterError({
+          chapter: nextChap,
+          error: `O Capítulo ${nextChap.chapterNumber} não retornou páginas no momento.`
+        });
+        return;
+      }
+
+      setLoadedSections(prev => {
+        if (prev.some(s => s.chapter.id === nextChap.id)) return prev;
+        return [...prev, { chapter: nextChap, pages: nextPages }];
+      });
+      showToast(`Capítulo ${nextChap.chapterNumber} carregado na rolagem contínua!`);
+    } catch (err: any) {
+      console.error('Failed to load next chapter section:', err);
+      setNextChapterError({
+        chapter: nextChap,
+        error: err.message || `Erro ao carregar Capítulo ${nextChap.chapterNumber}`
+      });
+    } finally {
+      setIsLoadingNextChapter(false);
+      isLoadingNextChapterRef.current = false;
+    }
+  };
+
   // Next / Previous chapter helpers
-  const currentChapterIndex = chapters.findIndex(c => c.id === chapterId || c.variants?.some(v => v.id === chapterId));
+  const effectiveActiveChapterId = currentChapter?.id || chapterId;
+  const currentChapterIndex = chapters.findIndex(
+    c => c.id === effectiveActiveChapterId || c.variants?.some(v => v.id === effectiveActiveChapterId)
+  );
   const prevChapter = currentChapterIndex > 0 ? chapters[currentChapterIndex - 1] : null;
   const nextChapter = currentChapterIndex >= 0 && currentChapterIndex < chapters.length - 1 ? chapters[currentChapterIndex + 1] : null;
+
+  // Track the tail of currently loaded continuous sections
+  const lastLoadedSec = loadedSections[loadedSections.length - 1];
+  const lastLoadedChapter = lastLoadedSec?.chapter || currentChapter;
+  const lastChapterIndex = chapters.findIndex(
+    c => c.id === lastLoadedChapter?.id || c.variants?.some(v => v.id === lastLoadedChapter?.id)
+  );
+  const subsequentChapter = lastChapterIndex >= 0 && lastChapterIndex < chapters.length - 1 ? chapters[lastChapterIndex + 1] : null;
 
   const goToNextPage = () => {
     if (readerMode === 'webtoon') {
@@ -565,25 +909,69 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }
   };
 
-  // Scroll spy for webtoon mode
+  // Scroll spy for webtoon mode & infinite vertical scroll trigger
   useEffect(() => {
     if (readerMode !== 'webtoon') return;
 
+    let ticking = false;
+
     const handleScroll = () => {
-      const scrollPosition = window.scrollY + window.innerHeight / 3;
-      pageRefs.current.forEach((el, index) => {
-        if (!el) return;
-        const top = el.offsetTop;
-        const height = el.offsetHeight;
-        if (scrollPosition >= top && scrollPosition < top + height) {
-          setCurrentPageIndex(index);
+      if (ticking) return;
+      ticking = true;
+
+      window.requestAnimationFrame(() => {
+        const scrollPosition = window.scrollY + window.innerHeight * 0.35;
+        const pageElements = document.querySelectorAll<HTMLElement>('.webtoon-page-item');
+
+        for (let i = 0; i < pageElements.length; i++) {
+          const el = pageElements[i];
+          const top = el.offsetTop;
+          const height = el.offsetHeight;
+          if (scrollPosition >= top && scrollPosition < top + height) {
+            const chId = el.getAttribute('data-chapter-id');
+            const pIdx = parseInt(el.getAttribute('data-page-index') || '0', 10);
+            if (chId && currentChapter?.id !== chId) {
+              const matchedSec = loadedSections.find(s => s.chapter.id === chId);
+              if (matchedSec) {
+                setCurrentChapter(matchedSec.chapter);
+                setPages(matchedSec.pages);
+                // Sync URL quietly without reloading
+                window.history.replaceState(
+                  { ...window.history.state, chapterId: matchedSec.chapter.id },
+                  '',
+                  `/read/${encodeURIComponent(mangaId)}/${encodeURIComponent(matchedSec.chapter.id)}`
+                );
+              }
+            }
+            setCurrentPageIndex(pIdx);
+            break;
+          }
         }
+
+        // Automatic loading of next chapter in continuous scroll mode
+        if (continuousScroll && !isLoadingNextChapterRef.current && loadedSections.length > 0) {
+          const scrollDistanceToEnd = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY);
+          if (scrollDistanceToEnd < 1400) {
+            const lastSec = loadedSections[loadedSections.length - 1];
+            if (lastSec) {
+              const lastIdx = chapters.findIndex(
+                c => c.id === lastSec.chapter.id || c.variants?.some(v => v.id === lastSec.chapter.id)
+              );
+              if (lastIdx !== -1 && lastIdx < chapters.length - 1) {
+                const nextToLoad = chapters[lastIdx + 1];
+                loadNextChapterSection(nextToLoad);
+              }
+            }
+          }
+        }
+
+        ticking = false;
       });
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [readerMode, pages]);
+  }, [readerMode, continuousScroll, loadedSections, currentChapter?.id, chapters, mangaId]);
 
   // Themes mapping
   const themeClasses: Record<ReaderTheme, string> = {
@@ -642,10 +1030,22 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
   return (
     <div className={`min-h-screen transition-colors duration-200 ${themeClasses[readerTheme]} select-none`}>
+      {/* Floating Zen Mode Exit Pill */}
+      {isZenMode && (
+        <button
+          onClick={toggleZenMode}
+          className="fixed top-4 right-4 z-50 px-3 py-1.5 rounded-full bg-zinc-950/85 border border-amber-500/30 text-zinc-300 hover:text-white backdrop-blur-md text-xs font-medium flex items-center gap-1.5 shadow-2xl opacity-40 hover:opacity-100 transition-opacity cursor-pointer group"
+          title="Sair do Modo Zen (Tecla Z ou duplo clique)"
+        >
+          <Eye className="h-3.5 w-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+          <span>Sair do Zen (Z)</span>
+        </button>
+      )}
+
       {/* 1. Top Reading Toolbar */}
       <header
         className={`sticky top-0 z-50 transition-transform duration-200 border-b backdrop-blur-md ${toolbarThemeClasses[readerTheme]} ${
-          showUi ? 'translate-y-0' : '-translate-y-full'
+          !isZenMode && showUi ? 'translate-y-0' : '-translate-y-full'
         }`}
       >
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-3 sm:px-6">
@@ -678,16 +1078,26 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             </div>
           </div>
 
-          {/* Quick Chapter Selector */}
-          <div className="hidden md:flex items-center gap-2">
+          {/* Quick Chapter Drawer Trigger & Selector */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowChapterDrawer(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-rose-500/40 rounded-lg text-xs font-medium text-zinc-200 hover:text-white transition-all cursor-pointer shadow-sm"
+              title="Abrir gaveta de capítulos (navegação rápida)"
+            >
+              <ListFilter className="h-3.5 w-3.5 text-rose-400" />
+              <span className="font-mono tabular-nums font-semibold">Cap. {currentChapter?.chapterNumber}</span>
+              <span className="hidden sm:inline text-[10px] text-zinc-500 font-sans">({chapters.length} caps)</span>
+            </button>
+
             <select
               value={currentChapter?.id || chapterId}
               onChange={(e) => onChangeChapter(e.target.value)}
-              className="px-3 py-1 bg-zinc-950/80 border border-zinc-800 rounded-lg text-xs font-mono tabular-nums focus:outline-none focus:border-rose-500 cursor-pointer text-zinc-200"
+              className="hidden lg:block px-2.5 py-1 bg-zinc-950/80 border border-zinc-800 rounded-lg text-xs font-mono tabular-nums focus:outline-none focus:border-rose-500 cursor-pointer text-zinc-300 max-w-[160px] truncate"
             >
               {chapters.map((ch) => (
                 <option key={ch.id} value={ch.id}>
-                  Capítulo {ch.chapterNumber} {ch.title ? `- ${ch.title}` : ''}
+                  c.{ch.chapterNumber} {ch.title ? `- ${ch.title}` : ''}
                 </option>
               ))}
             </select>
@@ -747,6 +1157,29 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               </button>
             </div>
 
+            {/* Quick Continuous Vertical Scroll Action (Webtoon mode) */}
+            {readerMode === 'webtoon' && (
+              <button
+                onClick={toggleContinuousScroll}
+                className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
+                  continuousScroll
+                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30'
+                    : 'bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+                title={
+                  continuousScroll
+                    ? 'Rolagem Infinita ATIVADA: carrega o próximo capítulo automaticamente ao rolar (Atalho: I)'
+                    : 'Rolagem Infinita DESATIVADA: clique para ativar o carregamento contínuo (Atalho: I)'
+                }
+              >
+                <InfinityIcon className={`h-3.5 w-3.5 ${continuousScroll ? 'text-rose-400' : 'text-zinc-500'}`} />
+                <span className="hidden sm:inline">Rolagem Infinita</span>
+                <span className={`text-[9px] font-mono font-bold px-1 py-0.5 rounded ${continuousScroll ? 'bg-rose-500/30 text-rose-200' : 'bg-zinc-800 text-zinc-500'}`}>
+                  {continuousScroll ? 'ON' : 'OFF'}
+                </span>
+              </button>
+            )}
+
             {/* Quick Autoscroll Action (Webtoon mode) */}
             {readerMode === 'webtoon' && (
               <button
@@ -763,6 +1196,24 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 <span className="font-mono text-[10px] text-rose-300">{autoScrollSpeed}x</span>
               </button>
             )}
+
+            {/* Quick Smart Invert (Night Mode for B&W Manga) */}
+            <button
+              onClick={toggleSmartInvert}
+              className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
+                smartInvert
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500/30'
+                  : 'bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+              }`}
+              title={
+                smartInvert
+                  ? 'Modo Noturno P&B ATIVADO: páginas com fundo branco invertidas suavemente (Atalho: N)'
+                  : 'Modo Noturno P&B DESATIVADO: clique para inverter fundos claros no escuro (Atalho: N)'
+              }
+            >
+              <Moon className={`h-3.5 w-3.5 ${smartInvert ? 'text-amber-400 fill-amber-400' : 'text-zinc-400'}`} />
+              <span className="hidden lg:inline">P&B Noturno</span>
+            </button>
 
             {/* Settings Dropdown Toggle */}
             <div className="relative">
@@ -826,9 +1277,39 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                     </div>
                   </div>
 
-                  {/* Webtoon Ergonomics: Autoscroll & Spacing */}
+                  {/* Webtoon Ergonomics: Infinite Scroll, Autoscroll & Spacing */}
                   {readerMode === 'webtoon' && (
                     <div className="pt-2 border-t border-zinc-800 space-y-3">
+                      {/* Infinite Continuous Scroll Toggle */}
+                      <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 pr-2">
+                            <InfinityIcon className="h-4 w-4 text-rose-400 shrink-0" />
+                            <div>
+                              <span className="text-zinc-200 font-medium block">Rolagem Infinita</span>
+                              <span className="text-zinc-500 text-[10px] block leading-tight">
+                                Carrega o próximo capítulo ao rolar até o fim
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={toggleContinuousScroll}
+                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                              continuousScroll ? 'bg-rose-600' : 'bg-zinc-700'
+                            }`}
+                            role="switch"
+                            aria-checked={continuousScroll}
+                            title="Alternar rolagem infinita de capítulos"
+                          >
+                            <span
+                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                                continuousScroll ? 'translate-x-4' : 'translate-x-0'
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      </div>
                       <div>
                         <span className="text-zinc-400 font-medium block mb-2">Rolagem Automática (Autoscroll)</span>
                         <div className="flex items-center gap-2">
@@ -903,20 +1384,35 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       />
                     </div>
 
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-zinc-400 font-medium">Luz Noturna (Anti-Fadiga)</span>
-                        <span className="text-amber-400 font-mono text-[10px]">{nightLight}%</span>
+                    {/* Smart Invert (Night Mode for B&W Manga) */}
+                    <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 pr-2">
+                          <Moon className="h-4 w-4 text-amber-400 shrink-0" />
+                          <div>
+                            <span className="text-zinc-200 font-medium block">Modo Noturno P&B</span>
+                            <span className="text-zinc-500 text-[10px] block leading-tight">
+                              Inverte fundos brancos sem alterar a arte (Atalho: N)
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={toggleSmartInvert}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            smartInvert ? 'bg-amber-500' : 'bg-zinc-700'
+                          }`}
+                          role="switch"
+                          aria-checked={smartInvert}
+                          title="Alternar inversão inteligente para leitura noturna"
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                              smartInvert ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
                       </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="40"
-                        step="5"
-                        value={nightLight}
-                        onChange={(e) => setNightLight(Number(e.target.value))}
-                        className="w-full accent-amber-500 cursor-pointer"
-                      />
                     </div>
                   </div>
 
@@ -1018,37 +1514,64 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                         </>
                       )}
                     </button>
+
+                    {/* External Trackers (AniList / MAL) Shortcut */}
+                    <button
+                      onClick={() => {
+                        setShowSettings(false);
+                        setShowTrackersModal(true);
+                      }}
+                      className="flex items-center justify-between w-full py-1.5 px-2.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 hover:border-sky-500/40 text-xs text-sky-300 transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-1.5 font-medium">
+                        <Sliders className="h-3.5 w-3.5 text-sky-400" />
+                        <span>Rastreamento (AniList / MAL)</span>
+                      </span>
+                      <span className="text-[10px] text-zinc-500 font-mono">Auto-Sync</span>
+                    </button>
                   </div>
 
-                  <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500">
-                    <span>Atalhos: A (Autoscroll) · F (Tela Cheia)</span>
+                    {/* Saved Bookmarks & Shortcuts within Settings */}
+                    <div className="pt-2 border-t border-zinc-800 space-y-1">
+                      <button
+                        onClick={() => {
+                          setShowSettings(false);
+                          setShowBookmarksModal(true);
+                        }}
+                        className="flex items-center justify-between w-full py-1.5 px-2.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5 font-medium">
+                          <BookmarkCheck className="h-3.5 w-3.5 text-rose-400" />
+                          <span>Páginas Marcadas</span>
+                        </span>
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {HistoryService.getPageBookmarks().filter(b => b.mangaId === mangaId).length} salvas
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setShowSettings(false);
+                          setShowShortcutsModal(true);
+                        }}
+                        className="flex items-center justify-between w-full py-1.5 px-2.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5 font-medium">
+                          <HelpCircle className="h-3.5 w-3.5 text-zinc-400" />
+                          <span>Atalhos de Teclado</span>
+                        </span>
+                        <kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-400">?</kbd>
+                      </button>
+                    </div>
+
+                  <div className="pt-2 border-t border-zinc-800 flex justify-between text-[11px] text-zinc-500 font-mono">
+                    <span>Atalhos: Z (Zen) · F (Tela Cheia) · B (Marcar)</span>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Download Chapter Actions */}
-            <div className="flex items-center gap-1 bg-zinc-950/80 border border-zinc-800 rounded-lg p-0.5 text-[10px] font-mono">
-              <a
-                href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=cbz`}
-                download
-                className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 rounded transition-colors"
-                title="Baixar capítulo em formato ComicBook (.cbz)"
-              >
-                CBZ
-              </a>
-              <span className="text-zinc-700">|</span>
-              <a
-                href={`/api/chapters/${encodeURIComponent(chapterId)}/download?format=pdf`}
-                download
-                className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 rounded transition-colors"
-                title="Baixar capítulo em documento PDF"
-              >
-                PDF
-              </a>
-            </div>
-
-            {/* Bookmark Current Page */}
+            {/* Quick Bookmark Current Page */}
             <button
               onClick={handleToggleBookmark}
               className={`p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer ${
@@ -1065,31 +1588,24 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               <Bookmark className={`h-4 w-4 ${isCurrentPageBookmarked ? 'fill-rose-500 text-rose-500' : ''}`} />
             </button>
 
-            {/* View All Saved Bookmarks */}
+            {/* Modo Zen Toggle */}
             <button
-              onClick={() => setShowBookmarksModal(true)}
-              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
-              title="Ver todas as páginas marcadas"
+              onClick={toggleZenMode}
+              className={`p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer ${
+                isZenMode ? 'text-amber-400 bg-amber-500/10' : 'text-zinc-300 hover:text-amber-400'
+              }`}
+              title="Modo Zen: Ocultar 100% dos menus e barras (Atalho: tecla Z ou duplo clique)"
             >
-              <BookmarkCheck className="h-4 w-4" />
+              <Eye className="h-4 w-4" />
             </button>
 
             {/* Fullscreen Toggle */}
             <button
               onClick={toggleFullscreen}
-              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300"
-              title="Alternar tela cheia"
+              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-white"
+              title="Alternar tela cheia (Atalho: tecla F)"
             >
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-            </button>
-
-            {/* Keyboard Shortcuts Help */}
-            <button
-              onClick={() => setShowShortcutsModal(true)}
-              className="p-2 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer text-zinc-300 hover:text-rose-400"
-              title="Atalhos de Teclado e Guia de Controles (Atalho: tecla ?)"
-            >
-              <HelpCircle className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -1138,37 +1654,124 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
       {/* 2. Reader Body */}
       <main
-        onClick={() => setShowUi(prev => !prev)}
-        style={{
-          filter: (brightness !== 100 || nightLight !== 0) ? `brightness(${brightness}%) sepia(${nightLight}%)` : undefined
+        onClick={() => {
+          if (!isZenMode) setShowUi(prev => !prev);
         }}
-        className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center p-2 sm:p-4 transition-[filter] duration-200"
+        onDoubleClick={handleReaderDoubleClick}
+        onTouchStart={handleReaderTouchStart}
+        onTouchMove={handleReaderTouchMove}
+        onTouchEnd={handleReaderTouchEnd}
+        style={{
+          filter: [
+            brightness !== 100 ? `brightness(${brightness}%)` : null,
+            nightLight !== 0 ? `sepia(${nightLight}%)` : null,
+            smartInvert ? 'invert(0.92) hue-rotate(180deg) contrast(1.15)' : null
+          ].filter(Boolean).join(' ') || undefined,
+          transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
+          transformOrigin: 'top center',
+          transition: zoomScale === 1 ? 'transform 0.15s ease-out' : undefined
+        }}
+        className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center p-2 sm:p-4 transition-[filter] duration-200 touch-pan-y"
       >
         {/* Webtoon / Vertical Cascade Mode */}
         {readerMode === 'webtoon' && (
           <div
             ref={pagesContainerRef}
-            style={{ gap: `${webtoonGap}px` }}
             className="w-full flex flex-col items-center max-w-4xl"
           >
-            {pages.map((page, idx) => (
+            {(loadedSections.length > 0
+              ? loadedSections
+              : [{ chapter: currentChapter || ({ id: chapterId, chapterNumber: '1' } as Chapter), pages }]
+            ).map((sec, secIdx) => (
               <div
-                key={idx}
-                ref={(el) => {
-                  pageRefs.current[idx] = el;
-                }}
-                className="relative flex justify-center w-full"
+                key={sec.chapter.id}
+                id={`chapter-section-${sec.chapter.id}`}
+                data-chapter-id={sec.chapter.id}
+                className="w-full flex flex-col items-center"
               >
-                <ReaderPageImage
-                  pageNumber={page.pageNumber}
-                  imageUrl={page.imageUrl}
-                  className={`block object-contain transition-all ${
-                    pageFit === 'width' ? 'w-full' : pageFit === 'height' ? 'h-screen' : 'max-w-full'
-                  }`}
-                  loading={idx < 3 ? 'eager' : 'lazy'}
-                />
+                {/* Chapter Boundary Divider between chapters */}
+                {secIdx > 0 && (
+                  <div className="w-full max-w-2xl my-10 px-5 py-4 rounded-2xl bg-zinc-900/90 border border-zinc-800 backdrop-blur-md shadow-2xl flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                        <InfinityIcon className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white tracking-wide">
+                            Capítulo {sec.chapter.chapterNumber}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-medium">
+                            Rolagem Contínua
+                          </span>
+                        </div>
+                        {sec.chapter.title && (
+                          <p className="text-xs text-zinc-400 line-clamp-1 mt-0.5">{sec.chapter.title}</p>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono text-zinc-500 tabular-nums">
+                      {sec.pages.length} páginas
+                    </span>
+                  </div>
+                )}
+
+                <div
+                  style={{ gap: `${webtoonGap}px` }}
+                  className="w-full flex flex-col items-center"
+                >
+                  {sec.pages.map((page, idx) => (
+                    <div
+                      key={`${sec.chapter.id}_page_${page.pageNumber}_${idx}`}
+                      data-chapter-id={sec.chapter.id}
+                      data-page-index={idx}
+                      ref={(el) => {
+                        if (secIdx === 0) {
+                          pageRefs.current[idx] = el;
+                        }
+                      }}
+                      className="webtoon-page-item relative flex justify-center w-full"
+                    >
+                      <ReaderPageImage
+                        pageNumber={page.pageNumber}
+                        imageUrl={page.imageUrl}
+                        className={`block object-contain transition-all ${
+                          pageFit === 'width' ? 'w-full' : pageFit === 'height' ? 'h-screen' : 'max-w-full'
+                        }`}
+                        loading={secIdx === 0 && idx < 3 ? 'eager' : 'lazy'}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
+
+            {/* Infinite Scroll Next Chapter Loading State */}
+            {isLoadingNextChapter && (
+              <div className="w-full max-w-md my-10 p-5 rounded-2xl bg-zinc-900/90 border border-zinc-800 flex flex-col items-center justify-center text-center shadow-xl animate-pulse">
+                <RefreshCw className="h-6 w-6 animate-spin text-rose-500 mb-2" />
+                <h4 className="text-xs font-semibold text-zinc-200">
+                  Carregando próximo capítulo automaticamente...
+                </h4>
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  Rolagem vertical infinita em andamento
+                </p>
+              </div>
+            )}
+
+            {/* Error loading next chapter section */}
+            {nextChapterError && (
+              <div className="w-full max-w-md my-8 p-5 rounded-2xl bg-zinc-900/90 border border-rose-500/40 text-center shadow-xl">
+                <AlertCircle className="h-6 w-6 text-rose-400 mx-auto mb-2" />
+                <p className="text-xs text-zinc-300 mb-3">{nextChapterError.error}</p>
+                <button
+                  onClick={() => loadNextChapterSection(nextChapterError.chapter)}
+                  className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Tentar carregar Capítulo {nextChapterError.chapter.chapterNumber} novamente
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -1297,57 +1900,170 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         )}
 
         {/* End of chapter banner */}
-        <div className="w-full max-w-md my-16 p-6 rounded-2xl bg-zinc-900/60 border border-zinc-800 text-center">
-          <BookOpen className="h-8 w-8 text-rose-500 mx-auto mb-2" />
-          <h3 className="font-semibold text-sm text-zinc-200">
-            Fim do Capítulo {currentChapter?.chapterNumber}
-          </h3>
-          <p className="text-xs text-zinc-400 mt-1 mb-5">
-            {nextChapter ? `Próximo: Capítulo ${nextChapter.chapterNumber}` : 'Você está no capítulo mais recente!'}
-          </p>
-
-          <div className="flex justify-center gap-3">
-            {prevChapter && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onChangeChapter(prevChapter.id);
-                }}
-                className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors"
-              >
-                ← Capítulo Anterior
-              </button>
-            )}
-
-            {nextChapter ? (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onChangeChapter(nextChapter.id);
-                }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors"
-              >
-                Próximo Capítulo →
-              </button>
+        <div className="w-full max-w-md my-16 p-6 rounded-2xl bg-zinc-900/70 border border-zinc-800 text-center shadow-xl">
+          {readerMode === 'webtoon' && continuousScroll ? (
+            subsequentChapter ? (
+              <>
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto mb-3">
+                  <InfinityIcon className="h-5 w-5" />
+                </div>
+                <h3 className="font-semibold text-sm text-zinc-200">
+                  Fim do Capítulo {lastLoadedChapter?.chapterNumber}
+                </h3>
+                <p className="text-xs text-zinc-400 mt-1 mb-4">
+                  Próximo na lista: Capítulo {subsequentChapter.chapterNumber} {subsequentChapter.title ? `· ${subsequentChapter.title}` : ''}
+                </p>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      loadNextChapterSection(subsequentChapter);
+                    }}
+                    disabled={isLoadingNextChapter}
+                    className="w-full sm:w-auto px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-rose-950/50"
+                  >
+                    {isLoadingNextChapter ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Carregando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ChevronsDown className="h-4 w-4" />
+                        <span>Carregar Capítulo {subsequentChapter.chapterNumber} Agora</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleContinuousScroll();
+                    }}
+                    className="w-full sm:w-auto px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    Desativar Rolagem Infinita
+                  </button>
+                </div>
+              </>
             ) : (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onBackToManga();
-                }}
-                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors"
-              >
-                Voltar à Página da Obra
-              </button>
-            )}
-          </div>
+              <>
+                <Check className="h-8 w-8 text-emerald-400 mx-auto mb-2" />
+                <h3 className="font-semibold text-sm text-zinc-200">
+                  Você chegou ao capítulo mais recente!
+                </h3>
+                <p className="text-xs text-zinc-400 mt-1 mb-5">
+                  Todos os capítulos lançados de <span className="text-zinc-200 font-medium">{manga?.title}</span> foram carregados.
+                </p>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onBackToManga();
+                  }}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                >
+                  Voltar à Página da Obra
+                </button>
+
+                {endRecommendations.length > 0 && (
+                  <div className="mt-6 pt-5 border-t border-zinc-800 text-left">
+                    <div className="flex items-center gap-1.5 mb-2.5">
+                      <Sparkles className="h-3.5 w-3.5 text-rose-400" />
+                      <h4 className="text-xs font-semibold text-zinc-200">O que ler a seguir</h4>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {endRecommendations.slice(0, 3).map((rec) => (
+                        <div
+                          key={rec.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.location.href = `/manga/${encodeURIComponent(rec.id)}`;
+                          }}
+                          className="group cursor-pointer rounded-lg bg-zinc-950/80 border border-zinc-800/80 p-2 hover:border-rose-500/50 transition-all text-center"
+                        >
+                          <div className="aspect-[3/4] w-full rounded overflow-hidden mb-1.5 bg-zinc-800">
+                            <img
+                              src={rec.coverUrl}
+                              alt={rec.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+                          </div>
+                          <h5 className="text-[10px] font-medium text-zinc-300 group-hover:text-rose-400 line-clamp-1">
+                            {rec.title}
+                          </h5>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )
+          ) : (
+            <>
+              <BookOpen className="h-8 w-8 text-rose-500 mx-auto mb-2" />
+              <h3 className="font-semibold text-sm text-zinc-200">
+                Fim do Capítulo {currentChapter?.chapterNumber}
+              </h3>
+              <p className="text-xs text-zinc-400 mt-1 mb-5">
+                {nextChapter ? `Próximo: Capítulo ${nextChapter.chapterNumber}` : 'Você está no capítulo mais recente!'}
+              </p>
+
+              <div className="flex flex-wrap justify-center gap-2.5">
+                {prevChapter && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeChapter(prevChapter.id);
+                    }}
+                    className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    ← Anterior
+                  </button>
+                )}
+
+                {nextChapter ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChangeChapter(nextChapter.id);
+                    }}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Próximo Capítulo →
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onBackToManga();
+                    }}
+                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    Voltar à Página da Obra
+                  </button>
+                )}
+
+                {readerMode === 'webtoon' && nextChapter && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleContinuousScroll();
+                    }}
+                    className="w-full mt-2 px-3 py-1.5 bg-zinc-800/80 hover:bg-zinc-700 border border-zinc-700/60 text-rose-300 hover:text-rose-200 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <InfinityIcon className="h-3.5 w-3.5" />
+                    <span>Ativar Rolagem Infinita de Capítulos</span>
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </main>
 
       {/* 3. Floating Bottom Navigation Bar */}
       <footer
         className={`fixed bottom-4 inset-x-0 z-50 mx-auto max-w-lg transition-transform duration-200 ${
-          showUi ? 'translate-y-0 opacity-100' : 'translate-y-16 opacity-0'
+          !isZenMode && showUi ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-16 opacity-0 pointer-events-none'
         }`}
       >
         <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-full bg-zinc-950/90 border border-zinc-800 shadow-2xl backdrop-blur-md text-xs">
@@ -1377,8 +2093,15 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               onChange={(e) => {
                 const targetIdx = parseInt(e.target.value, 10);
                 setCurrentPageIndex(targetIdx);
-                if (readerMode === 'webtoon' && pageRefs.current[targetIdx]) {
-                  pageRefs.current[targetIdx]?.scrollIntoView({ behavior: 'smooth' });
+                if (readerMode === 'webtoon') {
+                  const targetEl = document.querySelector<HTMLElement>(
+                    `.webtoon-page-item[data-chapter-id="${currentChapter?.id}"][data-page-index="${targetIdx}"]`
+                  );
+                  if (targetEl) {
+                    targetEl.scrollIntoView({ behavior: 'smooth' });
+                  } else if (pageRefs.current[targetIdx]) {
+                    pageRefs.current[targetIdx]?.scrollIntoView({ behavior: 'smooth' });
+                  }
                 }
               }}
               className="w-16 sm:w-28 accent-rose-500 cursor-pointer"
@@ -1493,8 +2216,15 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         onClose={() => setShowBookmarksModal(false)}
         currentMangaId={manga?.id}
         onJumpToPage={(targetMangaId, targetChapterId, targetPageNum) => {
-          if (targetChapterId === chapterId) {
-            const idx = targetPageNum - 1;
+          const idx = targetPageNum - 1;
+          const targetEl = document.querySelector<HTMLElement>(
+            `.webtoon-page-item[data-chapter-id="${targetChapterId}"][data-page-index="${idx}"]`
+          );
+          if (readerMode === 'webtoon' && targetEl) {
+            targetEl.scrollIntoView({ behavior: 'smooth' });
+            return;
+          }
+          if (targetChapterId === chapterId || targetChapterId === currentChapter?.id) {
             setCurrentPageIndex(idx);
             if (readerMode === 'webtoon' && pageRefs.current[idx]) {
               pageRefs.current[idx]?.scrollIntoView({ behavior: 'smooth' });
@@ -1506,6 +2236,122 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           }
         }}
       />
+
+      {/* External Trackers Modal (AniList & MAL) */}
+      <TrackersModal
+        isOpen={showTrackersModal}
+        onClose={() => setShowTrackersModal(false)}
+        activeMangaId={mangaId}
+        activeMangaTitle={manga?.title}
+      />
+
+      {/* Slide-over Quick Chapter Drawer */}
+      {showChapterDrawer && (
+        <div className="fixed inset-0 z-50 overflow-hidden animate-in fade-in duration-200">
+          {/* Backdrop */}
+          <div
+            onClick={() => setShowChapterDrawer(false)}
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
+          />
+
+          {/* Drawer Panel */}
+          <div className="absolute inset-y-0 right-0 max-w-full flex">
+            <div className="w-screen max-w-sm sm:max-w-md bg-zinc-950/95 border-l border-zinc-800 backdrop-blur-xl shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+              {/* Drawer Header */}
+              <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-sm text-zinc-100 flex items-center gap-2">
+                    <ListFilter className="h-4 w-4 text-rose-400" />
+                    <span>Capítulos ({chapters.length})</span>
+                  </h3>
+                  <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-[260px]">
+                    {manga?.title}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowChapterDrawer(false)}
+                  className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Drawer Search */}
+              <div className="p-3 border-b border-zinc-850 bg-zinc-900/50">
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                  <input
+                    type="text"
+                    placeholder="Buscar capítulo pelo número..."
+                    value={drawerSearch}
+                    onChange={(e) => setDrawerSearch(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 font-mono"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              {/* Scrollable Chapter List */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-1">
+                {chapters
+                  .filter(ch => !drawerSearch.trim() || ch.chapterNumber.includes(drawerSearch.trim()) || (ch.title && ch.title.toLowerCase().includes(drawerSearch.toLowerCase().trim())))
+                  .map((ch) => {
+                    const isCurrent = ch.id === currentChapter?.id || ch.id === chapterId;
+                    const isRead = HistoryService.isChapterRead(ch.id);
+                    const isSaved = OfflineCacheService.isChapterSaved(ch.id);
+
+                    return (
+                      <button
+                        key={ch.id}
+                        onClick={() => {
+                          onChangeChapter(ch.id);
+                          setShowChapterDrawer(false);
+                        }}
+                        className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left text-xs transition-all cursor-pointer border ${
+                          isCurrent
+                            ? 'bg-rose-950/40 border-rose-500/80 text-white font-semibold shadow-md'
+                            : isRead
+                            ? 'bg-zinc-900/40 hover:bg-zinc-900 border-zinc-850/80 text-zinc-400'
+                            : 'bg-zinc-900/70 hover:bg-zinc-850 border-zinc-800 text-zinc-200 hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 overflow-hidden">
+                          <span className={`font-mono text-xs font-bold tabular-nums px-2 py-0.5 rounded ${
+                            isCurrent ? 'bg-rose-500 text-white' : 'bg-zinc-800 text-zinc-300'
+                          }`}>
+                            c.{ch.chapterNumber}
+                          </span>
+                          <span className="truncate max-w-[180px]">
+                            {ch.title || `Capítulo ${ch.chapterNumber}`}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isSaved && (
+                            <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 px-1 rounded border border-emerald-500/20">
+                              Offline
+                            </span>
+                          )}
+                          {isRead && (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ambient Subtle Reader Status (Clock & Progress percentage) */}
+      <div className="fixed bottom-2 right-3 z-40 pointer-events-none select-none opacity-40 hover:opacity-100 transition-opacity flex items-center gap-2 text-[10px] font-mono text-zinc-400 bg-zinc-950/70 px-2.5 py-1 rounded-full backdrop-blur-md border border-zinc-800/60 shadow-lg">
+        <Clock className="h-3 w-3 text-zinc-400" />
+        <span>{currentTime}</span>
+        <span>·</span>
+        <span>{pages.length > 0 ? `${Math.round(((currentPageIndex + 1) / pages.length) * 100)}%` : '0%'}</span>
+      </div>
     </div>
   );
 };

@@ -19,15 +19,23 @@ import {
   HardDriveDownload,
   Loader2,
   Check,
+  CheckCheck,
   Eye,
   EyeOff,
   Edit3,
-  X
+  X,
+  Sliders,
+  LayoutList,
+  LayoutGrid
 } from 'lucide-react';
-import { Manga, Chapter, FavoriteManga, LibraryCategory } from '../types/manga.js';
+import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
+import { UpdateTrackerService } from '../services/updateTracker.js';
+import { TrackerService, TrackerMediaMapping } from '../services/trackerService.js';
+import { TrackersModal } from '../components/TrackersModal.js';
+import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
 import { MangaCard } from '../components/MangaCard.js';
 
@@ -62,7 +70,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [favoriteData, setFavoriteData] = useState<FavoriteManga | null>(null);
   const [readChapters, setReadChapters] = useState<string[]>([]);
-  const [hideReadChapters, setHideReadChapters] = useState(false);
+  const [readFilter, setReadFilter] = useState<'all' | 'unread' | 'read'>('all');
   const [showScoreModal, setShowScoreModal] = useState(false);
   const [modalScore, setModalScore] = useState<number>(10);
   const [modalNotes, setModalNotes] = useState<string>('');
@@ -73,6 +81,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [savedOfflineChapterIds, setSavedOfflineChapterIds] = useState<string[]>(() => OfflineCacheService.getSavedChapterIds());
   const [cachingOfflineIds, setCachingOfflineIds] = useState<Record<string, boolean>>({});
   const [showBatchDownloadModal, setShowBatchDownloadModal] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<MangaUpdateInfo | undefined>(() => UpdateTrackerService.getUpdateForManga(mangaId));
+  const [trackerMapping, setTrackerMapping] = useState<TrackerMediaMapping | undefined>(() => TrackerService.getMapping(mangaId));
+  const [showTrackersModal, setShowTrackersModal] = useState(false);
+  const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid'>('list');
 
   useEffect(() => {
     if (manga?.coverUrl) {
@@ -96,6 +108,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setFavoriteData(fav);
     setReadChapters(HistoryService.getReadChapters());
     setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
+    setUpdateInfo(UpdateTrackerService.getUpdateForManga(mangaId));
+    setTrackerMapping(TrackerService.getMapping(mangaId));
 
     const unsubscribe = HistoryService.subscribe(() => {
       const updatedFav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
@@ -104,13 +118,23 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       setReadChapters(HistoryService.getReadChapters());
     });
 
+    const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
+      setUpdateInfo(UpdateTrackerService.getUpdateForManga(mangaId));
+    });
+
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
       setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
     });
 
+    const unsubscribeTrackers = TrackerService.subscribe(() => {
+      setTrackerMapping(TrackerService.getMapping(mangaId));
+    });
+
     return () => {
       unsubscribe();
+      unsubscribeUpdates();
       unsubscribeOffline();
+      unsubscribeTrackers();
     };
   }, [mangaId]);
 
@@ -147,22 +171,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const loadRecommendations = async (targetManga: Manga) => {
     setLoadingRecommendations(true);
     try {
-      const primaryGenre = targetManga.genres?.find(g => g !== 'Favorito' && g !== 'Offline');
-      const author = targetManga.authors?.[0];
-
-      const searchRes = await MangaApi.search(author || '', {
-        genre: primaryGenre,
-        limit: 12
-      });
-
-      let recs = (searchRes.data || []).filter(m => m.id !== targetManga.id);
-
-      if (recs.length < 6) {
-        const featured = await MangaApi.getFeatured();
-        const extra = featured.filter(m => m.id !== targetManga.id && !recs.some(r => r.id === m.id));
-        recs = [...recs, ...extra];
-      }
-
+      const recs = await MangaApi.getRelatedRecommendations(targetManga);
       setRecommendedManga(recs.slice(0, 6));
     } catch (err) {
       console.warn('Failed to load recommended manga:', err);
@@ -246,6 +255,11 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setChapters(prev => [...prev].reverse());
   };
 
+  const handleChapterClick = (chapterId: string) => {
+    UpdateTrackerService.markMangaUpdateAsSeen(mangaId);
+    onReadChapter(mangaId, chapterId);
+  };
+
   const toggleDeduplication = () => {
     const next = !deduplicate;
     setDeduplicate(next);
@@ -292,24 +306,35 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     }
   };
 
+  const handleMarkUpTo = (e: React.MouseEvent, chapterId: string) => {
+    e.stopPropagation();
+    HistoryService.markChaptersUpTo(chapterId, chapters);
+  };
+
   const handleMarkAllRead = () => {
-    const ids = chapters.map(c => c.id);
-    HistoryService.markMultipleChaptersAsRead(ids);
+    HistoryService.markAllChaptersAsRead(chapters);
   };
 
   const handleUnmarkAllRead = () => {
-    const ids = chapters.map(c => c.id);
-    HistoryService.unmarkMultipleChaptersAsRead(ids);
+    HistoryService.unmarkAllChapters(chapters);
   };
 
   const readingProgress = HistoryService.getProgress(mangaId);
+
+  // Statistics
+  const totalChaptersCount = chapters.length;
+  const readChaptersCount = chapters.filter(c => readChapters.includes(c.id)).length;
+  const unreadChaptersCount = Math.max(0, totalChaptersCount - readChaptersCount);
+  const readPercentage = totalChaptersCount > 0 ? Math.round((readChaptersCount / totalChaptersCount) * 100) : 0;
 
   // Unique languages among loaded chapters
   const availableLanguages = Array.from(new Set(chapters.map(c => c.language).filter(Boolean)));
 
   // Filtered chapters
   const filteredChapters = chapters.filter(c => {
-    if (hideReadChapters && readChapters.includes(c.id)) return false;
+    const isRead = readChapters.includes(c.id);
+    if (readFilter === 'unread' && isRead) return false;
+    if (readFilter === 'read' && !isRead) return false;
     if (selectedLang !== 'all' && c.language !== selectedLang) return false;
     if (!chapterSearch) return true;
     const q = chapterSearch.toLowerCase();
@@ -417,17 +442,31 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
             {/* Quick Action Buttons */}
             <div className="w-56 sm:w-64 mt-4 space-y-2.5">
+              {updateInfo?.hasNew && (
+                <button
+                  onClick={() => handleChapterClick(updateInfo.latestChapterId)}
+                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/80 transition-all cursor-pointer animate-pulse"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span>Ler Novo Cap. {updateInfo.latestChapterNumber}</span>
+                </button>
+              )}
+
               {readingProgress ? (
                 <button
-                  onClick={() => onReadChapter(manga.id, readingProgress.chapterId)}
-                  className="w-full py-2.5 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-all cursor-pointer"
+                  onClick={() => handleChapterClick(readingProgress.chapterId)}
+                  className={`w-full py-2.5 rounded-lg font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                    updateInfo?.hasNew
+                      ? 'bg-zinc-850 hover:bg-zinc-800 text-zinc-300 border border-zinc-700'
+                      : 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white shadow-lg shadow-rose-950/60'
+                  }`}
                 >
                   <Clock className="h-4 w-4" />
                   <span>Continuar Cap. {readingProgress.chapterNumber} (Pág. {readingProgress.pageNumber})</span>
                 </button>
               ) : firstChapter ? (
                 <button
-                  onClick={() => onReadChapter(manga.id, firstChapter.id)}
+                  onClick={() => handleChapterClick(firstChapter.id)}
                   className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 transition-colors cursor-pointer"
                 >
                   <BookOpen className="h-4 w-4" />
@@ -496,6 +535,60 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </div>
               )}
 
+              {/* Rastreamento & Vínculos (AniList & MyAnimeList) */}
+              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span className="font-semibold text-zinc-300 flex items-center gap-1">
+                    <Sliders className="h-3 w-3 text-sky-400" />
+                    Rastreamento
+                  </span>
+                  <button
+                    onClick={() => setShowTrackersModal(true)}
+                    className="text-sky-400 hover:underline cursor-pointer"
+                  >
+                    {trackerMapping?.anilistId || trackerMapping?.malId ? 'Alterar' : 'Vincular'}
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {trackerMapping?.anilistId ? (
+                    <a
+                      href={`https://anilist.co/manga/${trackerMapping.anilistId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-950/40 border border-sky-800/60 text-[10px] font-medium text-sky-300 hover:bg-sky-900/50 transition-colors"
+                      title="Abrir página oficial no AniList"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+                      AniList #{trackerMapping.anilistId}
+                      <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                    </a>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-500">
+                      AniList: Não vinculado
+                    </span>
+                  )}
+
+                  {trackerMapping?.malId ? (
+                    <a
+                      href={`https://myanimelist.net/manga/${trackerMapping.malId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-950/40 border border-blue-800/60 text-[10px] font-medium text-blue-300 hover:bg-blue-900/50 transition-colors"
+                      title="Abrir página oficial no MyAnimeList"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                      MAL #{trackerMapping.malId}
+                      <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                    </a>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-500">
+                      MAL: Não vinculado
+                    </span>
+                  )}
+                </div>
+              </div>
+
               {copied && (
                 <p className="text-[11px] text-emerald-400 text-center">Link copiado para a área de transferência!</p>
               )}
@@ -545,9 +638,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               )}
             </div>
 
-            <h1 className="font-serif text-3xl sm:text-4xl font-bold tracking-tight text-white mb-2 text-balance">
-              {manga.title}
-            </h1>
+            <div className="flex flex-wrap items-center gap-3 mb-2">
+              <h1 className="font-serif text-3xl sm:text-4xl font-bold tracking-tight text-white text-balance">
+                {manga.title}
+              </h1>
+              <TrackerStatusBadge
+                mangaId={mangaId}
+                mangaTitle={manga.title}
+                size="md"
+                showLabel={true}
+                onOpenTrackers={() => setShowTrackersModal(true)}
+              />
+            </div>
 
             {/* Alternative Titles */}
             {manga.altTitles.length > 0 && (
@@ -695,6 +797,32 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
         {/* Chapters Section */}
         <section className="mt-14 pt-8 border-t border-zinc-800">
+          {/* New Chapter Release Alert Banner */}
+          {updateInfo?.hasNew && (
+            <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-rose-950/40 via-zinc-900/70 to-zinc-900/40 border border-rose-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-lg animate-in fade-in duration-300">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse shrink-0">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <div>
+                  <p className="font-semibold text-white text-sm">
+                    Novo capítulo disponível: <span className="text-rose-400 font-mono">Capítulo {updateInfo.latestChapterNumber}</span>
+                  </p>
+                  <p className="text-zinc-400 text-xs mt-0.5">
+                    {updateInfo.lastReadNumber ? `Você leu até o capítulo ${updateInfo.lastReadNumber}. Aproveite o novo lançamento!` : 'Nova atualização sincronizada diretamente dos provedores ao vivo.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => handleChapterClick(updateInfo.latestChapterId)}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors shrink-0 cursor-pointer shadow-md shadow-rose-950/40 flex items-center justify-center gap-1.5"
+              >
+                <span>Ler Novo Capítulo</span>
+                <span>→</span>
+              </button>
+            </div>
+          )}
+
           {/* Live Provider status indicator */}
           {primarySource?.sourceId === 'comick' && (
             <div className="mb-6 p-3 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-xs text-emerald-300 flex items-center gap-2">
@@ -778,41 +906,147 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <span className="hidden sm:inline">Baixar em Lote</span>
                   <span className="sm:hidden">Lote</span>
                 </button>
+
+                {/* View Mode Switcher (List vs Grid) */}
+                <div className="flex items-center rounded-lg bg-zinc-900 border border-zinc-800 p-0.5" role="group" aria-label="Modo de visualização dos capítulos">
+                  <button
+                    type="button"
+                    onClick={() => setChapterViewMode('list')}
+                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      chapterViewMode === 'list'
+                        ? 'bg-zinc-800 text-rose-400 shadow-sm'
+                        : 'text-zinc-500 hover:text-zinc-200'
+                    }`}
+                    title="Visualização em Lista Detalhada com scans e páginas"
+                  >
+                    <LayoutList className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChapterViewMode('grid')}
+                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      chapterViewMode === 'grid'
+                        ? 'bg-zinc-800 text-rose-400 shadow-sm'
+                        : 'text-zinc-500 hover:text-zinc-200'
+                    }`}
+                    title="Visualização em Grade Numérica (ideal para obras com muitos capítulos)"
+                  >
+                    <LayoutGrid className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Language filter pills */}
-            {availableLanguages.length > 1 && (
-              <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-zinc-850">
-                <span className="text-[11px] font-medium text-zinc-400 mr-1">Idioma:</span>
+            {/* Reading Progress Overview Bar */}
+            {totalChaptersCount > 0 && (
+              <div className="p-3.5 rounded-xl bg-zinc-900/50 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between text-xs mb-1.5">
+                    <span className="text-zinc-300 font-medium flex items-center gap-1.5">
+                      <BookOpen className="h-3.5 w-3.5 text-rose-400" />
+                      <span>Progresso de Leitura:</span>
+                      <strong className="text-white font-mono">{readChaptersCount}</strong> de <strong className="text-white font-mono">{totalChaptersCount}</strong> capítulos ({readPercentage}%)
+                    </span>
+                    <span className="text-zinc-500 font-mono text-[11px]">{unreadChaptersCount} restantes</span>
+                  </div>
+                  <div className="h-2 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/80">
+                    <div
+                      className="h-full bg-gradient-to-r from-rose-500 via-rose-400 to-emerald-400 rounded-full transition-all duration-300"
+                      style={{ width: `${readPercentage}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={handleMarkAllRead}
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700/60 hover:border-emerald-500/40 text-[11px] font-medium text-zinc-300 hover:text-emerald-300 transition-colors cursor-pointer flex items-center gap-1"
+                    title="Marcar todos os capítulos deste mangá como lidos"
+                  >
+                    <CheckCheck className="h-3 w-3 text-emerald-400" />
+                    <span>Marcar todos</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleUnmarkAllRead}
+                    className="px-2.5 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700/60 hover:border-rose-500/40 text-[11px] font-medium text-zinc-400 hover:text-rose-300 transition-colors cursor-pointer"
+                    title="Remover marcação de lido de todos os capítulos"
+                  >
+                    <span>Desmarcar todos</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Read status & Language filter pills */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-zinc-850">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-medium text-zinc-400 mr-1">Status:</span>
                 <button
-                  onClick={() => setSelectedLang('all')}
+                  onClick={() => setReadFilter('all')}
                   className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                    selectedLang === 'all'
+                    readFilter === 'all'
                       ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
                       : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
                   }`}
                 >
-                  Todos ({chapters.length})
+                  Todos ({totalChaptersCount})
                 </button>
-                {availableLanguages.map((lang) => {
-                  const count = chapters.filter(c => c.language === lang).length;
-                  return (
-                    <button
-                      key={lang}
-                      onClick={() => setSelectedLang(lang)}
-                      className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase transition-colors cursor-pointer ${
-                        selectedLang === lang
-                          ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
-                          : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                      }`}
-                    >
-                      {lang} ({count})
-                    </button>
-                  );
-                })}
+                <button
+                  onClick={() => setReadFilter('unread')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    readFilter === 'unread'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                >
+                  Não Lidos ({unreadChaptersCount})
+                </button>
+                <button
+                  onClick={() => setReadFilter('read')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    readFilter === 'read'
+                      ? 'bg-zinc-800 text-emerald-400 border border-emerald-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                >
+                  Lidos ({readChaptersCount})
+                </button>
               </div>
-            )}
+
+              {availableLanguages.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-medium text-zinc-400 mr-1">Idioma:</span>
+                  <button
+                    onClick={() => setSelectedLang('all')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                      selectedLang === 'all'
+                        ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                        : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                    }`}
+                  >
+                    Todos ({chapters.length})
+                  </button>
+                  {availableLanguages.map((lang) => {
+                    const count = chapters.filter(c => c.language === lang).length;
+                    return (
+                      <button
+                        key={lang}
+                        onClick={() => setSelectedLang(lang)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase transition-colors cursor-pointer ${
+                          selectedLang === lang
+                            ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                        }`}
+                      >
+                        {lang} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Chapters List */}
@@ -870,9 +1104,60 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </div>
               )}
             </div>
+          ) : chapterViewMode === 'grid' ? (
+            <div className="p-4 sm:p-5 rounded-2xl bg-zinc-900/40 border border-zinc-800/80">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-4 border-b border-zinc-800/60 text-xs text-zinc-400">
+                <span className="font-sans">Selecione o número do capítulo para iniciar a leitura imediata</span>
+                <div className="flex items-center gap-3.5 text-[11px] font-sans">
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-emerald-500/20 border border-emerald-500/50"></span> Lido</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-rose-500/20 border border-rose-500/50"></span> Em Leitura</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-zinc-800 border border-zinc-700"></span> Não Lido</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+                {filteredChapters.map((chapter) => {
+                  const isRead = readChapters.includes(chapter.id);
+                  const isCurrentRead = readingProgress?.chapterId === chapter.id;
+                  const isNew = updateInfo?.latestChapterId === chapter.id;
+                  const isSavedOffline = savedOfflineChapterIds.includes(chapter.id);
+
+                  return (
+                    <button
+                      key={chapter.id}
+                      onClick={() => handleChapterClick(chapter.id)}
+                      title={`Capítulo ${chapter.chapterNumber}${chapter.title ? ` - ${chapter.title}` : ''} (${chapter.scanlationGroup || 'Scan'})`}
+                      className={`relative flex flex-col items-center justify-center py-2.5 px-2 rounded-xl text-xs font-mono font-medium transition-all cursor-pointer border group hover:-translate-y-0.5 ${
+                        isCurrentRead
+                          ? 'bg-rose-950/40 border-rose-500 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500/50'
+                          : isRead
+                          ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-950/30'
+                          : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1">
+                        {isRead && <Check className="h-3 w-3 text-emerald-400 shrink-0" />}
+                        <span className="tabular-nums font-bold">c.{chapter.chapterNumber}</span>
+                      </div>
+                      <span className="text-[10px] text-zinc-500 truncate max-w-[80px] font-sans mt-0.5">
+                        {chapter.scanlationGroup || chapter.language.toUpperCase()}
+                      </span>
+                      {isNew && (
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border border-zinc-950 animate-pulse" title="Novo Capítulo" />
+                      )}
+                      {isSavedOffline && (
+                        <span className="absolute bottom-1 right-1 text-emerald-400 text-[9px]" title="Salvo Offline">
+                          ↓
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {filteredChapters.map((chapter) => {
+                const isRead = readChapters.includes(chapter.id);
                 const isCurrentRead = readingProgress?.chapterId === chapter.id;
                 const hasVariants = Boolean(chapter.variants && chapter.variants.length > 0);
                 const isExpanded = expandedVariantsChapterId === chapter.id;
@@ -883,15 +1168,21 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                     className={`group flex flex-col p-3.5 rounded-xl border transition-all ${
                       isCurrentRead
                         ? 'bg-rose-950/20 border-rose-800/60'
+                        : isRead
+                        ? 'bg-zinc-950/50 border-zinc-800/60 opacity-85 hover:opacity-100'
                         : 'bg-zinc-900/60 hover:bg-zinc-900/90 border-zinc-800/80 hover:border-zinc-700'
                     }`}
                   >
                     <div
-                      onClick={() => onReadChapter(manga.id, chapter.id)}
+                      onClick={() => handleChapterClick(chapter.id)}
                       className="flex items-center justify-between cursor-pointer"
                     >
                       <div className="flex items-center gap-3 overflow-hidden">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-950 border border-zinc-800 text-xs font-mono font-medium text-zinc-300 tabular-nums group-hover:border-rose-500/50 group-hover:text-rose-400 transition-colors">
+                        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-mono font-medium tabular-nums transition-colors ${
+                          isRead
+                            ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
+                            : 'bg-zinc-950 border-zinc-800 text-zinc-300 group-hover:border-rose-500/50 group-hover:text-rose-400'
+                        }`}>
                           {chapter.chapterNumber}
                         </div>
 
@@ -901,6 +1192,13 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                               Capítulo {chapter.chapterNumber}
                               {chapter.title && ` - ${chapter.title}`}
                             </span>
+
+                            {isRead && (
+                              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 font-medium">
+                                <Check className="h-2.5 w-2.5" />
+                                <span>Lido</span>
+                              </span>
+                            )}
 
                             {chapter.scanlationGroup && (
                               <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono">
@@ -935,6 +1233,31 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                             Em Leitura
                           </span>
                         )}
+
+                        {/* Toggle Read Single Chapter Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleChapterRead(e, chapter.id)}
+                          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                            isRead
+                              ? 'text-emerald-400 bg-emerald-500/10 hover:bg-zinc-800'
+                              : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
+                          }`}
+                          title={isRead ? 'Capítulo lido (clique para marcar como não lido)' : 'Marcar capítulo como lido'}
+                        >
+                          <CheckCircle2 className={`h-4 w-4 ${isRead ? 'fill-emerald-500/20' : ''}`} />
+                        </button>
+
+                        {/* Mark Up To Here Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleMarkUpTo(e, chapter.id)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-zinc-850 hover:bg-emerald-950/50 text-zinc-400 hover:text-emerald-300 border border-zinc-750 hover:border-emerald-500/40 transition-colors cursor-pointer"
+                          title={`Marcar o Capítulo ${chapter.chapterNumber} e todos os anteriores como lidos`}
+                        >
+                          <CheckCheck className="h-3 w-3 text-emerald-400" />
+                          <span className="hidden sm:inline">Até aqui</span>
+                        </button>
 
                         {hasVariants && (
                           <button
@@ -1043,7 +1366,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                               <Download className="h-3.5 w-3.5" />
                             </a>
                             <button
-                              onClick={() => onReadChapter(manga.id, chapter.id)}
+                              onClick={() => handleChapterClick(chapter.id)}
                               className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
                             >
                               Ler
@@ -1090,7 +1413,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                                 PDF
                               </a>
                               <button
-                                onClick={() => onReadChapter(manga.id, v.id)}
+                                onClick={() => handleChapterClick(v.id)}
                                 className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
                               >
                                 Ler
@@ -1226,6 +1549,14 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* External Trackers Modal (AniList & MAL) */}
+      <TrackersModal
+        isOpen={showTrackersModal}
+        onClose={() => setShowTrackersModal(false)}
+        activeMangaId={mangaId}
+        activeMangaTitle={manga?.title}
+      />
     </div>
   );
 };

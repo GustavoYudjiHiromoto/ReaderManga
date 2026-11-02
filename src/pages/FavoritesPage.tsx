@@ -20,28 +20,34 @@ import {
   Star,
   Tag,
   Edit3,
-  HardDriveDownload
+  HardDriveDownload,
+  Folder,
+  FolderPlus,
+  Plus,
+  Cloud,
+  Sliders,
+  LayoutGrid,
+  LayoutList,
+  MoreHorizontal,
+  ChevronDown
 } from 'lucide-react';
-import { FavoriteManga, Manga, ReadingProgress, LibraryCategory } from '../types/manga.js';
+import { useAuth } from '../context/AuthContext.js';
+import { TrackersModal } from '../components/TrackersModal.js';
+import { FavoriteManga, Manga, ReadingProgress, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
 import { ReadingStatsSummary } from '../components/ReadingStatsSummary.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
 import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
+import { UpdateTrackerService } from '../services/updateTracker.js';
+import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 
 interface FavoritesPageProps {
   onSelectManga: (mangaId: string) => void;
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   onNavigateToCatalog: () => void;
   onOpenDownloads?: () => void;
-}
-
-interface UpdateInfo {
-  latestChapterId: string;
-  latestChapterNumber: string;
-  hasNew: boolean;
-  lastReadNumber?: string;
 }
 
 const CATEGORY_LABELS: Record<LibraryCategory, { label: string; color: string; badgeBg: string }> = {
@@ -58,12 +64,32 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   onNavigateToCatalog,
   onOpenDownloads
 }) => {
+  const { user, syncStatus, lastSynced, loginWithGoogle, syncNow } = useAuth();
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [favorites, setFavorites] = useState<FavoriteManga[]>([]);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [offlineChaptersCount, setOfflineChaptersCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
   const [pageBookmarksCount, setPageBookmarksCount] = useState<number>(() => HistoryService.getPageBookmarks().length);
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
+  const [showTrackersModal, setShowTrackersModal] = useState(false);
+  const [selectedTrackerManga, setSelectedTrackerManga] = useState<{ id?: string; title?: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showLibraryMenu, setShowLibraryMenu] = useState(false);
+  const libraryMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (libraryMenuRef.current && !libraryMenuRef.current.contains(e.target as Node)) {
+        setShowLibraryMenu(false);
+      }
+    };
+    if (showLibraryMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showLibraryMenu]);
 
   // Search, filter, category & sort states
   const [selectedCategory, setSelectedCategory] = useState<'all' | LibraryCategory>('all');
@@ -71,27 +97,44 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const [selectedSource, setSelectedSource] = useState('all');
   const [sortBy, setSortBy] = useState<'recent' | 'title-asc' | 'title-desc' | 'score-desc'>('recent');
   const [filterOnlyUnread, setFilterOnlyUnread] = useState(false);
+  const [libraryViewMode, setLibraryViewMode] = useState<'grid' | 'list'>('grid');
 
   // Score & Notes Modal state
   const [editingScoreManga, setEditingScoreManga] = useState<FavoriteManga | null>(null);
   const [modalScore, setModalScore] = useState<number>(10);
   const [modalNotes, setModalNotes] = useState<string>('');
 
+  // Custom Collections state
+  const [customCollections, setCustomCollections] = useState<string[]>(() => HistoryService.getCustomCollections());
+  const [selectedCustomCollection, setSelectedCustomCollection] = useState<string | null>(null);
+  const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [managingCollectionsManga, setManagingCollectionsManga] = useState<FavoriteManga | null>(null);
+
   // Live update tracker state
-  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
-  const [updateCheckProgress, setUpdateCheckProgress] = useState<string | null>(null);
-  const [updatesMap, setUpdatesMap] = useState<Record<string, UpdateInfo>>({});
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState<boolean>(() => UpdateTrackerService.isChecking());
+  const [updateCheckProgress, setUpdateCheckProgress] = useState<string | null>(() => UpdateTrackerService.getProgress());
+  const [updatesMap, setUpdatesMap] = useState<Record<string, MangaUpdateInfo>>(() => UpdateTrackerService.getStoredUpdates());
 
   useEffect(() => {
     // Initial load
     setFavorites(HistoryService.getFavorites());
+    setCustomCollections(HistoryService.getCustomCollections());
     setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
     setPageBookmarksCount(HistoryService.getPageBookmarks().length);
+    setUpdatesMap(UpdateTrackerService.getStoredUpdates());
 
     // Subscribe to real-time changes
     const unsubscribeHistory = HistoryService.subscribe(() => {
       setFavorites(HistoryService.getFavorites());
+      setCustomCollections(HistoryService.getCustomCollections());
       setPageBookmarksCount(HistoryService.getPageBookmarks().length);
+    });
+
+    const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
+      setUpdatesMap(UpdateTrackerService.getStoredUpdates());
+      setIsCheckingUpdates(UpdateTrackerService.isChecking());
+      setUpdateCheckProgress(UpdateTrackerService.getProgress());
     });
 
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
@@ -100,6 +143,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
     return () => {
       unsubscribeHistory();
+      unsubscribeUpdates();
       unsubscribeOffline();
     };
   }, []);
@@ -176,10 +220,56 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const handleCreateCollection = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const name = newCollectionName.trim();
+    if (!name) return;
+    const ok = HistoryService.createCustomCollection(name);
+    if (ok) {
+      setCustomCollections(HistoryService.getCustomCollections());
+      setSelectedCustomCollection(name);
+      setNewCollectionName('');
+      setShowNewCollectionModal(false);
+      setNotification({
+        type: 'success',
+        message: `Pasta "${name}" criada com sucesso!`
+      });
+    } else {
+      setNotification({
+        type: 'error',
+        message: `A pasta "${name}" já existe ou tem nome inválido.`
+      });
+    }
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleDeleteCollection = (collectionName: string) => {
+    HistoryService.deleteCustomCollection(collectionName);
+    setCustomCollections(HistoryService.getCustomCollections());
+    if (selectedCustomCollection === collectionName) {
+      setSelectedCustomCollection(null);
+    }
+    setNotification({
+      type: 'success',
+      message: `Pasta "${collectionName}" removida da biblioteca.`
+    });
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleToggleMangaCollection = (mangaId: string, collectionName: string) => {
+    HistoryService.toggleMangaInCollection(mangaId, collectionName);
+    setFavorites(HistoryService.getFavorites());
+    if (managingCollectionsManga && managingCollectionsManga.mangaId === mangaId) {
+      const updated = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+      setManagingCollectionsManga(updated);
+    }
+  };
+
   const handleQuickRead = async (mangaId: string) => {
     // If an unread chapter was found via update tracker, prioritize reading it
     const update = updatesMap[mangaId];
     if (update?.hasNew && update.latestChapterId && onReadChapter) {
+      UpdateTrackerService.markMangaUpdateAsSeen(mangaId);
       onReadChapter(mangaId, update.latestChapterId);
       return;
     }
@@ -206,64 +296,32 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const handleCheckUpdates = async () => {
     if (isCheckingUpdates || favorites.length === 0) return;
     setIsCheckingUpdates(true);
-    setUpdateCheckProgress('Iniciando verificação...');
-
-    const newUpdates: Record<string, UpdateInfo> = {};
-    let newCount = 0;
-
-    for (let i = 0; i < favorites.length; i++) {
-      const fav = favorites[i];
-      setUpdateCheckProgress(`Verificando ${i + 1}/${favorites.length}: ${fav.title.slice(0, 18)}...`);
-
-      try {
-        const chapters = await MangaApi.getChapters(fav.mangaId, { order: 'desc', deduplicate: true });
-        if (chapters.length > 0) {
-          const latest = chapters[0];
-          const progress = HistoryService.getProgress(fav.mangaId);
-
-          let hasNew = false;
-          if (progress) {
-            const lastNum = parseFloat(progress.chapterNumber);
-            const latestNum = parseFloat(latest.chapterNumber);
-            if (!isNaN(lastNum) && !isNaN(latestNum)) {
-              hasNew = latestNum > lastNum;
-            } else {
-              hasNew = progress.chapterId !== latest.id;
-            }
-          } else {
-            hasNew = false;
-          }
-
-          if (hasNew) newCount++;
-
-          newUpdates[fav.mangaId] = {
-            latestChapterId: latest.id,
-            latestChapterNumber: latest.chapterNumber,
-            hasNew,
-            lastReadNumber: progress?.chapterNumber
-          };
-        }
-      } catch (err) {
-        console.warn(`Failed to check updates for ${fav.mangaId}:`, err);
+    try {
+      const res = await UpdateTrackerService.checkUpdates(true, (msg) => {
+        setUpdateCheckProgress(msg);
+      });
+      setUpdatesMap(res.updates);
+      if (res.count > 0) {
+        setNotification({
+          type: 'success',
+          message: `${res.count} ${res.count === 1 ? 'obra possui novos capítulos' : 'obras possuem novos capítulos'} para leitura!`
+        });
+      } else {
+        setNotification({
+          type: 'success',
+          message: 'Todas as suas obras favoritas estão em dia com os lançamentos!'
+        });
       }
-    }
-
-    setUpdatesMap(newUpdates);
-    setIsCheckingUpdates(false);
-    setUpdateCheckProgress(null);
-
-    if (newCount > 0) {
+    } catch {
       setNotification({
-        type: 'success',
-        message: `${newCount} ${newCount === 1 ? 'obra possui capítulos novos' : 'obras possuem capítulos novos'} para leitura!`
+        type: 'error',
+        message: 'Não foi possível verificar atualizações no momento.'
       });
-    } else {
-      setNotification({
-        type: 'success',
-        message: 'Todas as suas obras favoritas estão em dia!'
-      });
+    } finally {
+      setIsCheckingUpdates(false);
+      setUpdateCheckProgress(null);
+      setTimeout(() => setNotification(null), 5000);
     }
-    setTimeout(() => setNotification(null), 5000);
   };
 
   // Convert FavoriteManga to lightweight Manga for MangaCard rendering without API calls
@@ -318,6 +376,12 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       if (selectedCategory !== 'all') {
         const cat = fav.userCategory || 'reading';
         if (cat !== selectedCategory) return false;
+      }
+      // Custom Collection filter
+      if (selectedCustomCollection) {
+        if (!fav.customCollections || !fav.customCollections.includes(selectedCustomCollection)) {
+          return false;
+        }
       }
       // Search term
       if (searchQuery.trim()) {
@@ -375,18 +439,8 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            {/* Check for New Chapters Button */}
-            <button
-              onClick={handleCheckUpdates}
-              disabled={isCheckingUpdates || favorites.length === 0}
-              title="Consultar os provedores ao vivo para verificar se há novos capítulos disponíveis"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isCheckingUpdates ? 'animate-spin' : ''}`} />
-              <span>{isCheckingUpdates ? 'Verificando...' : 'Verificar Atualizações'}</span>
-            </button>
-
+          {/* Consolidated Header Action Toolbar */}
+          <div className="flex items-center gap-2 sm:gap-2.5">
             {/* Hidden file input for restore */}
             <input
               type="file"
@@ -396,44 +450,24 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               className="hidden"
             />
 
-            {/* Export Backup Button */}
+            {/* 1. Primary Action: Check for Updates */}
             <button
-              onClick={handleExport}
-              title="Exportar backup completo (MangaReader JSON)"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+              onClick={handleCheckUpdates}
+              disabled={isCheckingUpdates || favorites.length === 0}
+              title="Consultar os provedores ao vivo para verificar se há novos capítulos disponíveis"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all disabled:opacity-50 cursor-pointer"
             >
-              <Download className="h-3.5 w-3.5 text-rose-400" />
-              <span className="hidden sm:inline">Exportar JSON</span>
-              <span className="sm:hidden">JSON</span>
+              <RefreshCw className={`h-3.5 w-3.5 ${isCheckingUpdates ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isCheckingUpdates ? 'Verificando...' : 'Verificar Atualizações'}</span>
+              <span className="sm:hidden">{isCheckingUpdates ? '...' : 'Atualizações'}</span>
             </button>
 
-            {/* Export Tachiyomi / Mihon Button */}
-            <button
-              onClick={handleExportTachiyomi}
-              title="Exportar biblioteca em formato compatível com Tachiyomi e Mihon"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-amber-500/40 text-xs text-amber-300 hover:text-amber-200 font-medium transition-colors cursor-pointer"
-            >
-              <Download className="h-3.5 w-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Tachiyomi/Mihon</span>
-              <span className="sm:hidden">Mihon</span>
-            </button>
-
-            {/* Import Backup Button */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              title="Importar e mesclar backup de biblioteca (MangaReader ou Tachiyomi/Mihon)"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
-            >
-              <Upload className="h-3.5 w-3.5 text-emerald-400" />
-              <span className="hidden sm:inline">Restaurar</span>
-            </button>
-
-            {/* Downloads Offline Button */}
+            {/* 2. Quick Offline Access Button */}
             {onOpenDownloads && (
               <button
                 onClick={onOpenDownloads}
                 title="Ver e gerenciar capítulos salvos para leitura offline"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
               >
                 <HardDriveDownload className="h-3.5 w-3.5 text-emerald-400" />
                 <span className="hidden sm:inline">Offline</span>
@@ -445,20 +479,136 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               </button>
             )}
 
-            {/* Page Bookmarks Button */}
-            <button
-              onClick={() => setShowBookmarksModal(true)}
-              title="Ver todas as páginas marcadas na leitura"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white font-medium transition-colors cursor-pointer"
-            >
-              <Bookmark className="h-3.5 w-3.5 text-rose-400" />
-              <span className="hidden sm:inline">Marcadores</span>
-              {pageBookmarksCount > 0 && (
-                <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
-                  {pageBookmarksCount}
-                </span>
+            {/* 3. Consolidated Dropdown: "Gerenciar Biblioteca" */}
+            <div className="relative" ref={libraryMenuRef}>
+              <button
+                onClick={() => setShowLibraryMenu(!showLibraryMenu)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
+                  showLibraryMenu
+                    ? 'bg-zinc-800 text-white border-zinc-700 shadow-lg'
+                    : 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-white border-zinc-800'
+                }`}
+                title="Mais opções da biblioteca (backup, rastreadores e marcadores)"
+              >
+                <MoreHorizontal className="h-4 w-4 text-zinc-400" />
+                <span className="hidden sm:inline">Gerenciar</span>
+                <ChevronDown className={`h-3.5 w-3.5 text-zinc-500 transition-transform duration-200 ${showLibraryMenu ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Dropdown Menu Popover */}
+              {showLibraryMenu && (
+                <div className="absolute right-0 top-11 w-64 rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                  {/* Section: Sincronização & Rastreamento */}
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-850">
+                    Integrações & Nuvem
+                  </div>
+                  <div className="py-1">
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        setShowTrackersModal(true);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Sliders className="h-3.5 w-3.5 text-sky-400" />
+                        <span>AniList & MyAnimeList</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-zinc-500">Auto-sync</span>
+                    </button>
+                  </div>
+
+                  {/* Section: Leitura & Marcadores */}
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-t border-zinc-850 pt-2">
+                    Leitura & Marcadores
+                  </div>
+                  <div className="py-1 space-y-0.5">
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        setShowBookmarksModal(true);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Bookmark className="h-3.5 w-3.5 text-rose-400" />
+                        <span>Páginas Marcadas</span>
+                      </div>
+                      {pageBookmarksCount > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono">
+                          {pageBookmarksCount}
+                        </span>
+                      )}
+                    </button>
+
+                    {onOpenDownloads && (
+                      <button
+                        onClick={() => {
+                          setShowLibraryMenu(false);
+                          onOpenDownloads();
+                        }}
+                        className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <HardDriveDownload className="h-3.5 w-3.5 text-emerald-400" />
+                          <span>Capítulos Offline</span>
+                        </div>
+                        {offlineChaptersCount > 0 && (
+                          <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono">
+                            {offlineChaptersCount}
+                          </span>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Section: Backup & Dados */}
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-t border-zinc-850 pt-2">
+                    Backup & Transferência
+                  </div>
+                  <div className="py-1 space-y-0.5">
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        handleExport();
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Download className="h-3.5 w-3.5 text-rose-400" />
+                        <span>Exportar Backup (JSON)</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        handleExportTachiyomi();
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-amber-300 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Download className="h-3.5 w-3.5 text-amber-400" />
+                        <span>Exportar Tachiyomi/Mihon</span>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        fileInputRef.current?.click();
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-emerald-300 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Upload className="h-3.5 w-3.5 text-emerald-400" />
+                        <span>Restaurar Backup</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
               )}
-            </button>
+            </div>
           </div>
         </div>
 
@@ -495,11 +645,131 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         )}
 
         {/* Reading Stats Summary Dashboard */}
-        <ReadingStatsSummary favoritesCount={favorites.length} />
+        <ReadingStatsSummary
+          favoritesCount={favorites.length}
+          onExploreGenre={(genre) => {
+            setSearchQuery(genre);
+            // Smoothly scroll down to the library filter/cards section
+            const el = document.getElementById('library-collection-tabs');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+          }}
+        />
+
+        {/* Cloud Sync Status Bar */}
+        <div className="mb-6 p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg border shrink-0 ${
+              user
+                ? syncStatus === 'error'
+                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                  : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+            }`}>
+              <Cloud className="h-4 w-4" />
+            </div>
+            <div>
+              {user ? (
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-zinc-100">
+                      Sincronização em Nuvem Ativa
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+                      Em tempo real
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    Conectado com <span className="text-zinc-300 font-medium">{user.email}</span>. Obras favoritas, coleções e capítulos lidos estão sincronizados entre seus dispositivos.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-zinc-100">
+                      Sincronização entre Dispositivos
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">
+                      Modo Local
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                    Faça login com o Google para manter seu progresso de leitura, coleções e notas atualizadas no celular, tablet e computador.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+            {user ? (
+              <button
+                onClick={async () => {
+                  try {
+                    setIsSyncingCloud(true);
+                    await syncNow();
+                    setNotification({
+                      type: 'success',
+                      message: 'Sincronização com o Firestore concluída com sucesso!'
+                    });
+                    setTimeout(() => setNotification(null), 3000);
+                  } finally {
+                    setIsSyncingCloud(false);
+                  }
+                }}
+                disabled={isSyncingCloud || syncStatus === 'syncing'}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-xs font-medium transition-colors cursor-pointer"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isSyncingCloud || syncStatus === 'syncing' ? 'animate-spin text-blue-400' : 'text-zinc-400'}`} />
+                <span>{isSyncingCloud || syncStatus === 'syncing' ? 'Sincronizando...' : 'Sincronizar Agora'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={async () => {
+                  try {
+                    await loginWithGoogle();
+                    setNotification({
+                      type: 'success',
+                      message: 'Conta do Google vinculada e biblioteca sincronizada!'
+                    });
+                    setTimeout(() => setNotification(null), 4000);
+                  } catch (e: any) {
+                    setNotification({
+                      type: 'error',
+                      message: e?.message || 'Falha ao autenticar com o Google.'
+                    });
+                    setTimeout(() => setNotification(null), 4000);
+                  }
+                }}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all cursor-pointer"
+              >
+                <svg className="h-3.5 w-3.5" viewBox="0 0 24 24">
+                  <path
+                    fill="#FFFFFF"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="#FFFFFF"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="#FFFFFF"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                  />
+                  <path
+                    fill="#FFFFFF"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                  />
+                </svg>
+                <span>Conectar com Google</span>
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* Category Navigation Tabs (AniList / MAL Style) */}
         {favorites.length > 0 && (
-          <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-zinc-800/80 pb-3">
+          <div id="library-collection-tabs" className="mb-6 flex flex-wrap items-center gap-2 border-b border-zinc-800/80 pb-3">
             {[
               { id: 'all', label: 'Todos', count: categoryCounts.all },
               { id: 'reading', label: 'Lendo', count: categoryCounts.reading },
@@ -525,6 +795,66 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                 </span>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Custom Collections / Pastas Personalizadas Bar */}
+        {favorites.length > 0 && (
+          <div className="mb-6 flex flex-wrap items-center gap-2 pb-3 border-b border-zinc-850 text-xs">
+            <div className="flex items-center gap-1.5 text-zinc-400 font-medium mr-1">
+              <Folder className="h-3.5 w-3.5 text-rose-400" />
+              <span>Pastas:</span>
+            </div>
+
+            <button
+              onClick={() => setSelectedCustomCollection(null)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer border ${
+                selectedCustomCollection === null
+                  ? 'bg-zinc-800 text-white border-zinc-700 font-semibold'
+                  : 'bg-zinc-950/60 hover:bg-zinc-900 text-zinc-400 border-zinc-800'
+              }`}
+            >
+              Todas ({favorites.length})
+            </button>
+
+            {customCollections.map((colName) => {
+              const count = favorites.filter(f => f.customCollections?.includes(colName)).length;
+              const isSelected = selectedCustomCollection === colName;
+              return (
+                <div key={colName} className="flex items-center">
+                  <button
+                    onClick={() => setSelectedCustomCollection(isSelected ? null : colName)}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-l-lg text-xs font-medium transition-colors cursor-pointer border ${
+                      isSelected
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-semibold shadow-sm shadow-rose-950/30'
+                        : 'bg-zinc-950/60 hover:bg-zinc-900 text-zinc-400 border-zinc-800'
+                    }`}
+                  >
+                    <Folder className="h-3 w-3 text-rose-400" />
+                    <span>{colName}</span>
+                    <span className="text-[10px] font-mono text-zinc-500 tabular-nums">({count})</span>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteCollection(colName)}
+                    title={`Excluir pasta "${colName}"`}
+                    className={`p-1 rounded-r-lg text-zinc-500 hover:text-rose-400 transition-colors border-y border-r cursor-pointer ${
+                      isSelected ? 'border-rose-500/50 bg-rose-500/10' : 'border-zinc-800 bg-zinc-950/60 hover:bg-zinc-900'
+                    }`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+
+            <button
+              onClick={() => setShowNewCollectionModal(true)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 hover:border-rose-500/50 text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
+              title="Criar nova pasta personalizada para organizar obras"
+            >
+              <Plus className="h-3 w-3 text-rose-400" />
+              <span>Nova Pasta</span>
+            </button>
           </div>
         )}
 
@@ -568,6 +898,34 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     <option value="title-desc">Título (Z-A)</option>
                     <option value="score-desc">Melhor Avaliação</option>
                   </select>
+                </div>
+
+                {/* Grid / List Layout Switcher */}
+                <div className="flex items-center rounded-lg bg-zinc-950 border border-zinc-800 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setLibraryViewMode('grid')}
+                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      libraryViewMode === 'grid'
+                        ? 'bg-zinc-800 text-rose-400 shadow-sm'
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                    title="Visualização em Grade de Capas"
+                  >
+                    <LayoutGrid className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLibraryViewMode('list')}
+                    className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                      libraryViewMode === 'list'
+                        ? 'bg-zinc-800 text-rose-400 shadow-sm'
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                    title="Visualização em Lista / Tabela Detalhada"
+                  >
+                    <LayoutList className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
             </div>
@@ -652,6 +1010,157 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               Limpar Filtros
             </button>
           </div>
+        ) : libraryViewMode === 'list' ? (
+          /* Favorites Detailed List / Table View */
+          <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 overflow-hidden shadow-xl mb-8">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-zinc-800/80 bg-zinc-950/70 text-zinc-400 font-medium text-[11px]">
+                    <th className="py-3 px-4">Obra</th>
+                    <th className="py-3 px-3">Status</th>
+                    <th className="py-3 px-3">Progresso</th>
+                    <th className="py-3 px-3">Avaliação</th>
+                    <th className="py-3 px-3">Rastreamento</th>
+                    <th className="py-3 px-4 text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/50">
+                  {filteredFavorites.map((fav) => {
+                    const updateInfo = updatesMap[fav.mangaId];
+                    const progress = HistoryService.getProgress(fav.mangaId);
+                    const currentCat = fav.userCategory || 'reading';
+
+                    return (
+                      <tr
+                        key={fav.mangaId}
+                        onClick={() => onSelectManga(fav.mangaId)}
+                        className="group hover:bg-zinc-850/50 transition-colors cursor-pointer"
+                      >
+                        {/* Cover + Title + Authors */}
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+                              <img
+                                src={fav.coverUrl}
+                                alt={fav.title}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                loading="lazy"
+                              />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
+                                  {fav.title}
+                                </span>
+                                {updateInfo?.hasNew && (
+                                  <span className="shrink-0 px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[9px] font-bold font-mono">
+                                    Novo c.{updateInfo.latestChapterNumber}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
+                                {fav.authors?.join(', ') || 'Autor'}
+                              </p>
+                              {fav.customCollections && fav.customCollections.length > 0 && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  {fav.customCollections.slice(0, 2).map(c => (
+                                    <span key={c} className="text-[9px] text-zinc-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.2 rounded font-sans">
+                                      📁 {c}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Status Category */}
+                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                          <select
+                            value={currentCat}
+                            onChange={(e) => handleChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
+                            className="bg-zinc-950/80 border border-zinc-800 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+                          >
+                            <option value="reading">Lendo</option>
+                            <option value="plan_to_read">Quero Ler</option>
+                            <option value="completed">Completo</option>
+                            <option value="on_hold">Pausado</option>
+                            <option value="dropped">Abandonado</option>
+                          </select>
+                        </td>
+
+                        {/* Reading Progress */}
+                        <td className="py-3 px-3">
+                          <div className="font-mono tabular-nums">
+                            {progress?.chapterNumber ? (
+                              <span className="text-rose-400 font-semibold">
+                                Cap. {progress.chapterNumber}
+                              </span>
+                            ) : (
+                              <span className="text-zinc-500">Não iniciado</span>
+                            )}
+                            {updateInfo?.latestChapterNumber && (
+                              <div className="text-[10px] text-zinc-500">
+                                Total: {updateInfo.latestChapterNumber}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* User Rating Score */}
+                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={(e) => openScoreModal(e, fav)}
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-950/80 border border-zinc-800 hover:border-amber-500/50 text-xs text-amber-400 font-mono cursor-pointer"
+                          >
+                            <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                            <span>{fav.userScore ? `${fav.userScore}/10` : 'Avaliar'}</span>
+                          </button>
+                        </td>
+
+                        {/* External Tracker Badge */}
+                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                          <TrackerStatusBadge
+                            mangaId={fav.mangaId}
+                            mangaTitle={fav.title}
+                            size="sm"
+                            showLabel={true}
+                            onOpenTrackers={(id?: string, title?: string) => {
+                              setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
+                              setShowTrackersModal(true);
+                            }}
+                          />
+                        </td>
+
+                        {/* Quick Actions */}
+                        <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleQuickRead(fav.mangaId)}
+                              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                              title="Continuar leitura"
+                            >
+                              <BookOpen className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Ler</span>
+                            </button>
+
+                            <button
+                              onClick={(e) => handleRemove(e, fav.mangaId)}
+                              className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+                              title="Remover dos favoritos"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
         ) : (
           /* Favorites Grid */
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
@@ -668,6 +1177,11 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                       manga={mapFavoriteToManga(fav)}
                       onSelect={onSelectManga}
                       onQuickRead={handleQuickRead}
+                      showTrackerStatus={true}
+                      onOpenTrackers={(id, title) => {
+                        setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
+                        setShowTrackersModal(true);
+                      }}
                     />
                     
                     {/* Floating New Chapter Badge */}
@@ -675,6 +1189,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          UpdateTrackerService.markMangaUpdateAsSeen(fav.mangaId);
                           if (onReadChapter) {
                             onReadChapter(fav.mangaId, updateInfo.latestChapterId);
                           } else {
@@ -737,15 +1252,52 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                         <option value="dropped" className="bg-zinc-900 text-zinc-400">Abandonado</option>
                       </select>
 
-                      {/* Edit score icon */}
-                      <button
-                        onClick={(e) => openScoreModal(e, fav)}
-                        title="Adicionar nota ou avaliação"
-                        className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
-                      >
-                        <Edit3 className="h-3 w-3" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {/* Manage folders icon */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setManagingCollectionsManga(fav);
+                          }}
+                          title="Gerenciar pastas desta obra"
+                          className={`p-1 rounded transition-colors cursor-pointer ${
+                            fav.customCollections && fav.customCollections.length > 0
+                              ? 'text-rose-400 hover:text-rose-300 bg-rose-500/10'
+                              : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+                          }`}
+                        >
+                          <FolderPlus className="h-3 w-3" />
+                        </button>
+
+                        {/* Edit score icon */}
+                        <button
+                          onClick={(e) => openScoreModal(e, fav)}
+                          title="Adicionar nota ou avaliação"
+                          className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
+                        >
+                          <Edit3 className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Custom Collection Badges */}
+                    {fav.customCollections && fav.customCollections.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 my-0.5">
+                        {fav.customCollections.map(col => (
+                          <span
+                            key={col}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedCustomCollection(col);
+                            }}
+                            className="px-1.5 py-0.2 rounded text-[9px] bg-zinc-800 text-rose-300 border border-rose-500/20 font-medium truncate max-w-[100px] cursor-pointer hover:border-rose-500/50"
+                            title={`Filtrar pela pasta "${col}"`}
+                          >
+                            📁 {col}
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
                     {/* Reading Progress Chapter */}
                     {progress && (
@@ -844,6 +1396,136 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </div>
           </div>
         )}
+        {/* Modal for Creating New Custom Collection */}
+        {showNewCollectionModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-850">
+                <div className="flex items-center gap-2">
+                  <Folder className="h-5 w-5 text-rose-500" />
+                  <h3 className="text-sm font-bold text-white">Nova Pasta Personalizada</h3>
+                </div>
+                <button
+                  onClick={() => setShowNewCollectionModal(false)}
+                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateCollection} className="py-4 space-y-3">
+                <div>
+                  <label className="text-xs text-zinc-300 font-medium block mb-1.5">
+                    Nome da Pasta / Coleção
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={newCollectionName}
+                    onChange={(e) => setNewCollectionName(e.target.value)}
+                    placeholder="Ex: Favoritos do Ano, Obras Curtas, Para Reler..."
+                    className="w-full p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewCollectionModal(false)}
+                    className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-300 font-medium cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!newCollectionName.trim()}
+                    className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 disabled:opacity-50 cursor-pointer"
+                  >
+                    Criar Pasta
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Modal for Managing Collections of a Specific Manga */}
+        {managingCollectionsManga && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-850">
+                <div className="flex items-center gap-2">
+                  <FolderPlus className="h-5 w-5 text-rose-500" />
+                  <h3 className="text-sm font-bold text-white line-clamp-1">
+                    Pastas: {managingCollectionsManga.title}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setManagingCollectionsManga(null)}
+                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="py-4 space-y-3">
+                <p className="text-xs text-zinc-400">
+                  Selecione as pastas para organizar esta obra na sua biblioteca:
+                </p>
+
+                {customCollections.length === 0 ? (
+                  <p className="text-xs text-zinc-500 italic bg-zinc-950/60 p-3 rounded-lg border border-zinc-850">
+                    Você ainda não tem nenhuma pasta criada. Crie uma abaixo!
+                  </p>
+                ) : (
+                  <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                    {customCollections.map((col) => {
+                      const isInCollection = Boolean(managingCollectionsManga.customCollections?.includes(col));
+                      return (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => handleToggleMangaCollection(managingCollectionsManga.mangaId, col)}
+                          className={`w-full flex items-center justify-between p-2 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                            isInCollection
+                              ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                              : 'bg-zinc-950/80 hover:bg-zinc-800 border-zinc-800 text-zinc-400'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <Folder className={`h-3.5 w-3.5 ${isInCollection ? 'text-rose-400' : 'text-zinc-500'}`} />
+                            <span>{col}</span>
+                          </span>
+                          {isInCollection && <Check className="h-3.5 w-3.5 text-rose-400" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-zinc-850">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewCollectionModal(true)}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-dashed border-zinc-700 text-xs font-medium text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Criar outra pasta</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-3 border-t border-zinc-850">
+                <button
+                  type="button"
+                  onClick={() => setManagingCollectionsManga(null)}
+                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 cursor-pointer"
+                >
+                  Concluir
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Modal for Page Bookmarks & Snapshots */}
         <PageBookmarksModal
@@ -856,6 +1538,17 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               onSelectManga(mangaId);
             }
           }}
+        />
+
+        {/* Modal for External Trackers (AniList & MyAnimeList) */}
+        <TrackersModal
+          isOpen={showTrackersModal}
+          onClose={() => {
+            setShowTrackersModal(false);
+            setSelectedTrackerManga(null);
+          }}
+          activeMangaId={selectedTrackerManga?.id}
+          activeMangaTitle={selectedTrackerManga?.title}
         />
       </div>
     </div>

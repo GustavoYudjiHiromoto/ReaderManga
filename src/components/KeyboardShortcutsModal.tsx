@@ -42,6 +42,10 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
       group: 'Visualização & Controles',
       items: [
         {
+          keys: ['Z'],
+          desc: 'Alternar Modo Zen (Imersão Total sem menus ou barras)'
+        },
+        {
           keys: ['F'],
           desc: 'Alternar modo Tela Cheia (Fullscreen)'
         },
@@ -58,14 +62,43 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
           desc: 'Adicionar ou remover marcador na página atual'
         },
         {
+          keys: ['N'],
+          desc: 'Alternar Modo Noturno P&B (Inversão Inteligente para ler no escuro)'
+        },
+        {
           keys: ['Esc'],
           desc: 'Fechar painel de configurações ou este modal'
         }
       ]
     },
     {
-      group: 'Rolagem Automática (Modo Webtoon)',
+      group: 'Gestos Touch no Mobile',
       items: [
+        {
+          keys: ['Duplo Toque'],
+          desc: 'Ativar ou desativar o Modo Zen de imersão total'
+        },
+        {
+          keys: ['Deslizar (Swipe)'],
+          desc: 'Deslizar o dedo horizontalmente para virar a página'
+        },
+        {
+          keys: ['Toque Lateral'],
+          desc: 'Tocar na lateral da tela para avançar/voltar com 1 mão'
+        },
+        {
+          keys: ['Pinça (Pinch)'],
+          desc: 'Aproximar 2 dedos para dar zoom suave na página'
+        }
+      ]
+    },
+    {
+      group: 'Rolagem Contínua & Webtoon',
+      items: [
+        {
+          keys: ['I'],
+          desc: 'Alternar Rolagem Infinita (carrega próximos capítulos automaticamente ao rolar)'
+        },
         {
           keys: ['A'],
           desc: 'Iniciar ou pausar a rolagem automática com velocidade contínua'
