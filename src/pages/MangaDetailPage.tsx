@@ -26,7 +26,9 @@ import {
   X,
   Sliders,
   LayoutList,
-  LayoutGrid
+  LayoutGrid,
+  Folder,
+  Globe
 } from 'lucide-react';
 import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -37,6 +39,7 @@ import { TrackerService, TrackerMediaMapping } from '../services/trackerService.
 import { TrackersModal } from '../components/TrackersModal.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
+import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
 import { MangaCard } from '../components/MangaCard.js';
 
 interface MangaDetailPageProps {
@@ -65,7 +68,13 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chapterOrder, setChapterOrder] = useState<'asc' | 'desc'>('asc');
   const [chapterSearch, setChapterSearch] = useState('');
   const [deduplicate, setDeduplicate] = useState(true);
-  const [selectedLang, setSelectedLang] = useState<string>('all');
+  const [selectedLang, setSelectedLang] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mr_preferred_language') || 'pt-br,en';
+    } catch {
+      return 'pt-br,en';
+    }
+  });
   const [expandedVariantsChapterId, setExpandedVariantsChapterId] = useState<string | null>(null);
   const [isBookmarked, setIsBookmarked] = useState(false);
   const [favoriteData, setFavoriteData] = useState<FavoriteManga | null>(null);
@@ -84,6 +93,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [updateInfo, setUpdateInfo] = useState<MangaUpdateInfo | undefined>(() => UpdateTrackerService.getUpdateForManga(mangaId));
   const [trackerMapping, setTrackerMapping] = useState<TrackerMediaMapping | undefined>(() => TrackerService.getMapping(mangaId));
   const [showTrackersModal, setShowTrackersModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid'>('list');
 
   useEffect(() => {
@@ -328,14 +338,34 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const readPercentage = totalChaptersCount > 0 ? Math.round((readChaptersCount / totalChaptersCount) * 100) : 0;
 
   // Unique languages among loaded chapters
-  const availableLanguages = Array.from(new Set(chapters.map(c => c.language).filter(Boolean)));
+  const availableLanguages = Array.from(new Set(chapters.map(c => (c.language || 'en').toLowerCase()).filter(Boolean)));
+
+  const matchesLanguage = (lang?: string, filter: string = 'all') => {
+    if (filter === 'all') return true;
+    const l = (lang || 'en').toLowerCase().trim();
+    if (filter === 'pt-br,en') {
+      return l === 'pt-br' || l === 'pt' || l === 'en' || l === 'default' || !l;
+    }
+    if (filter === 'pt-br' || filter === 'pt') {
+      return l === 'pt-br' || l === 'pt';
+    }
+    if (filter === 'en') {
+      return l === 'en';
+    }
+    return l === filter.toLowerCase();
+  };
+
+  // Check if current filter produces zero chapters while chapters exist
+  const rawLanguageMatches = chapters.filter(c => matchesLanguage(c.language, selectedLang));
+  const effectiveLangFilter = (rawLanguageMatches.length === 0 && chapters.length > 0 && selectedLang !== 'all') ? 'all' : selectedLang;
+  const isFallbackToAll = effectiveLangFilter === 'all' && selectedLang !== 'all' && chapters.length > 0;
 
   // Filtered chapters
   const filteredChapters = chapters.filter(c => {
     const isRead = readChapters.includes(c.id);
     if (readFilter === 'unread' && isRead) return false;
     if (readFilter === 'read' && !isRead) return false;
-    if (selectedLang !== 'all' && c.language !== selectedLang) return false;
+    if (!matchesLanguage(c.language, effectiveLangFilter)) return false;
     if (!chapterSearch) return true;
     const q = chapterSearch.toLowerCase();
     return (
@@ -492,6 +522,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </button>
 
                 <button
+                  onClick={() => setShowCategoryModal(true)}
+                  className="px-3 py-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5"
+                  title="Gerenciar Categorias (Mihon)"
+                >
+                  <Folder className="h-3.5 w-3.5 text-rose-400" />
+                  <span className="text-[11px]">Categorias</span>
+                </button>
+
+                <button
                   onClick={handleShare}
                   className="px-3 py-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs font-medium transition-colors cursor-pointer"
                   title="Copiar link"
@@ -499,6 +538,23 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <Share2 className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {/* Badges de Categorias Personalizadas (Mihon) */}
+              {isBookmarked && favoriteData?.customCollections && favoriteData.customCollections.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {favoriteData.customCollections.map((col) => (
+                    <button
+                      key={col}
+                      onClick={() => setShowCategoryModal(true)}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-rose-500/10 text-rose-300 border border-rose-500/30 hover:border-rose-400 cursor-pointer transition-colors"
+                      title="Alterar categorias"
+                    >
+                      <Folder className="h-2.5 w-2.5 text-rose-400" />
+                      <span>{col}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Status and Rating controls (when bookmarked) */}
               {isBookmarked && (
@@ -1015,38 +1071,90 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </button>
               </div>
 
-              {availableLanguages.length > 1 && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] font-medium text-zinc-400 mr-1">Idioma:</span>
-                  <button
-                    onClick={() => setSelectedLang('all')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                      selectedLang === 'all'
-                        ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
-                        : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                    }`}
-                  >
-                    Todos ({chapters.length})
-                  </button>
-                  {availableLanguages.map((lang) => {
-                    const count = chapters.filter(c => c.language === lang).length;
-                    return (
-                      <button
-                        key={lang}
-                        onClick={() => setSelectedLang(lang)}
-                        className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase transition-colors cursor-pointer ${
-                          selectedLang === lang
-                            ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
-                            : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                        }`}
-                      >
-                        {lang} ({count})
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-medium text-zinc-400 mr-1 flex items-center gap-1">
+                  <Globe className="h-3 w-3 text-rose-400" />
+                  <span>Idioma:</span>
+                </span>
+                <button
+                  onClick={() => setSelectedLang('all')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    effectiveLangFilter === 'all' && selectedLang === 'all'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                >
+                  Todos ({chapters.length})
+                </button>
+                <button
+                  onClick={() => setSelectedLang('pt-br,en')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    selectedLang === 'pt-br,en'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                  title="Filtrar capítulos em Português e Inglês"
+                >
+                  PT-BR + EN
+                </button>
+                <button
+                  onClick={() => setSelectedLang('pt-br')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    selectedLang === 'pt-br' || selectedLang === 'pt'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                  title="Filtrar capítulos em Português"
+                >
+                  PT-BR ({chapters.filter(c => matchesLanguage(c.language, 'pt-br')).length})
+                </button>
+                <button
+                  onClick={() => setSelectedLang('en')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer ${
+                    selectedLang === 'en'
+                      ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                      : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                  }`}
+                  title="Filtrar capítulos em Inglês"
+                >
+                  EN ({chapters.filter(c => matchesLanguage(c.language, 'en')).length})
+                </button>
+                {availableLanguages.filter(l => l !== 'pt-br' && l !== 'pt' && l !== 'en' && l !== 'default').map((lang) => {
+                  const count = chapters.filter(c => (c.language || '').toLowerCase() === lang).length;
+                  return (
+                    <button
+                      key={lang}
+                      onClick={() => setSelectedLang(lang)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium uppercase transition-colors cursor-pointer ${
+                        selectedLang === lang
+                          ? 'bg-zinc-800 text-rose-400 border border-rose-500/30 font-semibold'
+                          : 'bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                      }`}
+                    >
+                      {lang} ({count})
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+
+            {/* Fallback notice if user preference yielded 0 chapters */}
+            {isFallbackToAll && (
+              <div className="p-3 rounded-lg bg-amber-950/20 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Info className="h-4 w-4 text-amber-400 shrink-0" />
+                  <span>
+                    Nenhum capítulo encontrado no seu idioma preferido (<strong>{selectedLang.toUpperCase()}</strong>). Exibindo capítulos em outros idiomas disponíveis.
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSelectedLang('all')}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded text-[11px] font-medium shrink-0 cursor-pointer"
+                >
+                  Ver Todos
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Chapters List */}
@@ -1556,6 +1664,28 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
         onClose={() => setShowTrackersModal(false)}
         activeMangaId={mangaId}
         activeMangaTitle={manga?.title}
+      />
+
+      {/* Mihon-style Category Selection Modal */}
+      <CategorySelectionModal
+        isOpen={showCategoryModal}
+        onClose={() => {
+          setShowCategoryModal(false);
+          const fav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+          setFavoriteData(fav);
+          setIsBookmarked(Boolean(fav));
+        }}
+        manga={manga ? {
+          id: manga.id,
+          title: manga.title,
+          coverUrl: manga.coverUrl,
+          sourceName: manga.sources?.[0]?.sourceName,
+          sourceId: manga.sources?.[0]?.sourceId,
+          rating: manga.rating,
+          authors: manga.authors,
+          genres: manga.genres,
+          status: manga.status,
+        } : null}
       />
     </div>
   );

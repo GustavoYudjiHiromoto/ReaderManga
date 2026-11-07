@@ -34,10 +34,10 @@ function parseRatingAndDemographic(genres: string[]): {
   const lower = genres.map(g => g.toLowerCase());
   let demographic: string | undefined;
 
-  if (lower.includes('seinen')) demographic = 'Seinen';
-  else if (lower.includes('shounen') || lower.includes('shonen')) demographic = 'Shounen';
-  else if (lower.includes('shoujo') || lower.includes('shojo')) demographic = 'Shoujo';
-  else if (lower.includes('josei')) demographic = 'Josei';
+  if (lower.includes('seinen')) demographic = 'seinen';
+  else if (lower.includes('shounen') || lower.includes('shonen')) demographic = 'shounen';
+  else if (lower.includes('shoujo') || lower.includes('shojo')) demographic = 'shoujo';
+  else if (lower.includes('josei')) demographic = 'josei';
 
   if (lower.some(g => ['hentai', 'pornographic', 'smut'].includes(g))) {
     return { contentRating: 'pornographic', isAdult: true, demographic };
@@ -128,8 +128,15 @@ export class MangaPillProvider implements IMangaSource {
         search: true,
         filters: true,
         coverImages: true,
-        multipleLanguages: false
-      }
+        multipleLanguages: false,
+        chaptersDeduplication: true,
+        webtoons: false,
+        nsfwFilter: false
+      },
+      iconColor: '#10b981',
+      badge: 'Ultra Rápido',
+      languages: ['EN'],
+      catalogEstimate: '+20.000 títulos'
     };
   }
 
@@ -279,10 +286,45 @@ export class MangaPillProvider implements IMangaSource {
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
-      const q = (query || '').trim();
+      let q = (query || '').trim();
       const limit = options?.limit || 24;
       const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
       let url: string;
+
+      const KEYWORD_FALLBACKS: Record<string, string> = {
+        'time travel': 'regression',
+        'regression': 'regression',
+        'regressão / tempo': 'regression',
+        'regressao / tempo': 'regression',
+        'viagem no tempo': 'time travel',
+        'isekai': 'isekai',
+        'villainess': 'villainess',
+        'vilã (villainess)': 'villainess',
+        'vilã': 'villainess',
+        'reincarnation': 'reincarnation',
+        'reencarnação': 'reincarnation',
+        'overpower (op)': 'overpowered',
+        'overpower': 'overpowered',
+        'yandere': 'yandere',
+        'tomboy': 'tomboy',
+        'construção de vila': 'village',
+        'construção de vila / reino': 'village',
+        'fazenda / agricultura': 'farming',
+        'dungeon / sistema': 'dungeon',
+        'cultivação / murim': 'murim',
+        'domador de monstros': 'tamer',
+        'vingança': 'revenge'
+      };
+
+      if (!q && options?.genres) {
+        for (const g of options.genres) {
+          const kw = KEYWORD_FALLBACKS[g.toLowerCase()];
+          if (kw) {
+            q = kw;
+            break;
+          }
+        }
+      }
 
       const mappedGenre = mapGenre(options?.genre);
 

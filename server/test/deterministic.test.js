@@ -42,6 +42,8 @@ async function runDeterministicTests() {
     const comickSource = sourcesJson.data.find(s => s.id === 'comick');
     const weebSource = sourcesJson.data.find(s => s.id === 'weebcentral');
     const pillSource = sourcesJson.data.find(s => s.id === 'mangapill');
+    const fireSource = sourcesJson.data.find(s => s.id === 'mangafire');
+    const ballSource = sourcesJson.data.find(s => s.id === 'mangaball');
 
     assert(!mockSource, 'Fonte "mock" foi completamente removida de /api/sources');
     assert(!!dexSource, 'Fonte "mangadex" está registrada em /api/sources');
@@ -52,7 +54,11 @@ async function runDeterministicTests() {
     assert(weebSource?.type === 'live_api', 'Fonte "weebcentral" possui type === "live_api"');
     assert(!!pillSource, 'Fonte "mangapill" está registrada em /api/sources');
     assert(pillSource?.type === 'live_api', 'Fonte "mangapill" possui type === "live_api"');
-    assert(sourcesJson.data.length === 4, 'Exatamente 4 fontes reais ativas (MangaDex, Comick, WeebCentral, MangaPill)');
+    assert(!!fireSource, 'Fonte "mangafire" está registrada em /api/sources');
+    assert(fireSource?.type === 'live_api', 'Fonte "mangafire" possui type === "live_api"');
+    assert(!!ballSource, 'Fonte "mangaball" está registrada em /api/sources');
+    assert(ballSource?.type === 'live_api', 'Fonte "mangaball" possui type === "live_api"');
+    assert(sourcesJson.data.length === 6, 'Exatamente 6 fontes reais ativas (MangaDex, Comick, WeebCentral, MangaPill, MangaFire, MangaBall)');
 
     // -------------------------------------------------------------------------
     // 2. BUSCA FEDERADA E POPULARES DAS FONTES REAIS
@@ -316,7 +322,7 @@ async function runDeterministicTests() {
     assert(typeof healthJson.memory?.rssMb === 'number', 'Telemetria de memória contém rssMb');
     assert(typeof healthJson.memory?.heapUsedMb === 'number', 'Telemetria de memória contém heapUsedMb');
     assert(Array.isArray(healthJson.sources), 'Healthcheck lista fontes ativas');
-    assert(healthJson.sources.length === 4, 'Healthcheck confirma 4 fontes reais conectadas');
+    assert(healthJson.sources.length === 6, 'Healthcheck confirma 6 fontes reais conectadas');
     assert(typeof healthJson.cache?.size === 'number', 'Healthcheck inclui telemetria de cache');
 
     // 8.2 Validação de Backup & Mesclagem de Biblioteca
@@ -382,6 +388,61 @@ async function runDeterministicTests() {
     assert(updateSample.hasNew === true, 'MangaUpdateInfo possui flag hasNew');
     assert(updateSample.lastReadNumber === '117', 'MangaUpdateInfo retém lastReadNumber para contraste no leitor');
     assert(typeof updateSample.checkedAt === 'number', 'MangaUpdateInfo registra timestamp checkedAt');
+
+    // -------------------------------------------------------------------------
+    // 10. SISTEMA DE GERENCIAMENTO DE EXTENSÕES, PING E FILTRO POR FONTES
+    // -------------------------------------------------------------------------
+    console.log('\n[10/10] Testando Gerenciamento de Extensões, Ping e Filtro de Fontes...');
+    
+    // 10.1 Metadados estendidos de fontes
+    const sourcesMetaRes = await fetch(`${BASE_URL}/api/sources`);
+    const sourcesMetaJson = await sourcesMetaRes.json();
+    const mdSource = sourcesMetaJson.data.find(s => s.id === 'mangadex');
+    assert(!!mdSource?.badge, 'MangaDex possui badge de identificação de extensão');
+    assert(Array.isArray(mdSource?.languages), 'MangaDex lista idiomas suportados');
+    assert(typeof mdSource?.catalogEstimate === 'string', 'MangaDex possui estimativa de acervo');
+
+    const mfSource = sourcesMetaJson.data.find(s => s.id === 'mangafire');
+    assert(!!mfSource?.badge, 'MangaFire possui badge de identificação de extensão');
+    assert(Array.isArray(mfSource?.languages), 'MangaFire lista idiomas suportados');
+
+    const mbSource = sourcesMetaJson.data.find(s => s.id === 'mangaball');
+    assert(!!mbSource?.badge, 'MangaBall possui badge de identificação de extensão');
+    assert(Array.isArray(mbSource?.languages), 'MangaBall lista idiomas suportados');
+
+    // 10.2 Ping individual de fonte
+    const pingRes = await fetch(`${BASE_URL}/api/sources/mangadex/ping`);
+    assert(pingRes.status === 200, 'GET /api/sources/mangadex/ping retorna status 200');
+    const pingJson = await pingRes.json();
+    assert(pingJson.success === true, 'Ping individual retorna success: true');
+    assert(pingJson.data.sourceId === 'mangadex', 'Ping retorna sourceId correspondente');
+    assert(typeof pingJson.data.latencyMs === 'number', 'Ping retorna latência em milissegundos');
+    assert(['online', 'degraded', 'offline'].includes(pingJson.data.status), 'Ping retorna status de saúde válido');
+
+    // 10.3 Busca com restrição a fonte única (ex: apenas mangadex)
+    const singleSourceRes = await fetch(`${BASE_URL}/api/search?q=berserk&sources=mangadex`);
+    assert(singleSourceRes.status === 200, 'GET /api/search com sources=mangadex retorna 200');
+    const singleSourceJson = await singleSourceRes.json();
+    assert(singleSourceJson.sourcesQueried.length === 1 && singleSourceJson.sourcesQueried[0] === 'mangadex', 'Busca consulta estritamente a fonte selecionada');
+
+    // 10.4 Busca com subconjunto de fontes (ex: comick,weebcentral)
+    const multiSubsetRes = await fetch(`${BASE_URL}/api/search?q=berserk&sources=comick,weebcentral`);
+    assert(multiSubsetRes.status === 200, 'GET /api/search com sources=comick,weebcentral retorna 200');
+    const multiSubsetJson = await multiSubsetRes.json();
+    assert(multiSubsetJson.sourcesQueried.includes('comick') && multiSubsetJson.sourcesQueried.includes('weebcentral') && !multiSubsetJson.sourcesQueried.includes('mangapill'), 'Busca consulta apenas o subconjunto de fontes ativas');
+
+    // 10.5 Teste dos endpoints e lógica de parsing de MangaBall e MangaFire no ExtensionService
+    const { MANGABALL_ENDPOINTS, MANGAFIRE_ENDPOINTS, parseMangaBallItem, parseMangaFireHtml } = await import('../../src/services/extensionService.js');
+    assert(typeof MANGABALL_ENDPOINTS.searchAdvanced === 'string', 'MANGABALL_ENDPOINTS define endpoint searchAdvanced');
+    assert(typeof MANGAFIRE_ENDPOINTS.filter === 'string', 'MANGAFIRE_ENDPOINTS define endpoint filter');
+
+    const parsedMbItem = parseMangaBallItem({ id: '123', title: 'Solo Leveling', is_nsfw: false });
+    assert(parsedMbItem.id === 'mr_mangaball_123', 'parseMangaBallItem gera ID canônico mr_mangaball_123');
+    assert(parsedMbItem.title === 'Solo Leveling', 'parseMangaBallItem preserva título');
+
+    const parsedMfHtml = parseMangaFireHtml('<div class="inner"><a href="/manga/one-piece.ov8">test</a><img src="/poster.jpg" alt="One Piece"></div>');
+    assert(parsedMfHtml.mangaList.length === 1, 'parseMangaFireHtml extrai obra do HTML');
+    assert(parsedMfHtml.mangaList[0].id === 'mr_mangafire_one-piece.ov8', 'parseMangaFireHtml gera ID canônico mr_mangafire_one-piece.ov8');
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

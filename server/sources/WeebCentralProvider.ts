@@ -47,7 +47,33 @@ const GENRE_MAP: Record<string, string> = {
   'psicológico': 'Psychological',
   'psicologico': 'Psychological',
   'psychological': 'Psychological',
-  'slice of life': 'Slice of Life'
+  'slice of life': 'Slice of Life',
+  'isekai': 'Isekai',
+  'time travel': 'Time Travel',
+  'regression': 'Time Travel',
+  'regressão / tempo': 'Time Travel',
+  'regressao / tempo': 'Time Travel',
+  'viagem no tempo': 'Time Travel',
+  'reincarnation': 'Reincarnation',
+  'reencarnação': 'Reincarnation',
+  'reencarnacao': 'Reincarnation',
+  'villainess': 'Villainess',
+  'vilã (villainess)': 'Villainess',
+  'vilã': 'Villainess',
+  'vila': 'Villainess',
+  'survival': 'Survival',
+  'sobrevivência': 'Survival',
+  'sobrevivencia': 'Survival',
+  'martial arts': 'Martial Arts',
+  'artes marciais': 'Martial Arts',
+  'cultivação / murim': 'Martial Arts',
+  'magic': 'Magic',
+  'magia': 'Magic',
+  'school life': 'School Life',
+  'romance colegial': 'School Life',
+  'harem': 'Harem',
+  'reverse harem': 'Reverse Harem',
+  'harem invertido': 'Reverse Harem'
 };
 
 export class WeebCentralProvider implements IMangaSource {
@@ -67,7 +93,7 @@ export class WeebCentralProvider implements IMangaSource {
       id: this.sourceId,
       name: 'WeebCentral (Ao Vivo)',
       description: 'Acervo extenso com scans de alta fidelidade e capítulos traduzidos sem restrição de licenciamento.',
-      version: '1.0.0',
+      version: '1.1.0',
       isAvailable: true,
       type: 'live_api',
       websiteUrl: 'https://weebcentral.com',
@@ -75,8 +101,15 @@ export class WeebCentralProvider implements IMangaSource {
         search: true,
         filters: true,
         coverImages: true,
-        multipleLanguages: false
-      }
+        multipleLanguages: false,
+        chaptersDeduplication: true,
+        webtoons: true,
+        nsfwFilter: false
+      },
+      iconColor: '#06b6d4',
+      badge: 'Scans & Lançamentos',
+      languages: ['EN'],
+      catalogEstimate: '+35.000 títulos'
     };
   }
 
@@ -140,10 +173,17 @@ export class WeebCentralProvider implements IMangaSource {
 
       // 8. Demographic
       let demographic: string | undefined;
-      if (genres.includes('Shounen')) demographic = 'Shounen';
-      else if (genres.includes('Seinen')) demographic = 'Seinen';
-      else if (genres.includes('Shoujo')) demographic = 'Shoujo';
-      else if (genres.includes('Josei')) demographic = 'Josei';
+      const gLower = genres.map(g => g.toLowerCase());
+      if (gLower.includes('shounen') || gLower.includes('shonen')) demographic = 'shounen';
+      else if (gLower.includes('seinen')) demographic = 'seinen';
+      else if (gLower.includes('shoujo') || gLower.includes('shojo')) demographic = 'shoujo';
+      else if (gLower.includes('josei')) demographic = 'josei';
+
+      // Country / Type detection
+      let country = 'JP';
+      if (gLower.includes('manhwa') || gLower.includes('korean')) country = 'KR';
+      else if (gLower.includes('manhua') || gLower.includes('chinese')) country = 'CN';
+      else if (gLower.includes('comic') || gLower.includes('western')) country = 'US';
 
       // Content rating & adult content
       const isAdult = genres.some(g => /adult|hentai|smut|erotica/i.test(g));
@@ -164,7 +204,7 @@ export class WeebCentralProvider implements IMangaSource {
         status,
         publicationInfo: {
           releaseYear,
-          country: 'Japão',
+          country,
           demographic
         },
         sources: [
@@ -202,14 +242,48 @@ export class WeebCentralProvider implements IMangaSource {
     params.set('order', 'Descending');
     params.set('display_mode', 'Full Display');
 
-    if (trimmed) {
-      params.set('text', trimmed);
+    let textQuery = trimmed;
+    const KEYWORD_FALLBACKS: Record<string, string> = {
+      'overpower (op)': 'overpowered',
+      'overpower': 'overpowered',
+      'yandere': 'yandere',
+      'tomboy': 'tomboy',
+      'construção de vila': 'village',
+      'construção de vila / reino': 'village',
+      'fazenda / agricultura': 'farming',
+      'dungeon / sistema': 'dungeon',
+      'domador de monstros': 'tamer',
+      'vingança': 'revenge'
+    };
+    if (!textQuery && options?.genres) {
+      for (const g of options.genres) {
+        const kw = KEYWORD_FALLBACKS[g.toLowerCase()];
+        if (kw) {
+          textQuery = kw;
+          break;
+        }
+      }
     }
 
+    if (textQuery) {
+      params.set('text', textQuery);
+    }
+
+    const tagsToSet = new Set<string>();
     if (options?.genre && options.genre !== 'all') {
       const lower = options.genre.toLowerCase();
       const mapped = GENRE_MAP[lower] || options.genre;
-      params.set('included_tag', mapped);
+      tagsToSet.add(mapped);
+    }
+    if (Array.isArray(options?.genres)) {
+      for (const g of options.genres) {
+        const lower = g.toLowerCase();
+        const mapped = GENRE_MAP[lower];
+        if (mapped) tagsToSet.add(mapped);
+      }
+    }
+    for (const tag of tagsToSet) {
+      params.append('included_tag', tag);
     }
 
     const url = `${this.baseUrl}/search/data?${params.toString()}`;

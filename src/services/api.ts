@@ -34,8 +34,27 @@ export const MangaApi = {
     return json.data || [];
   },
 
-  async getFeatured(): Promise<Manga[]> {
-    const res = await fetch('/api/manga/featured');
+  async pingSource(sourceId: string): Promise<import('../types/manga.js').SourcePingResult> {
+    const res = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/ping`);
+    if (!res.ok) throw new Error(`Falha ao sondar fonte ${sourceId}`);
+    const json = await res.json();
+    return json.data;
+  },
+
+  async pingAllSources(): Promise<import('../types/manga.js').SourcePingResult[]> {
+    const res = await fetch('/api/sources/ping/all');
+    if (!res.ok) throw new Error('Falha ao sondar fontes');
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async getFeatured(options?: { sources?: string[] }): Promise<Manga[]> {
+    const params = new URLSearchParams();
+    if (options?.sources && options.sources.length > 0) {
+      params.set('sources', options.sources.join(','));
+    }
+    const url = params.toString() ? `/api/manga/featured?${params.toString()}` : '/api/manga/featured';
+    const res = await fetch(url);
     if (!res.ok) throw new Error('Falha ao obter destaques');
     const json = await res.json();
     return json.data || [];
@@ -43,8 +62,11 @@ export const MangaApi = {
 
   async search(query: string, options?: {
     source?: string;
+    sources?: string[];
     genre?: string;
     genres?: string[];
+    demographic?: string;
+    type?: string;
     status?: string;
     limit?: number;
     offset?: number;
@@ -55,7 +77,10 @@ export const MangaApi = {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (options?.source && options.source !== 'all') params.set('source', options.source);
+    if (options?.sources && options.sources.length > 0) params.set('sources', options.sources.join(','));
     if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
+    if (options?.demographic && options.demographic !== 'all') params.set('demographic', options.demographic);
+    if (options?.type && options.type !== 'all') params.set('type', options.type);
     if (options?.status && options.status !== 'all') params.set('status', options.status);
     if (options?.genres && options.genres.length > 0) {
       params.set('genres', options.genres.join(','));

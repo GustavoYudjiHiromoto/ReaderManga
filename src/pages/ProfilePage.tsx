@@ -26,7 +26,12 @@ import {
   Eye,
   SlidersHorizontal,
   FolderDown,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Globe,
+  Volume2,
+  Smartphone,
+  CheckCircle2,
+  Boxes
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { HistoryService } from '../services/history.js';
@@ -34,9 +39,11 @@ import { AnalyticsService, AnalyticsSummary } from '../services/analyticsService
 import { TrackerService, TrackerAccount } from '../services/trackerService.js';
 import { TrackerBackgroundService, TrackerBackgroundServiceState } from '../services/trackerBackgroundService.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
+import { ExtensionService } from '../services/extensionService.js';
 import { FavoriteManga, ReadingProgress } from '../types/manga.js';
-import { ReadingAnalytics } from '../components/ReadingAnalytics.js';
+import { ReadingStatsSummary } from '../components/ReadingStatsSummary.js';
 import { TrackersModal } from '../components/TrackersModal.js';
+import { PWAInstallButton } from '../components/PWAInstallButton.js';
 
 type ReaderMode = 'webtoon' | 'single' | 'double';
 type PageFit = 'width' | 'height' | 'original';
@@ -48,6 +55,7 @@ interface ProfilePageProps {
   onSelectManga: (mangaId: string) => void;
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   onOpenDownloads?: () => void;
+  onOpenExtensions?: () => void;
 }
 
 type ProfileTab = 'overview' | 'trackers' | 'preferences' | 'data';
@@ -57,7 +65,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   onNavigateToSearch,
   onSelectManga,
   onReadChapter,
-  onOpenDownloads
+  onOpenDownloads,
+  onOpenExtensions
 }) => {
   const { user, loading: authLoading, syncStatus, lastSynced, syncError, loginWithGoogle, logout, syncNow } = useAuth();
   
@@ -70,6 +79,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const [bookmarksCount, setBookmarksCount] = useState<number>(() => HistoryService.getPageBookmarks().length);
   const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary>(() => AnalyticsService.getAnalyticsSummary());
+  const [enabledSources, setEnabledSources] = useState<string[]>(() => ExtensionService.getEnabledSourceIds());
 
   // Tracker Accounts & Background Service States
   const [anilistAccount, setAnilistAccount] = useState<TrackerAccount>(() => TrackerService.getAniListAccount());
@@ -127,6 +137,22 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   });
 
+  const [preferredLanguage, setPreferredLanguage] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mr_preferred_language') || 'pt-br,en';
+    } catch {
+      return 'pt-br,en';
+    }
+  });
+
+  const [volumeNav, setVolumeNav] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mr_reader_volume_nav') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
   const triggerToast = (msg: string) => {
@@ -156,11 +182,16 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       setOfflineCount(OfflineCacheService.getAllSavedChapters().length);
     });
 
+    const unsubExtensions = ExtensionService.subscribe(() => {
+      setEnabledSources(ExtensionService.getEnabledSourceIds());
+    });
+
     return () => {
       unsubHistory();
       unsubTrackers();
       unsubBgTrackers();
       unsubOffline();
+      unsubExtensions();
     };
   }, []);
 
@@ -505,8 +536,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         {/* TAB 1: OVERVIEW & READING ANALYTICS */}
         {activeTab === 'overview' && (
           <div className="space-y-8 animate-in fade-in duration-150">
-            {/* Embedded Recharts Reading Analytics */}
-            <ReadingAnalytics onExploreGenre={(g) => onNavigateToSearch(undefined, g)} />
+            {/* Complete Reading Stats Summary & Analytics Dashboard */}
+            <ReadingStatsSummary
+              favoritesCount={favorites.length}
+              onExploreGenre={(g) => onNavigateToSearch(undefined, g)}
+              defaultOpenAnalytics={true}
+            />
 
             {/* Recently Read Mangas Shelf */}
             {history.length > 0 && (
@@ -853,7 +888,79 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               </div>
             </div>
 
-            {/* 3. Safe Search & Filtro de Conteúdo Adulto */}
+            {/* 3. Idioma Preferido dos Capítulos */}
+            <div className="pt-4 border-t border-zinc-850 space-y-2">
+              <label className="text-xs font-semibold text-zinc-200 block flex items-center gap-1.5">
+                <Globe className="h-4 w-4 text-rose-400" />
+                <span>Idioma Preferido dos Capítulos:</span>
+              </label>
+              <p className="text-[11px] text-zinc-400">
+                Filtra automaticamente as listas de capítulos nos detalhes das obras e no leitor. Se uma obra não possuir capítulos no seu idioma preferido, todas as línguas serão exibidas como fallback.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs pt-1">
+                {[
+                  { id: 'pt-br,en', label: 'PT-BR + Inglês', tag: 'Recomendado', desc: 'Prioriza português e mantém scans em inglês disponíveis' },
+                  { id: 'pt-br', label: 'Apenas Português', tag: 'PT-BR', desc: 'Filtra exclusivamente traduções em português brasileiro' },
+                  { id: 'en', label: 'Apenas Inglês', tag: 'EN', desc: 'Filtra apenas capítulos e scans em inglês' },
+                  { id: 'all', label: 'Todos os Idiomas', tag: 'Global', desc: 'Exibe capítulos em qualquer idioma disponível' }
+                ].map((l) => (
+                  <button
+                    key={l.id}
+                    onClick={() => handleUpdatePreference('mr_preferred_language', l.id, setPreferredLanguage, l.label)}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      preferredLanguage === l.id
+                        ? 'bg-rose-500/15 border-rose-500/60 text-white shadow-sm shadow-rose-950/20'
+                        : 'bg-zinc-950/70 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-semibold text-xs mb-1">
+                      <span>{l.label}</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                        preferredLanguage === l.id ? 'bg-rose-500 text-white' : 'bg-zinc-850 text-zinc-400'
+                      }`}>
+                        {l.tag}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">{l.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 4. Navegação por Teclas de Volume no Celular */}
+            <div className="pt-4 border-t border-zinc-850 space-y-2">
+              <label className="text-xs font-semibold text-zinc-200 block flex items-center gap-1.5">
+                <Volume2 className="h-4 w-4 text-sky-400" />
+                <span>Navegação por Teclas de Volume (Mobile):</span>
+              </label>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800 gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                    <Smartphone className="h-4 w-4 text-sky-400" />
+                    <span>Virar páginas com botões de volume físicos</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 max-w-xl">
+                    No celular ou tablet, use os botões de <strong>Aumentar Volume</strong> (voltar página/rolar para cima) e <strong>Diminuir Volume</strong> (avançar página/rolar para baixo) para ler sem precisar encostar na tela.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    const next = !volumeNav;
+                    handleUpdatePreference('mr_reader_volume_nav', next, setVolumeNav, next ? 'Teclas de Volume Ativadas' : 'Teclas de Volume Desativadas');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer border self-start sm:self-center shrink-0 ${
+                    volumeNav
+                      ? 'bg-sky-950/40 text-sky-300 border-sky-600/40'
+                      : 'bg-zinc-900 text-zinc-400 border-zinc-700'
+                  }`}
+                >
+                  {volumeNav ? 'Ativado (Volume Nav)' : 'Desativado'}
+                </button>
+              </div>
+            </div>
+
+            {/* 5. Safe Search & Filtro de Conteúdo Adulto */}
             <div className="pt-4 border-t border-zinc-850 space-y-2">
               <label className="text-xs font-semibold text-zinc-200 block">Filtro de Pesquisa e Conteúdo:</label>
               <div className="flex items-center justify-between p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800">
@@ -885,6 +992,66 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                   }`}
                 >
                   {defaultSafeSearch ? 'Ativado (Seguro)' : 'Desativado (Exibindo +18)'}
+                </button>
+              </div>
+            </div>
+
+            {/* 6. PWA Installation & App Nativo */}
+            <div className="pt-4 border-t border-zinc-850 space-y-2">
+              <label className="text-xs font-semibold text-zinc-200 block flex items-center gap-1.5">
+                <Sparkles className="h-4 w-4 text-rose-400" />
+                <span>Aplicativo Nativo (Instalação PWA):</span>
+              </label>
+              <div className="p-4 rounded-xl bg-gradient-to-r from-zinc-950 via-zinc-900 to-zinc-950 border border-zinc-800/90 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-xs text-white">Instalar MangaReader no Dispositivo</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                      PWA Offline
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 max-w-xl">
+                    Instale como aplicativo nativo no Android, iOS, Windows ou macOS. Funciona em tela cheia imersiva sem as barras do navegador, com suporte a cache de capítulos offline e inicialização instantânea.
+                  </p>
+                </div>
+
+                <div className="shrink-0">
+                  <PWAInstallButton />
+                </div>
+              </div>
+            </div>
+
+            {/* 7. Extensões & Repositórios de Mangá */}
+            <div className="pt-4 border-t border-zinc-850 space-y-2">
+              <label className="text-xs font-semibold text-zinc-200 block flex items-center gap-1.5">
+                <Boxes className="h-4 w-4 text-rose-400" />
+                <span>Extensões & Repositórios Ativos:</span>
+              </label>
+              <div className="p-4 rounded-xl bg-zinc-950/70 border border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-xs text-white">Fontes Federadas ({enabledSources.length}/6 ativas)</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Multi-repositório
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 max-w-xl">
+                    Configure a ordem de prioridade de busca, ative ou desative extensões (MangaDex, Comick, WeebCentral, MangaPill, MangaFire, MangaBall) e teste a latência de rede das fontes.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (onOpenExtensions) {
+                      onOpenExtensions();
+                    } else {
+                      window.dispatchEvent(new CustomEvent('open-extensions-modal'));
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all cursor-pointer shrink-0"
+                >
+                  <Boxes className="h-3.5 w-3.5" />
+                  <span>Gerenciar Extensões</span>
                 </button>
               </div>
             </div>

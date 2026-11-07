@@ -16,12 +16,14 @@ import {
   Skull,
   Smile,
   Globe2,
-  Bookmark
+  Bookmark,
+  Blocks
 } from 'lucide-react';
 import { Manga, MangaSourceInfo, ReadingProgress, FavoriteManga, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
+import { ExtensionService } from '../services/extensionService.js';
 
 interface HomePageProps {
   onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
@@ -111,9 +113,13 @@ export const HomePage: React.FC<HomePageProps> = ({
     const unsubUpdates = UpdateTrackerService.subscribe(() => {
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
     });
+    const unsubExtensions = ExtensionService.subscribe(() => {
+      loadInitialData();
+    });
     return () => {
       unsubHistory();
       unsubUpdates();
+      unsubExtensions();
     };
   }, []);
 
@@ -126,8 +132,9 @@ export const HomePage: React.FC<HomePageProps> = ({
   const loadInitialData = async () => {
     setLoading(true);
     try {
+      const activeSources = ExtensionService.getEnabledSourceIds();
       const [featured, sourcesList] = await Promise.all([
-        MangaApi.getFeatured(),
+        MangaApi.getFeatured({ sources: activeSources }),
         MangaApi.getSources()
       ]);
       setFeaturedManga(featured);
@@ -531,7 +538,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   onClick={onOpenHistory}
                   className="text-xs text-rose-400 hover:text-rose-300 font-medium flex items-center gap-1 transition-colors cursor-pointer"
                 >
-                  <span>Histórico completo ({activeHistory.length})</span>
+                  <span>Histórico completo</span>
                   <ArrowRight className="h-3.5 w-3.5" />
                 </button>
               )}
@@ -836,38 +843,73 @@ export const HomePage: React.FC<HomePageProps> = ({
               </p>
             </div>
 
-            <button
-              onClick={() => onNavigateToSearch()}
-              className="flex items-center gap-1.5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white rounded-xl font-medium transition-colors cursor-pointer w-fit"
-            >
-              <Search className="h-3.5 w-3.5 text-rose-400" />
-              <span>Abrir Pesquisa Completa com Filtros</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('open-extensions-modal'));
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-rose-300 hover:text-rose-200 rounded-xl font-medium transition-colors cursor-pointer"
+                title="Configurar quais repositórios de mangá estão ativos"
+              >
+                <Blocks className="h-3.5 w-3.5 text-rose-400" />
+                <span>Gerenciar Extensões</span>
+              </button>
+
+              <button
+                onClick={() => onNavigateToSearch()}
+                className="flex items-center gap-1.5 px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-300 hover:text-white rounded-xl font-medium transition-colors cursor-pointer w-fit"
+              >
+                <Search className="h-3.5 w-3.5 text-rose-400" />
+                <span>Abrir Pesquisa com Filtros</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
 
           {/* Sources Status Tiles */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 mb-8">
-            {sources.map(src => (
-              <div
-                key={src.id}
-                className="p-3.5 rounded-xl bg-zinc-900/50 border border-zinc-800 flex items-center justify-between gap-3"
-              >
-                <div>
-                  <h4 className="text-xs font-semibold text-zinc-200">{src.name}</h4>
-                  <p className="text-[10px] text-zinc-500 mt-0.5">
-                    {src.id === 'mangadex' ? 'Comunidade Global & Scans' :
-                     src.id === 'comick' ? 'Agregador Multi-Idioma' :
-                     src.id === 'weebcentral' ? 'Scans Rápidos em Alta Definição' :
-                     'Catálogo Clássico & Shounen'}
-                  </p>
+            {sources.map(src => {
+              const isEnabled = ExtensionService.isSourceEnabled(src.id);
+              return (
+                <div
+                  key={src.id}
+                  onClick={() => {
+                    if (typeof window !== 'undefined') {
+                      window.dispatchEvent(new CustomEvent('open-extensions-modal'));
+                    }
+                  }}
+                  className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                    isEnabled
+                      ? 'bg-zinc-900/50 hover:bg-zinc-900/80 border-zinc-800 hover:border-zinc-700 shadow-sm'
+                      : 'bg-zinc-950/40 border-zinc-850/60 opacity-60 hover:opacity-80'
+                  }`}
+                  title="Clique para gerenciar esta extensão"
+                >
+                  <div>
+                    <h4 className="text-xs font-semibold text-zinc-200">{src.name}</h4>
+                    <p className="text-[10px] text-zinc-500 mt-0.5">
+                      {src.id === 'mangadex' ? 'Comunidade Global & Scans' :
+                       src.id === 'comick' ? 'Agregador Multi-Idioma' :
+                       src.id === 'weebcentral' ? 'Scans Rápidos em Alta Definição' :
+                       'Catálogo Clássico & Shounen'}
+                    </p>
+                  </div>
+                  {isEnabled ? (
+                    <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Ativa
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-mono text-zinc-400 bg-zinc-800/60 border border-zinc-750 px-2 py-0.5 rounded-full shrink-0">
+                      Desativada
+                    </span>
+                  )}
                 </div>
-                <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Ativo
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Quick Genre Links */}

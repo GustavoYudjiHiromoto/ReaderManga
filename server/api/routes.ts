@@ -28,8 +28,11 @@ async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; con
     actualUrl = decodeURIComponent(actualUrl.substring('/api/proxy/image?url='.length));
   }
 
+  const isMangaDex = actualUrl.includes('mangadex.org') || actualUrl.includes('mangadex.network');
   const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'User-Agent': isMangaDex
+      ? 'MangaReader/1.0'
+      : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   };
 
   if (actualUrl.includes('comick.pictures') || actualUrl.includes('comick.io')) {
@@ -38,13 +41,19 @@ async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; con
     headers['Referer'] = 'https://weebcentral.com/';
   } else if (actualUrl.includes('cdn.readdetectiveconan.com') || actualUrl.includes('mangapill.com')) {
     headers['Referer'] = 'https://mangapill.com/';
+  } else if (actualUrl.includes('mangafire.to') || actualUrl.includes('mangafire')) {
+    headers['Referer'] = 'https://mangafire.to/';
+  } else if (actualUrl.includes('mangaball.net') || actualUrl.includes('mangaball')) {
+    headers['Referer'] = 'https://mangaball.net/';
   }
 
   let response = await fetch(actualUrl, { headers }).catch(() => null);
 
   if ((!response || !response.ok) && actualUrl.includes('mangadex.network')) {
     const fallbackUrl = actualUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
-    response = await fetch(fallbackUrl, { headers }).catch(() => null);
+    response = await fetch(fallbackUrl, {
+      headers: { 'User-Agent': 'MangaReader/1.0' }
+    }).catch(() => null);
   }
 
   if (!response || !response.ok) {
@@ -113,20 +122,55 @@ apiRouter.get('/sources', (req: Request, res: Response) => {
   }
 });
 
+// 1.1 Source ping endpoints (Connectivity, latency and health check for extensions)
+apiRouter.get('/sources/ping/all', async (_req: Request, res: Response) => {
+  try {
+    const sources = sourceRegistry.getSources();
+    const pingPromises = sources.map(s => sourceRegistry.pingSource(s.id));
+    const results = await Promise.all(pingPromises);
+    res.json({
+      success: true,
+      data: results
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.get('/sources/:id/ping', async (req: Request, res: Response) => {
+  try {
+    const sourceId = req.params.id;
+    const result = await sourceRegistry.pingSource(sourceId);
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
 // 2. Search endpoint (cached for 5 minutes)
 apiRouter.get('/search', async (req: Request, res: Response) => {
   try {
     const q = (req.query.q as string) || '';
     const sourceId = req.query.source as string;
+    const enabledSourcesRaw = (req.query.sources as string) || (req.query.enabledSources as string);
+    const enabledSources = enabledSourcesRaw ? enabledSourcesRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
     const genre = req.query.genre as string;
+    const genresRaw = req.query.genres as string;
+    const genres = genresRaw ? genresRaw.split(',').map(s => s.trim()).filter(Boolean) : (genre && genre !== 'all' ? [genre] : undefined);
+    const demographic = req.query.demographic as string;
+    const mangaType = (req.query.type as string) || (req.query.format as string);
+    const status = req.query.status as string;
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 24;
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
 
     const includeAdult = req.query.includeAdult === 'true';
-    const onlyAvailable = req.query.onlyAvailable === 'true';
+    const onlyAvailable = req.query.onlyAvailable !== 'false';
 
-    const cacheKey = `search:${q}:${sourceId || 'all'}:${genre || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
+    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
@@ -135,7 +179,12 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
 
     const searchResult = await sourceRegistry.search(q, {
       sourceId,
+      enabledSources,
       genre,
+      genres,
+      demographic,
+      type: mangaType,
+      status,
       limit,
       offset,
       page,
@@ -161,14 +210,16 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
 // 3. Featured / Discovery endpoint (cached for 10 minutes)
 apiRouter.get('/manga/featured', async (req: Request, res: Response) => {
   try {
-    const cacheKey = 'manga:featured';
+    const enabledSourcesRaw = (req.query.sources as string) || (req.query.enabledSources as string);
+    const enabledSources = enabledSourcesRaw ? enabledSourcesRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+    const cacheKey = `manga:featured:${enabledSourcesRaw || 'all'}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
       return res.json(cached);
     }
 
-    const featured = await sourceRegistry.getFeatured();
+    const featured = await sourceRegistry.getFeatured({ enabledSources });
     const payload = {
       success: true,
       data: featured
@@ -444,8 +495,11 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
       return res.status(400).send('Missing url parameter');
     }
 
+    const isMangaDex = imageUrl.includes('mangadex.org') || imageUrl.includes('mangadex.network');
     const headers: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'User-Agent': isMangaDex
+        ? 'MangaReader/1.0'
+        : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     };
 
     if (imageUrl.includes('comick.pictures') || imageUrl.includes('comick.io')) {
@@ -462,7 +516,9 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
     if (!response.ok && imageUrl.includes('mangadex.network')) {
       const fallbackUrl = imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
       try {
-        const fallbackRes = await fetch(fallbackUrl, { headers });
+        const fallbackRes = await fetch(fallbackUrl, {
+          headers: { 'User-Agent': 'MangaReader/1.0' }
+        });
         if (fallbackRes.ok) {
           response = fallbackRes;
         }

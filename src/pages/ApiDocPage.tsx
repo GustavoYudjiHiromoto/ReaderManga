@@ -42,15 +42,27 @@ export const ApiDocPage: React.FC = () => {
     },
     {
       method: 'GET',
-      path: '/api/manga/featured',
-      title: 'Mangás em Destaque',
-      description: 'Retorna títulos populares agregados entre provedores para telas de descoberta.'
+      path: '/api/sources/ping/all',
+      title: 'Sondagem de Latência & Conexão de Todas as Fontes',
+      description: 'Executa testes de ping e latência em tempo real para verificar estabilidade das fontes registradas.'
     },
     {
       method: 'GET',
-      path: '/api/search?q=berserk&limit=10',
-      title: 'Pesquisa Multiprovedor',
-      description: 'Pesquisa federada entre MangaDex, WeebCentral, MangaPill e Comick.'
+      path: '/api/sources/mangadex/ping',
+      title: 'Sondagem Individual de Fonte (Ping)',
+      description: 'Testa a latência em milissegundos e estado operacional de uma extensão específica.'
+    },
+    {
+      method: 'GET',
+      path: '/api/manga/featured?sources=mangadex,comick',
+      title: 'Mangás em Destaque (Fontes Selecionadas)',
+      description: 'Retorna títulos populares agregados apenas entre as fontes ativas especificadas.'
+    },
+    {
+      method: 'GET',
+      path: '/api/search?q=berserk&sources=mangadex,comick&limit=10',
+      title: 'Pesquisa com Seleção de Extensões',
+      description: 'Pesquisa federada restrita apenas aos repositórios selecionados pelo usuário.'
     },
     {
       method: 'GET',

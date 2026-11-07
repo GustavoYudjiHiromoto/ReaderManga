@@ -634,6 +634,70 @@ export const HistoryService = {
     }
   },
 
+  setMangaCollections(mangaId: string, collections: string[]): boolean {
+    const favorites = this.getFavorites();
+    const fav = favorites.find(f => f.mangaId === mangaId);
+    if (!fav) return false;
+    fav.customCollections = Array.from(new Set(collections.filter(Boolean)));
+    try {
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      notifyListeners();
+      syncBridge?.onFavoriteUpdated?.(fav);
+      syncBridge?.onLibraryStateChanged?.();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  batchUpdateCategory(mangaIds: string[], category: LibraryCategory): void {
+    try {
+      const idSet = new Set(mangaIds);
+      const favorites = this.getFavorites();
+      const updated = favorites.map(fav =>
+        idSet.has(fav.mangaId) ? { ...fav, userCategory: category, updatedAt: Date.now() } : fav
+      );
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      notifyListeners();
+      updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to batch update categories', e);
+    }
+  },
+
+  batchAddCollections(mangaIds: string[], collections: string[]): void {
+    try {
+      const idSet = new Set(mangaIds);
+      const favorites = this.getFavorites();
+      const updated = favorites.map(fav => {
+        if (!idSet.has(fav.mangaId)) return fav;
+        const current = fav.customCollections || [];
+        const combined = Array.from(new Set([...current, ...collections]));
+        return { ...fav, customCollections: combined, updatedAt: Date.now() };
+      });
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      notifyListeners();
+      updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to batch add collections', e);
+    }
+  },
+
+  batchRemoveFavorites(mangaIds: string[]): void {
+    try {
+      const idSet = new Set(mangaIds);
+      const favorites = this.getFavorites().filter(f => !idSet.has(f.mangaId));
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      notifyListeners();
+      mangaIds.forEach(id => syncBridge?.onFavoriteRemoved?.(id));
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to batch remove favorites', e);
+    }
+  },
+
   /**
    * Export all user data (favorites + reading history) as a structured backup object
    */

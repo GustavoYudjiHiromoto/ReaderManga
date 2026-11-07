@@ -29,7 +29,9 @@ import {
   LayoutGrid,
   LayoutList,
   MoreHorizontal,
-  ChevronDown
+  ChevronDown,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { TrackersModal } from '../components/TrackersModal.js';
@@ -37,11 +39,11 @@ import { FavoriteManga, Manga, ReadingProgress, LibraryCategory, MangaUpdateInfo
 import { HistoryService } from '../services/history.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
-import { ReadingStatsSummary } from '../components/ReadingStatsSummary.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
 import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
+import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
 
 interface FavoritesPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -98,6 +100,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const [sortBy, setSortBy] = useState<'recent' | 'title-asc' | 'title-desc' | 'score-desc'>('recent');
   const [filterOnlyUnread, setFilterOnlyUnread] = useState(false);
   const [libraryViewMode, setLibraryViewMode] = useState<'grid' | 'list'>('grid');
+
+  // Batch Selection & Bulk Management states
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedMangaIds, setSelectedMangaIds] = useState<string[]>([]);
+  const [showBatchCategoryModal, setShowBatchCategoryModal] = useState(false);
+  const [showBatchCollectionModal, setShowBatchCollectionModal] = useState(false);
+  const [batchCollectionTarget, setBatchCollectionTarget] = useState('');
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
 
   // Score & Notes Modal state
   const [editingScoreManga, setEditingScoreManga] = useState<FavoriteManga | null>(null);
@@ -322,6 +332,64 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setUpdateCheckProgress(null);
       setTimeout(() => setNotification(null), 5000);
     }
+  };
+
+  // Batch Selection Handlers
+  const handleToggleBatchSelect = (mangaId: string) => {
+    setSelectedMangaIds(prev =>
+      prev.includes(mangaId) ? prev.filter(id => id !== mangaId) : [...prev, mangaId]
+    );
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allFilteredIds = filteredFavorites.map(f => f.mangaId);
+    setSelectedMangaIds(allFilteredIds);
+  };
+
+  const handleClearBatchSelect = () => {
+    setSelectedMangaIds([]);
+  };
+
+  const handleApplyBatchCategory = (cat: LibraryCategory) => {
+    if (selectedMangaIds.length === 0) return;
+    HistoryService.batchUpdateCategory(selectedMangaIds, cat);
+    setFavorites(HistoryService.getFavorites());
+    setShowBatchCategoryModal(false);
+    setNotification({
+      type: 'success',
+      message: `${selectedMangaIds.length} obra(s) movida(s) para "${CATEGORY_LABELS[cat].label}" com sucesso!`
+    });
+    setSelectedMangaIds([]);
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleApplyBatchCollection = (colName: string) => {
+    if (selectedMangaIds.length === 0 || !colName.trim()) return;
+    HistoryService.batchAddCollections(selectedMangaIds, [colName.trim()]);
+    setFavorites(HistoryService.getFavorites());
+    setCustomCollections(HistoryService.getCustomCollections());
+    setShowBatchCollectionModal(false);
+    setBatchCollectionTarget('');
+    setNotification({
+      type: 'success',
+      message: `${selectedMangaIds.length} obra(s) adicionada(s) à pasta/categoria "${colName}"!`
+    });
+    setSelectedMangaIds([]);
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleConfirmBatchRemove = () => {
+    if (selectedMangaIds.length === 0) return;
+    const count = selectedMangaIds.length;
+    HistoryService.batchRemoveFavorites(selectedMangaIds);
+    setFavorites(HistoryService.getFavorites());
+    setShowBatchDeleteConfirm(false);
+    setSelectedMangaIds([]);
+    setNotification({
+      type: 'success',
+      message: `${count} obra(s) removida(s) dos favoritos.`
+    });
+    setTimeout(() => setNotification(null), 3500);
   };
 
   // Convert FavoriteManga to lightweight Manga for MangaCard rendering without API calls
@@ -644,17 +712,6 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
           </div>
         )}
 
-        {/* Reading Stats Summary Dashboard */}
-        <ReadingStatsSummary
-          favoritesCount={favorites.length}
-          onExploreGenre={(genre) => {
-            setSearchQuery(genre);
-            // Smoothly scroll down to the library filter/cards section
-            const el = document.getElementById('library-collection-tabs');
-            if (el) el.scrollIntoView({ behavior: 'smooth' });
-          }}
-        />
-
         {/* Cloud Sync Status Bar */}
         <div className="mb-6 p-3.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-3">
@@ -927,8 +984,68 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     <LayoutList className="h-3.5 w-3.5" />
                   </button>
                 </div>
+
+                {/* Batch Select Mode Toggle Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !isBatchMode;
+                    setIsBatchMode(next);
+                    if (!next) setSelectedMangaIds([]);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+                    isBatchMode
+                      ? 'bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-950/40 font-semibold'
+                      : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border-zinc-800 hover:text-white'
+                  }`}
+                  title={isBatchMode ? 'Sair do modo de seleção em lote' : 'Ativar seleção em lote para alterar categorias, pastas ou remover obras'}
+                >
+                  <CheckSquare className="h-3.5 w-3.5" />
+                  <span>{isBatchMode ? 'Modo Lote Ativo' : 'Editar em Lote'}</span>
+                </button>
               </div>
             </div>
+
+            {/* Batch Controls Strip (Active when isBatchMode is true) */}
+            {isBatchMode && (
+              <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-lg bg-rose-950/20 border border-rose-500/30 text-xs animate-in fade-in duration-150">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-rose-300 flex items-center gap-1.5">
+                    <CheckSquare className="h-4 w-4 text-rose-400" />
+                    <span>Seleção em Lote:</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-200 border border-rose-500/30 font-mono text-[11px] font-bold">
+                    {selectedMangaIds.length} selecionada(s)
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleSelectAllFiltered}
+                    className="px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer"
+                  >
+                    Selecionar Todos ({filteredFavorites.length})
+                  </button>
+                  {selectedMangaIds.length > 0 && (
+                    <button
+                      onClick={handleClearBatchSelect}
+                      className="px-2.5 py-1 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer"
+                    >
+                      Desmarcar Todos
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setIsBatchMode(false);
+                      setSelectedMangaIds([]);
+                    }}
+                    className="px-2.5 py-1 rounded bg-rose-600/30 hover:bg-rose-600/50 border border-rose-500/40 text-rose-200 text-[11px] font-medium transition-colors cursor-pointer"
+                  >
+                    Concluir
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Source Filter Pills & Unread Toggle */}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-800/60 text-xs">
@@ -1017,6 +1134,22 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-zinc-800/80 bg-zinc-950/70 text-zinc-400 font-medium text-[11px]">
+                    {isBatchMode && (
+                      <th className="py-3 px-3 w-10 text-center">
+                        <button
+                          type="button"
+                          onClick={selectedMangaIds.length === filteredFavorites.length && filteredFavorites.length > 0 ? handleClearBatchSelect : handleSelectAllFiltered}
+                          className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                          title={selectedMangaIds.length === filteredFavorites.length ? 'Desmarcar todos' : 'Selecionar todos'}
+                        >
+                          {selectedMangaIds.length === filteredFavorites.length && filteredFavorites.length > 0 ? (
+                            <CheckSquare className="h-4 w-4 text-rose-500" />
+                          ) : (
+                            <Square className="h-4 w-4" />
+                          )}
+                        </button>
+                      </th>
+                    )}
                     <th className="py-3 px-4">Obra</th>
                     <th className="py-3 px-3">Status</th>
                     <th className="py-3 px-3">Progresso</th>
@@ -1030,13 +1163,27 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     const updateInfo = updatesMap[fav.mangaId];
                     const progress = HistoryService.getProgress(fav.mangaId);
                     const currentCat = fav.userCategory || 'reading';
+                    const isSelected = selectedMangaIds.includes(fav.mangaId);
 
                     return (
                       <tr
                         key={fav.mangaId}
-                        onClick={() => onSelectManga(fav.mangaId)}
-                        className="group hover:bg-zinc-850/50 transition-colors cursor-pointer"
+                        onClick={() => isBatchMode ? handleToggleBatchSelect(fav.mangaId) : onSelectManga(fav.mangaId)}
+                        className={`group transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-950/25 hover:bg-rose-950/35'
+                            : 'hover:bg-zinc-850/50'
+                        }`}
                       >
+                        {isBatchMode && (
+                          <td className="py-3 px-3 text-center" onClick={(e) => { e.stopPropagation(); handleToggleBatchSelect(fav.mangaId); }}>
+                            {isSelected ? (
+                              <CheckSquare className="h-4 w-4 text-rose-500 inline-block" />
+                            ) : (
+                              <Square className="h-4 w-4 text-zinc-600 group-hover:text-zinc-400 inline-block" />
+                            )}
+                          </td>
+                        )}
                         {/* Cover + Title + Authors */}
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-3">
@@ -1137,6 +1284,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                         <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1.5">
                             <button
+                              onClick={() => setManagingCollectionsManga(fav)}
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+                              title="Gerenciar Categorias (Mihon)"
+                            >
+                              <Folder className="h-3.5 w-3.5 text-rose-400" />
+                            </button>
+
+                            <button
                               onClick={() => handleQuickRead(fav.mangaId)}
                               className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
                               title="Continuar leitura"
@@ -1169,15 +1324,45 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               const progress = HistoryService.getProgress(fav.mangaId);
               const currentCat = fav.userCategory || 'reading';
               const catMeta = CATEGORY_LABELS[currentCat] || CATEGORY_LABELS.reading;
+              const isSelected = selectedMangaIds.includes(fav.mangaId);
 
               return (
-                <div key={fav.mangaId} className="group relative flex flex-col">
+                <div
+                  key={fav.mangaId}
+                  onClick={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : undefined}
+                  className={`group relative flex flex-col rounded-xl transition-all ${
+                    isBatchMode
+                      ? isSelected
+                        ? 'ring-2 ring-rose-500 shadow-lg shadow-rose-950/40 bg-rose-950/15 p-1 cursor-pointer'
+                        : 'hover:ring-1 hover:ring-zinc-650 cursor-pointer p-1'
+                      : ''
+                  }`}
+                >
                   <div className="relative">
+                    {/* Batch Checkbox Indicator */}
+                    {isBatchMode && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleBatchSelect(fav.mangaId);
+                        }}
+                        className="absolute top-2 left-2 z-30 p-1.5 rounded-lg bg-zinc-950/95 border border-zinc-700 shadow-xl backdrop-blur-md cursor-pointer transition-transform hover:scale-110"
+                        title={isSelected ? 'Desmarcar obra' : 'Selecionar obra'}
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="h-4 w-4 text-rose-500 fill-rose-500/20" />
+                        ) : (
+                          <Square className="h-4 w-4 text-zinc-400" />
+                        )}
+                      </button>
+                    )}
+
                     <MangaCard
                       manga={mapFavoriteToManga(fav)}
-                      onSelect={onSelectManga}
-                      onQuickRead={handleQuickRead}
-                      showTrackerStatus={true}
+                      onSelect={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : onSelectManga}
+                      onQuickRead={isBatchMode ? undefined : handleQuickRead}
+                      showTrackerStatus={!isBatchMode}
                       onOpenTrackers={(id, title) => {
                         setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
                         setShowTrackersModal(true);
@@ -1448,83 +1633,23 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
           </div>
         )}
 
-        {/* Modal for Managing Collections of a Specific Manga */}
+        {/* Mihon-style Category Selection Modal */}
         {managingCollectionsManga && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100">
-              <div className="flex items-center justify-between pb-3 border-b border-zinc-850">
-                <div className="flex items-center gap-2">
-                  <FolderPlus className="h-5 w-5 text-rose-500" />
-                  <h3 className="text-sm font-bold text-white line-clamp-1">
-                    Pastas: {managingCollectionsManga.title}
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setManagingCollectionsManga(null)}
-                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="py-4 space-y-3">
-                <p className="text-xs text-zinc-400">
-                  Selecione as pastas para organizar esta obra na sua biblioteca:
-                </p>
-
-                {customCollections.length === 0 ? (
-                  <p className="text-xs text-zinc-500 italic bg-zinc-950/60 p-3 rounded-lg border border-zinc-850">
-                    Você ainda não tem nenhuma pasta criada. Crie uma abaixo!
-                  </p>
-                ) : (
-                  <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-                    {customCollections.map((col) => {
-                      const isInCollection = Boolean(managingCollectionsManga.customCollections?.includes(col));
-                      return (
-                        <button
-                          key={col}
-                          type="button"
-                          onClick={() => handleToggleMangaCollection(managingCollectionsManga.mangaId, col)}
-                          className={`w-full flex items-center justify-between p-2 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
-                            isInCollection
-                              ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
-                              : 'bg-zinc-950/80 hover:bg-zinc-800 border-zinc-800 text-zinc-400'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <Folder className={`h-3.5 w-3.5 ${isInCollection ? 'text-rose-400' : 'text-zinc-500'}`} />
-                            <span>{col}</span>
-                          </span>
-                          {isInCollection && <Check className="h-3.5 w-3.5 text-rose-400" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                <div className="pt-2 border-t border-zinc-850">
-                  <button
-                    type="button"
-                    onClick={() => setShowNewCollectionModal(true)}
-                    className="w-full py-1.5 px-2.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-dashed border-zinc-700 text-xs font-medium text-zinc-300 hover:text-white flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <Plus className="h-3.5 w-3.5 text-rose-400" />
-                    <span>Criar outra pasta</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-3 border-t border-zinc-850">
-                <button
-                  type="button"
-                  onClick={() => setManagingCollectionsManga(null)}
-                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 cursor-pointer"
-                >
-                  Concluir
-                </button>
-              </div>
-            </div>
-          </div>
+          <CategorySelectionModal
+            isOpen={Boolean(managingCollectionsManga)}
+            onClose={() => setManagingCollectionsManga(null)}
+            manga={{
+              id: managingCollectionsManga.mangaId,
+              title: managingCollectionsManga.title,
+              coverUrl: managingCollectionsManga.coverUrl,
+              sourceName: managingCollectionsManga.sourceName,
+              sourceId: managingCollectionsManga.sourceId,
+              rating: managingCollectionsManga.rating,
+              authors: managingCollectionsManga.authors,
+              genres: managingCollectionsManga.genres,
+              status: managingCollectionsManga.status,
+            }}
+          />
         )}
 
         {/* Modal for Page Bookmarks & Snapshots */}
@@ -1550,6 +1675,243 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
           activeMangaId={selectedTrackerManga?.id}
           activeMangaTitle={selectedTrackerManga?.title}
         />
+
+        {/* Floating Bulk Action Bar */}
+        {isBatchMode && selectedMangaIds.length > 0 && (
+          <aside
+            aria-label="Ações em lote para obras selecionadas"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[95%] max-w-2xl bg-zinc-950/95 border border-zinc-700/80 p-3 sm:p-4 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-3 animate-in slide-in-from-bottom-5 duration-200"
+          >
+            <div className="flex items-center gap-2">
+              <span className="flex h-2.5 w-2.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="text-xs text-zinc-200 font-medium">
+                <strong className="text-white font-mono text-sm">{selectedMangaIds.length}</strong> {selectedMangaIds.length === 1 ? 'obra selecionada' : 'obras selecionadas'}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Batch Category Changer */}
+              <button
+                type="button"
+                onClick={() => setShowBatchCategoryModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                title="Mover obras selecionadas para outra categoria de status"
+              >
+                <Tag className="h-3.5 w-3.5 text-rose-400" />
+                <span>Alterar Status</span>
+              </button>
+
+              {/* Batch Custom Collection / Folder Changer */}
+              <button
+                type="button"
+                onClick={() => setShowBatchCollectionModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                title="Adicionar obras selecionadas a uma pasta/coleção personalizada"
+              >
+                <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
+                <span>Adicionar a Pasta</span>
+              </button>
+
+              {/* Batch Delete from Favorites */}
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteConfirm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-xs font-semibold text-rose-300 hover:text-white transition-colors cursor-pointer"
+                title="Remover obras selecionadas da biblioteca de favoritos"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                <span>Remover</span>
+              </button>
+
+              {/* Clear selection */}
+              <button
+                type="button"
+                onClick={handleClearBatchSelect}
+                className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+                title="Limpar seleção"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </aside>
+        )}
+
+        {/* Modal: Batch Category / Status Change */}
+        {showBatchCategoryModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Tag className="h-4 w-4 text-rose-400" />
+                  <h3 className="text-sm font-bold text-white">
+                    Alterar Status em Lote
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setShowBatchCategoryModal(false)}
+                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <p className="text-xs text-zinc-400 mt-3 mb-4">
+                Selecione o novo status de leitura para as <strong>{selectedMangaIds.length}</strong> obras selecionadas:
+              </p>
+
+              <div className="space-y-2">
+                {(Object.keys(CATEGORY_LABELS) as LibraryCategory[]).map((catKey) => {
+                  const meta = CATEGORY_LABELS[catKey];
+                  return (
+                    <button
+                      key={catKey}
+                      type="button"
+                      onClick={() => handleApplyBatchCategory(catKey)}
+                      className="w-full flex items-center justify-between p-3 rounded-xl bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 transition-all text-xs cursor-pointer text-left group"
+                    >
+                      <span className={`font-semibold ${meta.color} group-hover:brightness-110`}>
+                        {meta.label}
+                      </span>
+                      <ArrowRight className="h-3.5 w-3.5 text-zinc-500 group-hover:text-white transition-colors" />
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowBatchCategoryModal(false)}
+                className="mt-5 w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Batch Custom Collection / Folder Add */}
+        {showBatchCollectionModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <FolderPlus className="h-4 w-4 text-sky-400" />
+                  <h3 className="text-sm font-bold text-white">
+                    Adicionar a Pasta em Lote
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setShowBatchCollectionModal(false)}
+                  className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <p className="text-xs text-zinc-400 mt-3 mb-3">
+                Adicione as <strong>{selectedMangaIds.length}</strong> obras selecionadas a uma pasta ou crie uma nova:
+              </p>
+
+              {/* Create new collection input */}
+              <div className="flex items-center gap-2 mb-4">
+                <input
+                  type="text"
+                  placeholder="Nova pasta (ex: Romance, Fantasia)..."
+                  value={batchCollectionTarget}
+                  onChange={(e) => setBatchCollectionTarget(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleApplyBatchCollection(batchCollectionTarget);
+                    }
+                  }}
+                  className="flex-1 px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500"
+                />
+                <button
+                  type="button"
+                  disabled={!batchCollectionTarget.trim()}
+                  onClick={() => handleApplyBatchCollection(batchCollectionTarget)}
+                  className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white rounded-lg text-xs font-semibold cursor-pointer shrink-0"
+                >
+                  Adicionar
+                </button>
+              </div>
+
+              {/* Existing Collections List */}
+              {customCollections.length > 0 && (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  <span className="text-[11px] font-semibold text-zinc-400 block mb-1">
+                    Pastas Existentes:
+                  </span>
+                  {customCollections.map((col) => (
+                    <button
+                      key={col}
+                      type="button"
+                      onClick={() => handleApplyBatchCollection(col)}
+                      className="w-full flex items-center justify-between p-2.5 rounded-lg bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 hover:border-sky-500/40 text-xs text-zinc-200 cursor-pointer transition-colors text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Folder className="h-3.5 w-3.5 text-sky-400" />
+                        <span>{col}</span>
+                      </div>
+                      <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowBatchCollectionModal(false)}
+                className="mt-5 w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Confirm Batch Delete */}
+        {showBatchDeleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-rose-900/40 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-3 text-rose-400 mb-3">
+                <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                  <Trash2 className="h-5 w-5 text-rose-500" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Remover dos Favoritos?
+                  </h3>
+                  <span className="text-[11px] text-zinc-400">
+                    Ação em lote na biblioteca
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-xs text-zinc-300 leading-relaxed my-3">
+                Tem certeza de que deseja remover <strong>{selectedMangaIds.length}</strong> obra(s) dos seus favoritos? Esta ação desfavoritará as obras selecionadas.
+              </p>
+
+              <div className="flex items-center justify-end gap-2 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setShowBatchDeleteConfirm(false)}
+                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmBatchRemove}
+                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-colors cursor-pointer"
+                >
+                  Sim, Remover {selectedMangaIds.length} Obras
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

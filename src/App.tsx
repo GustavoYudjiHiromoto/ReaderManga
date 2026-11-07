@@ -17,6 +17,8 @@ import { UpdateTrackerService } from './services/updateTracker.js';
 import { TrackerService } from './services/trackerService.js';
 import { TrackerBackgroundService } from './services/trackerBackgroundService.js';
 import { TrackersModal } from './components/TrackersModal.js';
+import { ExtensionsModal } from './components/ExtensionsModal.js';
+import { ExtensionService } from './services/extensionService.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
 
 type TabType = 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
@@ -90,6 +92,8 @@ export default function App() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
   const [isTrackersOpen, setIsTrackersOpen] = useState(false);
+  const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
+  const [enabledSourcesCount, setEnabledSourcesCount] = useState<number>(() => ExtensionService.getEnabledSourceIds().length);
   const [trackersModalManga, setTrackersModalManga] = useState<{ id?: string; title?: string } | null>(null);
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
@@ -145,6 +149,11 @@ export default function App() {
       setTrackersCount(ani + mal);
     });
 
+    // Subscribe to extension changes
+    const unsubscribeExtensions = ExtensionService.subscribe(() => {
+      setEnabledSourcesCount(ExtensionService.getEnabledSourceIds().length);
+    });
+
     // Set initial state in browser history if not present
     if (!window.history.state) {
       window.history.replaceState(
@@ -195,17 +204,24 @@ export default function App() {
       setIsTrackersOpen(true);
     };
 
+    const handleOpenExtensionsModal = () => {
+      setIsExtensionsOpen(true);
+    };
+
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('open-trackers-modal', handleOpenTrackersModal);
+    window.addEventListener('open-extensions-modal', handleOpenExtensionsModal);
     return () => {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('open-trackers-modal', handleOpenTrackersModal);
+      window.removeEventListener('open-extensions-modal', handleOpenExtensionsModal);
       cleanupRadar();
       cleanupTrackerSync();
       unsubscribeHistory();
       unsubscribeUpdates();
       unsubscribeOffline();
       unsubscribeTrackers();
+      unsubscribeExtensions();
     };
   }, []);
 
@@ -348,11 +364,14 @@ export default function App() {
           onOpenHistory={() => setIsHistoryOpen(true)}
           onOpenDownloads={() => setIsDownloadsOpen(true)}
           onOpenTrackers={() => setIsTrackersOpen(true)}
+          onOpenExtensions={() => setIsExtensionsOpen(true)}
           historyCount={history.length}
           favoritesCount={favorites.length}
           offlineCount={offlineCount}
           unreadUpdatesCount={unreadUpdatesCount}
           trackersCount={trackersCount}
+          enabledSourcesCount={enabledSourcesCount}
+          totalSourcesCount={6}
         />
       )}
 
@@ -455,6 +474,7 @@ export default function App() {
             onSelectManga={(mangaId) => handleSelectManga(mangaId, 'profile')}
             onReadChapter={handleReadChapter}
             onOpenDownloads={() => setIsDownloadsOpen(true)}
+            onOpenExtensions={() => setIsExtensionsOpen(true)}
           />
         )}
 
@@ -493,6 +513,12 @@ export default function App() {
         }}
         activeMangaId={trackersModalManga?.id || selectedMangaId || undefined}
         activeMangaTitle={trackersModalManga?.title}
+      />
+
+      {/* Extensions & Repositories Manager Modal */}
+      <ExtensionsModal
+        isOpen={isExtensionsOpen}
+        onClose={() => setIsExtensionsOpen(false)}
       />
 
       {/* Floating Offline Notification */}

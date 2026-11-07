@@ -2,6 +2,12 @@ import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaS
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
 
+function formatProxyUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  if (rawUrl.startsWith('/api/proxy/image')) return rawUrl;
+  return `/api/proxy/image?url=${encodeURIComponent(rawUrl)}`;
+}
+
 export class MangaDexProvider implements IMangaSource {
   private readonly baseUrl = 'https://api.mangadex.org';
   private readonly sourceId = 'mangadex';
@@ -20,8 +26,15 @@ export class MangaDexProvider implements IMangaSource {
         search: true,
         filters: true,
         coverImages: true,
-        multipleLanguages: true
-      }
+        multipleLanguages: true,
+        chaptersDeduplication: true,
+        webtoons: true,
+        nsfwFilter: true
+      },
+      iconColor: '#f97316',
+      badge: 'API Oficial Global',
+      languages: ['PT-BR', 'EN', 'JA', 'ES', 'FR'],
+      catalogEstimate: '+65.000 títulos'
     };
   }
 
@@ -95,15 +108,16 @@ export class MangaDexProvider implements IMangaSource {
     }
 
     const coverUrl = coverFileName
-      ? `https://uploads.mangadex.org/covers/${item.id}/${coverFileName}.512.jpg`
+      ? formatProxyUrl(`https://uploads.mangadex.org/covers/${item.id}/${coverFileName}.512.jpg`)
       : 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80';
 
-    // Genres / tags
+    // Genres / tags (include genre, theme, and format groups for rich trope filtering like Isekai, Villainess, Reincarnation, etc.)
     const genres: string[] = [];
     if (Array.isArray(attrs.tags)) {
       for (const tag of attrs.tags) {
         const tagName = tag.attributes?.name?.en;
-        if (tagName && tag.attributes?.group === 'genre') {
+        const group = tag.attributes?.group;
+        if (tagName && (group === 'genre' || group === 'theme' || group === 'format')) {
           genres.push(tagName);
         }
       }
@@ -153,7 +167,7 @@ export class MangaDexProvider implements IMangaSource {
       publicationInfo: {
         releaseYear: attrs.year || undefined,
         country: attrs.originalLanguage?.toUpperCase(),
-        demographic: attrs.publicationDemographic
+        demographic: attrs.publicationDemographic ? String(attrs.publicationDemographic).toLowerCase() : undefined
       },
       sources: [
         {
@@ -173,6 +187,52 @@ export class MangaDexProvider implements IMangaSource {
   }
 
   private static readonly GENRE_MAP: Record<string, string> = {
+    // Tropes & Subgêneros (Temas Oficiais MangaDex)
+    'time travel': '292e862b-2d17-4062-90a2-0356caa4ae27',
+    'regression': '292e862b-2d17-4062-90a2-0356caa4ae27',
+    'regressão / tempo': '292e862b-2d17-4062-90a2-0356caa4ae27',
+    'regressao / tempo': '292e862b-2d17-4062-90a2-0356caa4ae27',
+    'viagem no tempo': '292e862b-2d17-4062-90a2-0356caa4ae27',
+    'isekai': 'ace04997-f6bd-436e-b261-779182193d3d',
+    'reincarnation': '0bc90acb-ccc1-44ca-a34a-b9f3a73259d0',
+    'reencarnação': '0bc90acb-ccc1-44ca-a34a-b9f3a73259d0',
+    'reencarnacao': '0bc90acb-ccc1-44ca-a34a-b9f3a73259d0',
+    'villainess': 'd14322ac-4d6f-4e9b-afd9-629d5f4d8a41',
+    'vilã (villainess)': 'd14322ac-4d6f-4e9b-afd9-629d5f4d8a41',
+    'vilã': 'd14322ac-4d6f-4e9b-afd9-629d5f4d8a41',
+    'vila': 'd14322ac-4d6f-4e9b-afd9-629d5f4d8a41',
+    'survival': '5fff9cde-849c-4d78-aab0-0d52b2ee1d25',
+    'sobrevivência': '5fff9cde-849c-4d78-aab0-0d52b2ee1d25',
+    'sobrevivencia': '5fff9cde-849c-4d78-aab0-0d52b2ee1d25',
+    'psychological': '3b60b75c-a2d7-4860-ab56-05f391bb889c',
+    'psicológico': '3b60b75c-a2d7-4860-ab56-05f391bb889c',
+    'psicologico': '3b60b75c-a2d7-4860-ab56-05f391bb889c',
+    'reverse harem': '65761a2a-415e-47f3-bef2-a9dababba7a6',
+    'harem invertido': '65761a2a-415e-47f3-bef2-a9dababba7a6',
+    'harem': 'aafb99c1-7f60-43fa-b75f-fc9502ce29c7',
+    'martial arts': '799c202e-7daa-44eb-9cf7-8a3c0441531e',
+    'artes marciais': '799c202e-7daa-44eb-9cf7-8a3c0441531e',
+    'wuxia': 'acc803a4-c95a-4c22-86fc-eb6b582d82a2',
+    'cultivação / murim': 'acc803a4-c95a-4c22-86fc-eb6b582d82a2',
+    'cultivacao / murim': 'acc803a4-c95a-4c22-86fc-eb6b582d82a2',
+    'murim': 'acc803a4-c95a-4c22-86fc-eb6b582d82a2',
+    'magic': 'a1f53773-c69a-4ce5-8cab-fffcd90b1565',
+    'magia': 'a1f53773-c69a-4ce5-8cab-fffcd90b1565',
+    'monsters': '36fd93ea-e8b8-445e-b836-358f02b3d33d',
+    'monstros': '36fd93ea-e8b8-445e-b836-358f02b3d33d',
+    'domador de monstros': '36fd93ea-e8b8-445e-b836-358f02b3d33d',
+    'monster girls': 'dd1f77c5-dea9-4e2b-97ae-224af09caf99',
+    'school life': 'caaa44eb-cd40-4177-b930-79d3ef2afe87',
+    'romance colegial': 'caaa44eb-cd40-4177-b930-79d3ef2afe87',
+    'video games': '9438db5a-7e2a-4ac0-b39e-e0d95a34b8a8',
+    'virtual reality': '8c86611e-fab7-4986-9dec-d1a2f44acdd5',
+    'post-apocalyptic': '9467335a-1b83-4497-9231-765337a00b96',
+    'vampires': 'd7d1730f-6eb0-4ba6-9437-602cac38664c',
+    'demons': '39730448-9a5f-48a2-85b0-a70db87b1233',
+    'zombies': '631ef465-9aba-4afb-b0fc-ea10efe274a8',
+    'delinquents': 'da2d50ca-3018-4cc0-ac7a-6b7d472a29ea',
+
+    // Gêneros Tradicionais
     'ação': '391b0423-d847-456f-aff0-8b0cfc03066b',
     'acao': '391b0423-d847-456f-aff0-8b0cfc03066b',
     'action': '391b0423-d847-456f-aff0-8b0cfc03066b',
@@ -190,11 +250,30 @@ export class MangaDexProvider implements IMangaSource {
     'historico': '33771934-028e-4cb3-8744-691e866a923e',
     'historical': '33771934-028e-4cb3-8744-691e866a923e',
     'horror': 'cdad7e68-1419-41dd-bdce-27753074a640',
+    'terror': 'cdad7e68-1419-41dd-bdce-27753074a640',
     'sci-fi': '256c8bd9-4904-4360-bf4f-508a76d67183',
+    'ficção científica': '256c8bd9-4904-4360-bf4f-508a76d67183',
     'romance': '423e2eae-a7a2-4a8b-ac03-a8351462d71d',
     'mistério': 'ee968100-4191-4968-93d3-f82d72be7e46',
     'misterio': 'ee968100-4191-4968-93d3-f82d72be7e46',
-    'mystery': 'ee968100-4191-4968-93d3-f82d72be7e46'
+    'mystery': 'ee968100-4191-4968-93d3-f82d72be7e46',
+    'slice of life': 'e5301a23-ebd9-49dd-a0cb-2add944c7fe9',
+    'cotidiano': 'e5301a23-ebd9-49dd-a0cb-2add944c7fe9',
+    'sports': '69964a64-2f90-4d33-beeb-f3ed2875eb4c',
+    'esportes': '69964a64-2f90-4d33-beeb-f3ed2875eb4c'
+  };
+
+  private static readonly KEYWORD_FALLBACKS: Record<string, string> = {
+    'overpower (op)': 'overpowered',
+    'overpower': 'overpowered',
+    'yandere': 'yandere',
+    'tomboy': 'tomboy',
+    'construção de vila': 'village',
+    'construção de vila / reino': 'village',
+    'fazenda / agricultura': 'farming',
+    'dungeon / sistema': 'dungeon',
+    'domador de monstros': 'tamer',
+    'vingança': 'revenge'
   };
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
@@ -205,17 +284,59 @@ export class MangaDexProvider implements IMangaSource {
       const ratingsQuery = options?.includeAdult
         ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
         : 'contentRating[]=safe&contentRating[]=suggestive';
-      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&${orderParam}`;
+      const availableParam = options?.onlyAvailable !== false ? '&hasAvailableChapters=true' : '';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&${orderParam}${availableParam}`;
       
-      if (query.trim()) {
-        url += `&title=${encodeURIComponent(query.trim())}`;
+      let effectiveQuery = query.trim();
+      if (!effectiveQuery && options?.genres) {
+        for (const g of options.genres) {
+          const kw = MangaDexProvider.KEYWORD_FALLBACKS[g.toLowerCase()];
+          if (kw) {
+            effectiveQuery = kw;
+            break;
+          }
+        }
       }
 
+      if (effectiveQuery) {
+        url += `&title=${encodeURIComponent(effectiveQuery)}`;
+      }
+
+      const tagsToInclude = new Set<string>();
       if (options?.genre && options.genre !== 'all') {
         const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
-        if (tagId) {
-          url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+        if (tagId) tagsToInclude.add(tagId);
+      }
+      if (Array.isArray(options?.genres)) {
+        for (const g of options.genres) {
+          const tagId = MangaDexProvider.GENRE_MAP[g.toLowerCase()];
+          if (tagId) tagsToInclude.add(tagId);
         }
+      }
+      for (const tagId of tagsToInclude) {
+        url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+      }
+
+      if (options?.demographic && options.demographic !== 'all') {
+        const demo = options.demographic.toLowerCase();
+        if (['shounen', 'shoujo', 'seinen', 'josei'].includes(demo)) {
+          url += `&publicationDemographic[]=${encodeURIComponent(demo)}`;
+        }
+      }
+
+      if (options?.status && options.status !== 'all') {
+        const st = options.status.toLowerCase();
+        if (['ongoing', 'completed', 'hiatus', 'cancelled'].includes(st)) {
+          url += `&status[]=${encodeURIComponent(st)}`;
+        }
+      }
+
+      if (options?.type && options.type !== 'all') {
+        const t = options.type.toLowerCase();
+        if (t === 'manga') url += '&originalLanguage[]=ja';
+        else if (t === 'manhwa') url += '&originalLanguage[]=ko';
+        else if (t === 'manhua') url += '&originalLanguage[]=zh&originalLanguage[]=zh-hk';
+        else if (t === 'comic') url += '&originalLanguage[]=en';
       }
 
       const res = await this.fetchWithTimeout(url);
@@ -250,7 +371,8 @@ export class MangaDexProvider implements IMangaSource {
       const ratingsQuery = options?.includeAdult
         ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
         : 'contentRating[]=safe&contentRating[]=suggestive';
-      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&order[followedCount]=desc`;
+      const availableParam = options?.onlyAvailable !== false ? '&hasAvailableChapters=true' : '';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&order[followedCount]=desc${availableParam}`;
 
       if (options?.genre && options.genre !== 'all') {
         const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
@@ -307,11 +429,20 @@ export class MangaDexProvider implements IMangaSource {
       let res = await this.fetchWithTimeout(buildUrl(langQuery, 0));
       let list = Array.isArray(res.data) ? res.data : [];
 
-      // If more chapters exist (> 100), fetch next 100 to expand chapters available
+      // If more chapters exist (> 100), fetch up to 500 chapters across offsets in parallel
       if (res.total > 100 && list.length === 100) {
-        const resOffset100 = await this.fetchWithTimeout(buildUrl(langQuery, 100)).catch(() => ({ data: [] }));
-        if (Array.isArray(resOffset100.data) && resOffset100.data.length > 0) {
-          list = [...list, ...resOffset100.data];
+        const totalToFetch = Math.min(res.total, 500);
+        const offsets: number[] = [];
+        for (let o = 100; o < totalToFetch; o += 100) {
+          offsets.push(o);
+        }
+        const extraPages = await Promise.all(
+          offsets.map(o => this.fetchWithTimeout(buildUrl(langQuery, o)).catch(() => ({ data: [] })))
+        );
+        for (const p of extraPages) {
+          if (Array.isArray(p.data)) {
+            list = [...list, ...p.data];
+          }
         }
       }
 
@@ -322,9 +453,18 @@ export class MangaDexProvider implements IMangaSource {
         if (Array.isArray(fallbackRes.data) && fallbackRes.data.length > 0) {
           list = fallbackRes.data;
           if (fallbackRes.total > 100 && list.length === 100) {
-            const fallbackRes2 = await this.fetchWithTimeout(buildUrl('', 100)).catch(() => ({ data: [] }));
-            if (Array.isArray(fallbackRes2.data)) {
-              list = [...list, ...fallbackRes2.data];
+            const totalToFetch = Math.min(fallbackRes.total, 500);
+            const offsets: number[] = [];
+            for (let o = 100; o < totalToFetch; o += 100) {
+              offsets.push(o);
+            }
+            const extraPages = await Promise.all(
+              offsets.map(o => this.fetchWithTimeout(buildUrl('', o)).catch(() => ({ data: [] })))
+            );
+            for (const p of extraPages) {
+              if (Array.isArray(p.data)) {
+                list = [...list, ...p.data];
+              }
             }
           }
         }
@@ -378,13 +518,12 @@ export class MangaDexProvider implements IMangaSource {
       const subDir = chapter.dataSaver && chapter.dataSaver.length > 0 ? 'data-saver' : 'data';
 
       // Prefer permanent official MangaDex CDN (uploads.mangadex.org)
-      // to ensure reliable, unthrottled image URLs that do not expire after 15 minutes
-      // or return 404 from ephemeral volunteer nodes.
+      // routed through /api/proxy/image to prevent 302 edge challenge blocks and CORS issues
       const cdnBase = 'https://uploads.mangadex.org';
 
       return files.map((fileName, index) => ({
         pageNumber: index + 1,
-        imageUrl: `${cdnBase}/${subDir}/${chapter.hash}/${fileName}`
+        imageUrl: formatProxyUrl(`${cdnBase}/${subDir}/${chapter.hash}/${fileName}`)
       }));
     } catch (err) {
       if (err instanceof HttpError) throw err;

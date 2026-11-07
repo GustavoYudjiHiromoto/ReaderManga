@@ -31,7 +31,8 @@ import {
   Sparkles,
   ListFilter,
   Search,
-  Clock
+  Clock,
+  Volume2
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -213,6 +214,24 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       return 'rtl';
     }
   });
+  const [volumeNav, setVolumeNav] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mr_reader_volume_nav') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleVolumeNav = () => {
+    setVolumeNav(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mr_reader_volume_nav', String(next));
+      } catch {}
+      showToast(next ? 'Teclas de Volume ativadas (avançar/voltar páginas)' : 'Teclas de Volume desativadas');
+      return next;
+    });
+  };
   const [showSettings, setShowSettings] = useState(false);
   const [showUi, setShowUi] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -366,25 +385,30 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [webtoonGap, setWebtoonGap] = useState<number>(0); // 0, 8, 16, 24, 32
   const [brightness, setBrightness] = useState<number>(100); // 60 to 100
   const [nightLight, setNightLight] = useState<number>(0); // 0 to 40
-  const [smartInvert, setSmartInvert] = useState<boolean>(() => {
+  const [nightLightActive, setNightLightActive] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('mr_reader_smart_invert') === 'true';
+      return localStorage.getItem('mr_reader_night_light') === 'true';
     } catch {
       return false;
     }
   });
   const [endRecommendations, setEndRecommendations] = useState<Manga[]>([]);
 
-  const toggleSmartInvert = () => {
-    setSmartInvert(prev => {
+  const toggleNightLight = () => {
+    setNightLightActive(prev => {
       const next = !prev;
       try {
-        localStorage.setItem('mr_reader_smart_invert', String(next));
+        localStorage.setItem('mr_reader_night_light', String(next));
       } catch {}
-      showToast(next ? 'Modo Noturno P&B ativado (Inversão Inteligente)' : 'Modo Noturno P&B desativado');
+      showToast(next ? 'Luz Noturna ativada (reduz luz azul)' : 'Luz Noturna desativada');
       return next;
     });
   };
+
+  // Reset zoom scale whenever page or chapter changes
+  useEffect(() => {
+    setZoomScale(1);
+  }, [currentPageIndex, currentChapter?.id]);
 
   // Container refs for scroll spy
   const pagesContainerRef = useRef<HTMLDivElement>(null);
@@ -740,7 +764,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         }
       }
       if (e.key === 'n' || e.key === 'N') {
-        toggleSmartInvert();
+        toggleNightLight();
         return;
       }
       if (e.key === '?' || (e.shiftKey && e.key === '/')) {
@@ -760,6 +784,28 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         setShowShortcutsModal(false);
         setShowBookmarksModal(false);
         setShowBookmarkNoteDialog(false);
+        return;
+      }
+
+      // Hardware volume keys for mobile & tablet navigation
+      if (volumeNav && (e.key === 'AudioVolumeDown' || e.key === 'VolumeDown')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (readerMode === 'webtoon') {
+          window.scrollBy({ top: window.innerHeight * 0.75, behavior: 'smooth' });
+        } else {
+          goToNextPage();
+        }
+        return;
+      }
+      if (volumeNav && (e.key === 'AudioVolumeUp' || e.key === 'VolumeUp')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (readerMode === 'webtoon') {
+          window.scrollBy({ top: -window.innerHeight * 0.75, behavior: 'smooth' });
+        } else {
+          goToPrevPage();
+        }
         return;
       }
 
@@ -790,7 +836,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPageIndex, pages.length, readerMode, readingDirection]);
+  }, [currentPageIndex, pages.length, readerMode, readingDirection, volumeNav]);
 
   // Load next chapter section for continuous vertical scroll
   const loadNextChapterSection = async (nextChap: Chapter) => {
@@ -1168,15 +1214,12 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 }`}
                 title={
                   continuousScroll
-                    ? 'Rolagem Infinita ATIVADA: carrega o próximo capítulo automaticamente ao rolar (Atalho: I)'
-                    : 'Rolagem Infinita DESATIVADA: clique para ativar o carregamento contínuo (Atalho: I)'
+                    ? 'Rolagem Infinita ATIVADA (Atalho: I)'
+                    : 'Rolagem Infinita DESATIVADA (Atalho: I)'
                 }
               >
                 <InfinityIcon className={`h-3.5 w-3.5 ${continuousScroll ? 'text-rose-400' : 'text-zinc-500'}`} />
-                <span className="hidden sm:inline">Rolagem Infinita</span>
-                <span className={`text-[9px] font-mono font-bold px-1 py-0.5 rounded ${continuousScroll ? 'bg-rose-500/30 text-rose-200' : 'bg-zinc-800 text-zinc-500'}`}>
-                  {continuousScroll ? 'ON' : 'OFF'}
-                </span>
+                <span className="hidden md:inline">Infinita</span>
               </button>
             )}
 
@@ -1189,30 +1232,30 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                     ? 'bg-rose-600 text-white shadow-md shadow-rose-950/60'
                     : 'bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white'
                 }`}
-                title="Alternar rolagem automática mãos-livres (Atalho: tecla A)"
+                title="Rolagem automática mãos-livres (Atalho: A)"
               >
                 {isAutoScrolling ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 text-rose-400" />}
-                <span className="hidden sm:inline">{isAutoScrolling ? 'Pausar' : 'Autoscroll'}</span>
+                <span className="hidden md:inline">{isAutoScrolling ? 'Pausar' : 'Auto'}</span>
                 <span className="font-mono text-[10px] text-rose-300">{autoScrollSpeed}x</span>
               </button>
             )}
 
-            {/* Quick Smart Invert (Night Mode for B&W Manga) */}
+            {/* Quick Luz Noturna (Blue light reduction & eye comfort) */}
             <button
-              onClick={toggleSmartInvert}
+              onClick={toggleNightLight}
               className={`p-1.5 sm:px-2.5 sm:py-1 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold ${
-                smartInvert
+                nightLightActive
                   ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500/30'
                   : 'bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200'
               }`}
               title={
-                smartInvert
-                  ? 'Modo Noturno P&B ATIVADO: páginas com fundo branco invertidas suavemente (Atalho: N)'
-                  : 'Modo Noturno P&B DESATIVADO: clique para inverter fundos claros no escuro (Atalho: N)'
+                nightLightActive
+                  ? 'Luz Noturna ATIVADA: tons quentes, redução de luz azul (Atalho: N)'
+                  : 'Luz Noturna DESATIVADA: clique para reduzir a luz azul à noite (Atalho: N)'
               }
             >
-              <Moon className={`h-3.5 w-3.5 ${smartInvert ? 'text-amber-400 fill-amber-400' : 'text-zinc-400'}`} />
-              <span className="hidden lg:inline">P&B Noturno</span>
+              <Moon className={`h-3.5 w-3.5 ${nightLightActive ? 'text-amber-400 fill-amber-400' : 'text-zinc-400'}`} />
+              <span className="hidden md:inline">Luz Noturna</span>
             </button>
 
             {/* Settings Dropdown Toggle */}
@@ -1384,31 +1427,60 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       />
                     </div>
 
-                    {/* Smart Invert (Night Mode for B&W Manga) */}
+                    {/* Luz Noturna (Eye comfort & blue light filter) */}
                     <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2 pr-2">
                           <Moon className="h-4 w-4 text-amber-400 shrink-0" />
                           <div>
-                            <span className="text-zinc-200 font-medium block">Modo Noturno P&B</span>
+                            <span className="text-zinc-200 font-medium block">Luz Noturna</span>
                             <span className="text-zinc-500 text-[10px] block leading-tight">
-                              Inverte fundos brancos sem alterar a arte (Atalho: N)
+                              Reduz luz azul e suaviza tons brancos (N)
                             </span>
                           </div>
                         </div>
                         <button
                           type="button"
-                          onClick={toggleSmartInvert}
+                          onClick={toggleNightLight}
                           className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                            smartInvert ? 'bg-amber-500' : 'bg-zinc-700'
+                            nightLightActive ? 'bg-amber-500' : 'bg-zinc-700'
                           }`}
                           role="switch"
-                          aria-checked={smartInvert}
-                          title="Alternar inversão inteligente para leitura noturna"
+                          aria-checked={nightLightActive}
+                          title="Alternar luz noturna"
                         >
                           <span
                             className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-                              smartInvert ? 'translate-x-4' : 'translate-x-0'
+                              nightLightActive ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Volume Keys Navigation Toggle */}
+                    <div>
+                      <div className="flex items-center justify-between py-1">
+                        <div className="flex items-center gap-2">
+                          <Volume2 className="h-4 w-4 text-sky-400" />
+                          <div>
+                            <span className="text-zinc-200 text-xs font-medium block">Teclas de Volume</span>
+                            <span className="text-[10px] text-zinc-500 block">Avançar/voltar páginas no celular</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={toggleVolumeNav}
+                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            volumeNav ? 'bg-sky-500' : 'bg-zinc-700'
+                          }`}
+                          role="switch"
+                          aria-checked={volumeNav}
+                          title="Usar botões de volume do aparelho para navegar"
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                              volumeNav ? 'translate-x-4' : 'translate-x-0'
                             }`}
                           />
                         </button>
@@ -1418,27 +1490,31 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
                   {readerMode !== 'webtoon' && (
                     <div>
-                      <span className="text-zinc-400 font-medium block mb-2">Direção de Leitura</span>
-                      <div className="grid grid-cols-2 gap-1.5">
+                      <span className="text-zinc-400 font-medium block mb-1.5 text-[11px]">Direção de Leitura</span>
+                      <div className="grid grid-cols-2 gap-2">
                         <button
                           onClick={() => setReadingDirection('rtl')}
-                          className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] ${
+                          className={`py-1.5 flex items-center justify-center gap-1.5 rounded-lg border transition-colors cursor-pointer text-xs font-semibold ${
                             readingDirection === 'rtl'
                               ? 'border-rose-500 bg-rose-500/20 text-rose-300'
-                              : 'border-zinc-800 bg-zinc-950 text-zinc-400'
+                              : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white'
                           }`}
+                          title="Direção Mangá (Direita para Esquerda)"
                         >
-                          Mangá (Dir → Esq)
+                          <span className="text-sm font-bold">←</span>
+                          <span>Mangá</span>
                         </button>
                         <button
                           onClick={() => setReadingDirection('ltr')}
-                          className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] ${
+                          className={`py-1.5 flex items-center justify-center gap-1.5 rounded-lg border transition-colors cursor-pointer text-xs font-semibold ${
                             readingDirection === 'ltr'
                               ? 'border-rose-500 bg-rose-500/20 text-rose-300'
-                              : 'border-zinc-800 bg-zinc-950 text-zinc-400'
+                              : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-white'
                           }`}
+                          title="Direção Ocidental (Esquerda para Direita)"
                         >
-                          Ocidental (Esq → Dir)
+                          <span>Ocidental</span>
+                          <span className="text-sm font-bold">→</span>
                         </button>
                       </div>
                     </div>
@@ -1664,14 +1740,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         style={{
           filter: [
             brightness !== 100 ? `brightness(${brightness}%)` : null,
-            nightLight !== 0 ? `sepia(${nightLight}%)` : null,
-            smartInvert ? 'invert(0.92) hue-rotate(180deg) contrast(1.15)' : null
-          ].filter(Boolean).join(' ') || undefined,
-          transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
-          transformOrigin: 'top center',
-          transition: zoomScale === 1 ? 'transform 0.15s ease-out' : undefined
+            nightLightActive ? 'sepia(42%) saturate(85%) brightness(92%) contrast(96%)' : null,
+            nightLight !== 0 ? `sepia(${nightLight}%)` : null
+          ].filter(Boolean).join(' ') || undefined
         }}
-        className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center p-2 sm:p-4 transition-[filter] duration-200 touch-pan-y"
+        className="min-h-[calc(100dvh-3.5rem)] flex flex-col items-center justify-center p-0 sm:p-2 transition-[filter] duration-200 touch-pan-y overflow-x-hidden"
       >
         {/* Webtoon / Vertical Cascade Mode */}
         {readerMode === 'webtoon' && (
@@ -1777,22 +1850,31 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
         {/* Single Page Mode */}
         {readerMode === 'single' && (
-          <div className="relative w-full flex flex-col items-center justify-center max-w-5xl py-4">
+          <div className="relative w-full h-[calc(100dvh-3.5rem)] flex items-center justify-center max-w-5xl overflow-hidden py-1">
             <div
-              className={`flex items-center justify-center relative cursor-pointer ${
-                pageFit === 'height' ? 'h-[85vh]' : 'w-full'
+              className={`flex items-center justify-center relative cursor-pointer overflow-hidden transition-transform duration-200 ease-out ${
+                pageFit === 'height' ? 'h-full' : 'w-full h-full'
               }`}
+              style={{
+                transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
+                transformOrigin: 'center center'
+              }}
             >
               {pages[currentPageIndex] && (
-                <ReaderPageImage
-                  key={`single_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
-                  pageNumber={currentPageIndex + 1}
-                  imageUrl={pages[currentPageIndex].imageUrl}
-                  className={`object-contain transition-all shadow-2xl ${
-                    pageFit === 'height' ? 'h-full max-w-full' : 'max-h-[90vh] w-auto max-w-full'
-                  }`}
-                  loading="eager"
-                />
+                <div
+                  key={`single-anim-${currentPageIndex}`}
+                  className="w-full h-full flex items-center justify-center animate-in fade-in duration-150 ease-out"
+                >
+                  <ReaderPageImage
+                    key={`single_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
+                    pageNumber={currentPageIndex + 1}
+                    imageUrl={pages[currentPageIndex].imageUrl}
+                    className={`object-contain transition-all shadow-2xl select-none max-h-[calc(100dvh-4rem)] max-w-full ${
+                      pageFit === 'height' ? 'h-full w-auto' : 'w-auto'
+                    }`}
+                    loading="eager"
+                  />
+                </div>
               )}
 
               {/* Click zones for easy flipping on touch or mouse */}
@@ -1801,7 +1883,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   e.stopPropagation();
                   readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
                 }}
-                className="absolute left-0 inset-y-0 w-1/3 cursor-w-resize"
+                className="absolute left-0 inset-y-0 w-1/3 cursor-w-resize z-20"
                 title={readingDirection === 'rtl' ? 'Avançar (Direção Mangá RTL - tecla ←)' : 'Página Anterior (tecla ←)'}
               />
               <div
@@ -1809,7 +1891,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   e.stopPropagation();
                   readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
                 }}
-                className="absolute right-0 inset-y-0 w-1/3 cursor-e-resize"
+                className="absolute right-0 inset-y-0 w-1/3 cursor-e-resize z-20"
                 title={readingDirection === 'rtl' ? 'Página Anterior (Direção Mangá RTL - tecla →)' : 'Próxima Página (tecla →)'}
               />
             </div>
@@ -1818,21 +1900,28 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
         {/* Double Page Spread Mode */}
         {readerMode === 'double' && (
-          <div className="relative w-full flex items-center justify-center max-w-7xl py-4">
-            <div className="grid grid-cols-2 gap-2 max-h-[88vh] items-center">
+          <div className="relative w-full h-[calc(100dvh-3.5rem)] flex items-center justify-center max-w-7xl overflow-hidden py-2">
+            <div
+              key={`double-anim-${currentPageIndex}`}
+              className="grid grid-cols-2 gap-2 h-full max-h-[calc(100dvh-4rem)] items-center animate-in fade-in duration-150 ease-out transition-transform duration-200"
+              style={{
+                transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
+                transformOrigin: 'center center'
+              }}
+            >
               {/* First Column: in RTL this is the higher page (left), in LTR this is the lower page (left) */}
-              <div className="flex justify-end h-full">
+              <div className="flex justify-end h-full items-center overflow-hidden">
                 {readingDirection === 'rtl' ? (
                   pages[currentPageIndex + 1] ? (
                     <ReaderPageImage
                       key={`double_left_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
                       pageNumber={currentPageIndex + 2}
                       imageUrl={pages[currentPageIndex + 1].imageUrl}
-                      className="max-h-[85vh] w-auto object-contain"
+                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
                       loading="eager"
                     />
                   ) : (
-                    <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
+                    <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
                       Fim do capítulo
                     </div>
                   )
@@ -1842,7 +1931,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       key={`double_left_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
                       pageNumber={currentPageIndex + 1}
                       imageUrl={pages[currentPageIndex].imageUrl}
-                      className="max-h-[85vh] w-auto object-contain"
+                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
                       loading="eager"
                     />
                   )
@@ -1850,14 +1939,14 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               </div>
 
               {/* Second Column: in RTL this is current page (right), in LTR this is next page (right) */}
-              <div className="flex justify-start h-full">
+              <div className="flex justify-start h-full items-center overflow-hidden">
                 {readingDirection === 'rtl' ? (
                   pages[currentPageIndex] && (
                     <ReaderPageImage
                       key={`double_right_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
                       pageNumber={currentPageIndex + 1}
                       imageUrl={pages[currentPageIndex].imageUrl}
-                      className="max-h-[85vh] w-auto object-contain"
+                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
                       loading="eager"
                     />
                   )
@@ -1867,11 +1956,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       key={`double_right_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
                       pageNumber={currentPageIndex + 2}
                       imageUrl={pages[currentPageIndex + 1].imageUrl}
-                      className="max-h-[85vh] w-auto object-contain"
+                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
                       loading="eager"
                     />
                   ) : (
-                    <div className="h-full w-40 bg-zinc-900/30 flex items-center justify-center text-xs text-zinc-600">
+                    <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
                       Fim do capítulo
                     </div>
                   )
@@ -1885,7 +1974,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 e.stopPropagation();
                 readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
               }}
-              className="absolute left-0 inset-y-0 w-1/4 cursor-w-resize"
+              className="absolute left-0 inset-y-0 w-1/4 cursor-w-resize z-20"
               title={readingDirection === 'rtl' ? 'Avançar (RTL)' : 'Voltar (LTR)'}
             />
             <div
@@ -1893,14 +1982,17 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 e.stopPropagation();
                 readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
               }}
-              className="absolute right-0 inset-y-0 w-1/4 cursor-e-resize"
+              className="absolute right-0 inset-y-0 w-1/4 cursor-e-resize z-20"
               title={readingDirection === 'rtl' ? 'Voltar (RTL)' : 'Avançar (LTR)'}
             />
           </div>
         )}
 
-        {/* End of chapter banner */}
-        <div className="w-full max-w-md my-16 p-6 rounded-2xl bg-zinc-900/70 border border-zinc-800 text-center shadow-xl">
+        {/* End of chapter banner: only show in webtoon mode or when reaching the last page in paginated mode */}
+        {(readerMode === 'webtoon' ||
+          (readerMode === 'single' && currentPageIndex >= pages.length - 1) ||
+          (readerMode === 'double' && currentPageIndex >= pages.length - 2)) && (
+          <div className="w-full max-w-md my-16 p-6 rounded-2xl bg-zinc-900/70 border border-zinc-800 text-center shadow-xl animate-in fade-in duration-200">
           {readerMode === 'webtoon' && continuousScroll ? (
             subsequentChapter ? (
               <>
@@ -2058,6 +2150,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             </>
           )}
         </div>
+        )}
       </main>
 
       {/* 3. Floating Bottom Navigation Bar */}

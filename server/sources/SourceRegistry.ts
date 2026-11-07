@@ -4,6 +4,8 @@ import { MangaDexProvider } from './MangaDexProvider.js';
 import { ComickProvider } from './ComickProvider.js';
 import { MangaPillProvider } from './MangaPillProvider.js';
 import { WeebCentralProvider } from './WeebCentralProvider.js';
+import { MangaFireProvider } from './MangaFireProvider.js';
+import { MangaBallProvider } from './MangaBallProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 import { deduplicateAndGroupChapters, normalizeChapterNumber } from './ChapterDeduplicator.js';
 
@@ -129,6 +131,8 @@ export class SourceRegistry {
     this.registerSource(new MangaDexProvider());
     this.registerSource(new WeebCentralProvider());
     this.registerSource(new MangaPillProvider());
+    this.registerSource(new MangaFireProvider());
+    this.registerSource(new MangaBallProvider());
   }
 
   public registerSource(source: IMangaSource): void {
@@ -150,7 +154,7 @@ export class SourceRegistry {
    * are queried in parallel, safe cross-source deduplication merges identical works,
    * and exact title matches are ranked first.
    */
-  public async search(query: string, options?: SourceSearchOptions & { sourceId?: string }): Promise<{
+  public async search(query: string, options?: SourceSearchOptions & { sourceId?: string; enabledSources?: string[] }): Promise<{
     results: Manga[];
     total: number;
     sourcesQueried: string[];
@@ -162,11 +166,44 @@ export class SourceRegistry {
       const src = this.sources.get(targetSourceId);
       if (src) sourcesToQuery.push(src);
     } else {
-      // Query real live sources first
-      const liveSourceIds = ['comick', 'mangadex', 'weebcentral', 'mangapill'];
-      for (const id of liveSourceIds) {
+      // Query enabled live sources in user priority order, or all live sources by default
+      const defaultLiveIds = ['comick', 'mangadex', 'weebcentral', 'mangapill', 'mangafire', 'mangaball'];
+      let candidateIds = defaultLiveIds;
+      if (options?.enabledSources && options.enabledSources.length > 0) {
+        candidateIds = options.enabledSources.filter(id => this.sources.has(id));
+        if (candidateIds.length === 0) candidateIds = defaultLiveIds;
+      }
+
+      for (const id of candidateIds) {
         const src = this.sources.get(id);
-        if (src) sourcesToQuery.push(src);
+        if (src && !sourcesToQuery.includes(src)) sourcesToQuery.push(src);
+      }
+    }
+
+    const TROPE_SYNONYM_QUERIES: Record<string, string[]> = {
+      'overpower (op)': ['overpowered', 'strongest', 'cheat', 'invincible'],
+      'overpower': ['overpowered', 'strongest', 'cheat', 'invincible'],
+      'construção de vila': ['village building', 'kingdom building', 'territory'],
+      'construção de vila / reino': ['village building', 'kingdom building', 'territory'],
+      'fazenda / agricultura': ['farming', 'slow life', 'agriculture'],
+      'dungeon / sistema': ['dungeon', 'system', 'hunter', 'leveling'],
+      'domador de monstros': ['monster tamer', 'beast tamer', 'tamer'],
+      'vingança': ['revenge', 'avenger', 'betrayal'],
+      'regressão / tempo': ['regression', 'time travel', 'regressor'],
+      'yandere': ['yandere', 'stalker'],
+      'tomboy': ['tomboy', 'boyish'],
+      'vilã (villainess)': ['villainess', 'vilã'],
+      'reencarnação': ['reincarnation', 'transmigration']
+    };
+
+    const extraSynonyms: string[] = [];
+    if (!query.trim() && options?.genres) {
+      for (const g of options.genres) {
+        const found = TROPE_SYNONYM_QUERIES[g.toLowerCase()];
+        if (found) {
+          extraSynonyms.push(...found.slice(1));
+          break;
+        }
       }
     }
 
@@ -177,10 +214,22 @@ export class SourceRegistry {
       })
     );
 
-    const outcomes = await Promise.all(promises);
+    const extraPromises = extraSynonyms.flatMap(syn =>
+      sourcesToQuery.map(src =>
+        src.search(syn, { ...options, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
+      )
+    );
+
+    const [outcomes, extraOutcomes] = await Promise.all([
+      Promise.all(promises),
+      Promise.all(extraPromises)
+    ]);
     const rawLiveResults: Manga[] = [];
 
     outcomes.forEach((outcome) => {
+      rawLiveResults.push(...outcome.mangaList);
+    });
+    extraOutcomes.forEach((outcome) => {
       rawLiveResults.push(...outcome.mangaList);
     });
 
@@ -192,9 +241,42 @@ export class SourceRegistry {
       liveResults = liveResults.filter(m => !m.isAdult);
     }
 
-    // Filter by availability if requested
-    if (options?.onlyAvailable) {
-      liveResults = liveResults.filter(m => m.hasAvailableChapters);
+    // Filter by availability: exclude metadata-only works without readable chapters
+    if (options?.onlyAvailable !== false) {
+      liveResults = liveResults.filter(m => m.hasAvailableChapters !== false);
+    }
+
+    // Filter by demographic if requested
+    if (options?.demographic && options.demographic !== 'all') {
+      const targetDemo = options.demographic.toLowerCase();
+      liveResults = liveResults.filter(m => {
+        const demo = m.publicationInfo?.demographic?.toLowerCase() ||
+          (m.genres.some(g => g.toLowerCase().includes('shounen') || g.toLowerCase().includes('shonen')) ? 'shounen'
+          : m.genres.some(g => g.toLowerCase().includes('shoujo') || g.toLowerCase().includes('shojo')) ? 'shoujo'
+          : m.genres.some(g => g.toLowerCase().includes('seinen')) ? 'seinen'
+          : m.genres.some(g => g.toLowerCase().includes('josei')) ? 'josei' : undefined);
+        return demo === targetDemo;
+      });
+    }
+
+    // Filter by status if requested
+    if (options?.status && options.status !== 'all') {
+      const targetStatus = options.status.toLowerCase();
+      liveResults = liveResults.filter(m => m.status === targetStatus);
+    }
+
+    // Filter by format/type if requested
+    if (options?.type && options.type !== 'all') {
+      const targetType = options.type.toLowerCase();
+      liveResults = liveResults.filter(m => {
+        const country = (m.publicationInfo?.country || '').toLowerCase();
+        const gLowers = (m.genres || []).map(g => g.toLowerCase());
+        let detected = 'manga';
+        if (country === 'kr' || country === 'coreia' || country === 'korea' || gLowers.includes('manhwa')) detected = 'manhwa';
+        else if (country === 'cn' || country === 'china' || country === 'zh' || gLowers.includes('manhua')) detected = 'manhua';
+        else if (country === 'us' || country === 'en' || gLowers.includes('comic') || gLowers.includes('webtoon')) detected = 'comic';
+        return detected === targetType;
+      });
     }
 
     // If a search query was supplied, sort live results so exact or prefix matches come first
@@ -238,8 +320,15 @@ export class SourceRegistry {
    * Merges and deduplicates popular works from live providers (Comick, MangaDex, WeebCentral, MangaPill).
    * Safe mode and chapter availability are enforced for a premium discovery experience.
    */
-  public async getFeatured(): Promise<Manga[]> {
-    const liveSources = [this.sources.get('comick'), this.sources.get('mangadex'), this.sources.get('weebcentral'), this.sources.get('mangapill')].filter(Boolean) as IMangaSource[];
+  public async getFeatured(options?: { enabledSources?: string[] }): Promise<Manga[]> {
+    const defaultLiveIds = ['comick', 'mangadex', 'weebcentral', 'mangapill', 'mangafire', 'mangaball'];
+    let candidateIds = defaultLiveIds;
+    if (options?.enabledSources && options.enabledSources.length > 0) {
+      candidateIds = options.enabledSources.filter(id => this.sources.has(id));
+      if (candidateIds.length === 0) candidateIds = defaultLiveIds;
+    }
+
+    const liveSources = candidateIds.map(id => this.sources.get(id)).filter(Boolean) as IMangaSource[];
     const promises = liveSources.map(src =>
       src.getPopular({ limit: 24, includeAdult: false, onlyAvailable: true }).catch(() => [])
     );
@@ -253,6 +342,49 @@ export class SourceRegistry {
     const deduped = deduplicateMangaList(rawList);
     // Exclude adult content and metadata-only works from homepage featured
     return deduped.filter(m => !m.isAdult && m.hasAvailableChapters !== false);
+  }
+
+  /**
+   * Ping a specific source to test connectivity, latency, and operational status.
+   */
+  public async pingSource(sourceId: string): Promise<{
+    sourceId: string;
+    status: 'online' | 'degraded' | 'offline';
+    latencyMs: number;
+    error?: string;
+    checkedAt: number;
+  }> {
+    const src = this.sources.get(sourceId);
+    const checkedAt = Date.now();
+    if (!src) {
+      return { sourceId, status: 'offline', latencyMs: 0, error: 'Fonte não encontrada', checkedAt };
+    }
+
+    const start = Date.now();
+    try {
+      const probePromise = src.search('one piece', { limit: 1 });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Tempo limite de 6000ms excedido')), 6000)
+      );
+      const res = await Promise.race([probePromise, timeoutPromise]);
+      const latencyMs = Date.now() - start;
+      const count = Array.isArray(res?.mangaList) ? res.mangaList.length : 0;
+      return {
+        sourceId,
+        status: latencyMs > 3500 ? 'degraded' : 'online',
+        latencyMs,
+        ...(count === 0 ? { error: 'Nenhum resultado retornado na sondagem' } : {}),
+        checkedAt
+      };
+    } catch (err) {
+      return {
+        sourceId,
+        status: 'offline',
+        latencyMs: Date.now() - start,
+        error: (err as Error).message,
+        checkedAt
+      };
+    }
   }
 
   /**
@@ -359,6 +491,15 @@ export class SourceRegistry {
         const parts = remainder.split('_');
         externalMangaId = parts[0];
         externalChapterId = parts.slice(1).join('_');
+      }
+    } else if (sourceId === 'mangafire' || sourceId === 'mangaball') {
+      const lastUnderscore = remainder.lastIndexOf('_');
+      if (lastUnderscore !== -1) {
+        externalMangaId = remainder.substring(0, lastUnderscore);
+        externalChapterId = remainder.substring(lastUnderscore + 1);
+      } else {
+        externalMangaId = remainder;
+        externalChapterId = remainder;
       }
     } else {
       const parts = remainder.split('_');

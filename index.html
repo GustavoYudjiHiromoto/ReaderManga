@@ -5,21 +5,122 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
       (function() {
-        // Suppress benign Vite HMR WebSocket connection logs in preview iframe
+        // Prevent benign Vite HMR WebSocket connection failure in preview iframe
+        // Since HMR is disabled in AI Studio, neutralize the HMR connection so @vite/client never rejects or logs errors
+        var OrigWebSocket = window.WebSocket;
+        if (OrigWebSocket) {
+          window.WebSocket = function(url, protocols) {
+            var urlStr = String(url || '');
+            var isHmr = (
+              protocols === 'vite-hmr' ||
+              (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1) ||
+              urlStr.indexOf(':24678') !== -1 ||
+              (urlStr.indexOf('token=') !== -1 && urlStr.indexOf('localhost') !== -1)
+            );
+
+            if (isHmr) {
+              var emitter = new EventTarget();
+              var dummyWs = {
+                url: urlStr,
+                readyState: 0, // CONNECTING
+                CONNECTING: 0,
+                OPEN: 1,
+                CLOSING: 2,
+                CLOSED: 3,
+                send: function() {},
+                close: function() {
+                  dummyWs.readyState = 3;
+                  var evt = new Event('close');
+                  dummyWs.dispatchEvent(evt);
+                  if (typeof dummyWs.onclose === 'function') dummyWs.onclose(evt);
+                },
+                addEventListener: function(type, listener, options) {
+                  emitter.addEventListener(type, listener, options);
+                },
+                removeEventListener: function(type, listener, options) {
+                  emitter.removeEventListener(type, listener, options);
+                },
+                dispatchEvent: function(event) {
+                  return emitter.dispatchEvent(event);
+                }
+              };
+
+              // Transition to OPEN state immediately on next microtask/tick
+              // This fulfills @vite/client's await socket.open promise and prevents "WebSocket closed without opened"
+              setTimeout(function() {
+                if (dummyWs.readyState === 0) {
+                  dummyWs.readyState = 1;
+                  var openEvt = new Event('open');
+                  dummyWs.dispatchEvent(openEvt);
+                  if (typeof dummyWs.onopen === 'function') dummyWs.onopen(openEvt);
+                }
+              }, 0);
+
+              return dummyWs;
+            }
+
+            return new OrigWebSocket(url, protocols);
+          };
+          window.WebSocket.prototype = OrigWebSocket.prototype;
+          window.WebSocket.CONNECTING = 0;
+          window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;
+          window.WebSocket.CLOSED = 3;
+        }
+
+        function isViteWsError(str) {
+          if (!str) return false;
+          var s = String(str);
+          return (
+            s.indexOf('WebSocket closed without opened') !== -1 ||
+            (s.indexOf('[vite]') !== -1 && (s.indexOf('WebSocket') !== -1 || s.indexOf('connection lost') !== -1))
+          );
+        }
+
         var origConsoleError = console.error;
         console.error = function() {
           var args = Array.prototype.slice.call(arguments);
-          if (args.length > 0) {
-            var msg = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].message ? args[0].message : String(args[0]));
-            if (msg.indexOf('WebSocket closed without opened') !== -1 || (msg.indexOf('[vite]') !== -1 && msg.indexOf('WebSocket') !== -1)) {
-              return;
-            }
+          var fullMsg = args.map(function(a) {
+            if (!a) return '';
+            if (typeof a === 'string') return a;
+            if (a.message) return a.message + (a.stack ? ' ' + a.stack : '');
+            return String(a);
+          }).join(' ');
+
+          if (isViteWsError(fullMsg)) {
+            return;
           }
           origConsoleError.apply(console, args);
         };
+
+        var origConsoleWarn = console.warn;
+        console.warn = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var fullMsg = args.map(function(a) {
+            if (!a) return '';
+            if (typeof a === 'string') return a;
+            if (a.message) return a.message + (a.stack ? ' ' + a.stack : '');
+            return String(a);
+          }).join(' ');
+
+          if (isViteWsError(fullMsg)) {
+            return;
+          }
+          origConsoleWarn.apply(console, args);
+        };
+
         window.addEventListener('error', function(event) {
-          var message = event && (event.message || (event.error && event.error.message)) || '';
-          if (message.indexOf('WebSocket closed without opened') !== -1) {
+          var message = (event && (event.message || (event.error && (event.error.message || event.error.stack)))) || '';
+          if (isViteWsError(message)) {
+            event.stopImmediatePropagation();
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var message = (reason && (reason.message || reason.stack || String(reason))) || '';
+          if (isViteWsError(message)) {
             event.stopImmediatePropagation();
             if (typeof event.preventDefault === 'function') event.preventDefault();
           }

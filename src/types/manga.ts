@@ -93,7 +93,29 @@ export interface MangaSourceInfo {
     filters: boolean;
     coverImages: boolean;
     multipleLanguages: boolean;
+    chaptersDeduplication?: boolean;
+    webtoons?: boolean;
+    nsfwFilter?: boolean;
   };
+  iconColor?: string;
+  badge?: string;
+  languages?: string[];
+  catalogEstimate?: string;
+}
+
+export interface SourceConfig {
+  id: string;
+  enabled: boolean;
+  priority: number; // lower number = higher search priority
+  preferredLanguage?: string;
+}
+
+export interface SourcePingResult {
+  sourceId: string;
+  status: 'online' | 'degraded' | 'offline';
+  latencyMs: number;
+  error?: string;
+  checkedAt?: number;
 }
 
 export interface ReadingProgress {

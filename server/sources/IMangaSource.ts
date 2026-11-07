@@ -5,6 +5,10 @@ export interface SourceSearchOptions {
   offset?: number;
   page?: number;
   genre?: string;
+  genres?: string[];
+  demographic?: string;
+  type?: string;
+  status?: string;
   language?: string;
   includeAdult?: boolean;
   onlyAvailable?: boolean;

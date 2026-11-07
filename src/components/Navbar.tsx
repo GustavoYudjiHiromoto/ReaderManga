@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Layers, Clock, Bookmark, SlidersHorizontal, HardDriveDownload, Sliders, ChevronDown, Download, User } from 'lucide-react';
+import { Search, Layers, Clock, Bookmark, SlidersHorizontal, HardDriveDownload, Sliders, ChevronDown, Download, User, Blocks } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton.js';
 import { UserCloudSyncMenu } from './UserCloudSyncMenu.js';
 
@@ -9,11 +9,14 @@ interface NavbarProps {
   onOpenHistory: () => void;
   onOpenDownloads?: () => void;
   onOpenTrackers?: () => void;
+  onOpenExtensions?: () => void;
   historyCount: number;
   favoritesCount?: number;
   offlineCount?: number;
   unreadUpdatesCount?: number;
   trackersCount?: number;
+  enabledSourcesCount?: number;
+  totalSourcesCount?: number;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -22,11 +25,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenHistory,
   onOpenDownloads,
   onOpenTrackers,
+  onOpenExtensions,
   historyCount,
   favoritesCount = 0,
   offlineCount = 0,
   unreadUpdatesCount = 0,
-  trackersCount = 0
+  trackersCount = 0,
+  enabledSourcesCount = 6,
+  totalSourcesCount = 6
 }) => {
   const [showToolsMenu, setShowToolsMenu] = useState(false);
   const toolsMenuRef = useRef<HTMLDivElement>(null);
@@ -118,15 +124,6 @@ export const Navbar: React.FC<NavbarProps> = ({
             <User className="h-4 w-4" />
             Perfil
           </button>
-          <button
-            onClick={() => onNavigate('api')}
-            className={`transition-colors hover:text-zinc-100 cursor-pointer flex items-center gap-1.5 ${
-              currentTab === 'api' ? 'text-rose-400 font-semibold' : 'text-zinc-400'
-            }`}
-          >
-            <Layers className="h-4 w-4" />
-            API & Fontes
-          </button>
         </nav>
 
         {/* Zone 3: Streamlined Actions (Zero Clutter) */}
@@ -156,17 +153,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             ) : null}
           </button>
 
-          {/* Primary Action: Continuar Lendo (Histórico) */}
+          {/* Primary Action: Histórico / Continuar Lendo */}
           <button
             onClick={onOpenHistory}
-            className="relative flex items-center gap-2 px-3 py-1.5 sm:px-3.5 rounded-lg text-xs font-medium text-zinc-200 bg-zinc-900/90 hover:bg-zinc-800 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
-            title="Acessar histórico de leitura e retomar de onde parou"
+            className="p-2 sm:px-2.5 sm:py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 transition-colors cursor-pointer flex items-center gap-1.5"
+            title="Histórico de leitura & Continuar Lendo"
+            aria-label="Histórico de leitura"
           >
             <Clock className="h-3.5 w-3.5 text-rose-400" />
-            <span className="hidden sm:inline">Continuar Lendo</span>
-            <span className="sm:hidden text-xs">Histórico</span>
+            <span className="hidden xl:inline text-xs">Histórico</span>
             {historyCount > 0 && (
-              <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
+              <span className="px-1.5 py-0.2 rounded-full bg-zinc-800 text-zinc-400 text-[10px] font-mono tabular-nums">
                 {historyCount}
               </span>
             )}
@@ -202,6 +199,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800/80 mb-1">
                   Ferramentas & Integrações
                 </div>
+
+                {onOpenExtensions && (
+                  <button
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      onOpenExtensions();
+                    }}
+                    className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Blocks className="h-3.5 w-3.5 text-rose-400" />
+                      <div>
+                        <div className="font-medium text-zinc-200">Extensões & Fontes</div>
+                        <div className="text-[10px] text-zinc-500">Ativar, desativar e testar repositórios</div>
+                      </div>
+                    </div>
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-mono tabular-nums">
+                      {enabledSourcesCount}/{totalSourcesCount}
+                    </span>
+                  </button>
+                )}
 
                 {onOpenDownloads && (
                   <button
@@ -269,6 +287,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                     </div>
                   </div>
                   <span className="text-[10px] text-rose-400 font-mono">&rarr;</span>
+                </button>
+
+                {/* API & Docs Link inside menu */}
+                <button
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    onNavigate('api');
+                  }}
+                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <Layers className="h-3.5 w-3.5 text-zinc-400" />
+                    <div>
+                      <div className="font-medium text-zinc-200">API & Documentação</div>
+                      <div className="text-[10px] text-zinc-500">Endpoints REST e especificações</div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 font-mono">&rarr;</span>
                 </button>
 
                 {/* Subtle PWA helper link inside menu */}

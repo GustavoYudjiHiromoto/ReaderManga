@@ -63,7 +63,7 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
         },
         {
           keys: ['N'],
-          desc: 'Alternar Modo Noturno P&B (Inversão Inteligente para ler no escuro)'
+          desc: 'Alternar Luz Noturna (reduz a luz azul e suaviza tons brancos)'
         },
         {
           keys: ['Esc'],
