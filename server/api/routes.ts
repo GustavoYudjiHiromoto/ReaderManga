@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { ZipArchive } from 'archiver';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
+import zlib from 'zlib';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
 import { HttpError } from '../errors/HttpError.js';
 import { globalCache } from '../cache/CacheService.js';
@@ -541,6 +542,26 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).send('Proxy error');
   }
+});
+
+// 8b. Descompressor de backup GZIP / .tachibk
+apiRouter.post('/backup/decompress', (req: Request, res: Response) => {
+  const chunks: Buffer[] = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      const buffer = Buffer.concat(chunks);
+      if (buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
+        const decompressed = zlib.gunzipSync(buffer);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        return res.send(decompressed);
+      }
+      res.setHeader('Content-Type', 'application/octet-stream');
+      return res.send(buffer);
+    } catch (e: any) {
+      return res.status(400).json({ success: false, error: 'Falha ao descomprimir arquivo GZIP: ' + e.message });
+    }
+  });
 });
 
 // 9. Catch-all for undefined API routes (always returns JSON 404, never falls through to HTML)

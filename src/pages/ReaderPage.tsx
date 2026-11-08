@@ -58,6 +58,18 @@ type ReaderMode = 'webtoon' | 'single' | 'double';
 type ReaderTheme = 'dark' | 'black' | 'sepia' | 'light';
 type PageFit = 'width' | 'height' | 'original';
 type ReadingDirection = 'rtl' | 'ltr';
+export type ReaderMaxWidth = 'compact' | 'normal' | 'wide' | 'full';
+export type ReaderColorFilter = 'normal' | 'warm' | 'amoled' | 'inverted';
+
+const MAX_WIDTH_CLASSES: Record<ReaderMaxWidth, string> = {
+  compact: 'max-w-2xl',
+  normal: 'max-w-4xl',
+  wide: 'max-w-6xl',
+  full: 'max-w-full'
+};
+
+// Global memory cache for prefetched chapter pages to eliminate loading pauses
+const prefetchedChapterPagesCache = new Map<string, MangaPage[]>();
 
 interface ReaderPageImageProps {
   pageNumber: number;
@@ -232,6 +244,37 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       return next;
     });
   };
+
+  const [readerMaxWidth, setReaderMaxWidth] = useState<ReaderMaxWidth>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_max_width') as ReaderMaxWidth) || 'normal';
+    } catch {
+      return 'normal';
+    }
+  });
+
+  const [readerColorFilter, setReaderColorFilter] = useState<ReaderColorFilter>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_color_filter') as ReaderColorFilter) || 'normal';
+    } catch {
+      return 'normal';
+    }
+  });
+
+  const changeMaxWidth = (width: ReaderMaxWidth) => {
+    setReaderMaxWidth(width);
+    try {
+      localStorage.setItem('mr_reader_max_width', width);
+    } catch {}
+  };
+
+  const changeColorFilter = (filter: ReaderColorFilter) => {
+    setReaderColorFilter(filter);
+    try {
+      localStorage.setItem('mr_reader_color_filter', filter);
+    } catch {}
+  };
+
   const [showSettings, setShowSettings] = useState(false);
   const [showUi, setShowUi] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -492,11 +535,23 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const [mangaData, chaptersData, pagesData] = await Promise.all([
-        MangaApi.getMangaDetails(mangaId),
-        MangaApi.getChapters(mangaId, { order: 'asc' }),
-        MangaApi.getChapterPages(chapterId)
-      ]);
+      const cachedPages = prefetchedChapterPagesCache.get(chapterId);
+      const isMangaAlreadyLoaded = manga && manga.id === mangaId && chapters.length > 0;
+
+      let mangaData = isMangaAlreadyLoaded ? manga! : null;
+      let chaptersData = isMangaAlreadyLoaded ? chapters : [];
+      let pagesData: MangaPage[] = (cachedPages && cachedPages.length > 0) ? cachedPages : [];
+
+      if (!mangaData || chaptersData.length === 0 || pagesData.length === 0) {
+        const [mDetails, cList, pList] = await Promise.all([
+          mangaData ? Promise.resolve(mangaData) : MangaApi.getMangaDetails(mangaId),
+          chaptersData.length > 0 ? Promise.resolve(chaptersData) : MangaApi.getChapters(mangaId, { order: 'asc' }),
+          pagesData.length > 0 ? Promise.resolve(pagesData) : MangaApi.getChapterPages(chapterId)
+        ]);
+        mangaData = mDetails;
+        chaptersData = cList;
+        pagesData = pList;
+      }
 
       setManga(mangaData);
       setChapters(chaptersData);
@@ -543,6 +598,25 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       setIsLoadingNextChapter(false);
       isLoadingNextChapterRef.current = false;
       setNextChapterError(null);
+
+      // Proactive zero-loading prefetch: background download next chapter pages & images
+      if (chaptersData && chaptersData.length > 0 && foundChapter) {
+        const curIdx = chaptersData.findIndex(c => c.id === foundChapter!.id || c.variants?.some(v => v.id === foundChapter!.id));
+        const nextToPreload = curIdx >= 0 && curIdx < chaptersData.length - 1 ? chaptersData[curIdx + 1] : null;
+        if (nextToPreload && !prefetchedChapterPagesCache.has(nextToPreload.id)) {
+          MangaApi.getChapterPages(nextToPreload.id).then(prePages => {
+            if (prePages && prePages.length > 0) {
+              prefetchedChapterPagesCache.set(nextToPreload.id, prePages);
+              prePages.slice(0, 6).forEach(p => {
+                if (p.imageUrl) {
+                  const preImg = new Image();
+                  preImg.src = p.imageUrl;
+                }
+              });
+            }
+          }).catch(() => {});
+        }
+      }
 
       // Check saved progress & restore exact pixel scroll position
       const saved = HistoryService.getProgress(mangaId);
@@ -1406,6 +1480,30 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                           ))}
                         </div>
                       </div>
+
+                      <div>
+                        <span className="text-zinc-400 font-medium block mb-1.5">Largura da Leitura (Webtoon)</span>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { label: 'Compacto', val: 'compact' as ReaderMaxWidth },
+                            { label: 'Normal', val: 'normal' as ReaderMaxWidth },
+                            { label: 'Amplo', val: 'wide' as ReaderMaxWidth },
+                            { label: '100%', val: 'full' as ReaderMaxWidth }
+                          ].map(item => (
+                            <button
+                              key={item.val}
+                              onClick={() => changeMaxWidth(item.val)}
+                              className={`py-1 text-center rounded border transition-colors cursor-pointer text-[10px] sm:text-[11px] ${
+                                readerMaxWidth === item.val
+                                  ? 'border-rose-500 bg-rose-500/20 text-rose-300 font-semibold'
+                                  : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -1425,6 +1523,32 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                         onChange={(e) => setBrightness(Number(e.target.value))}
                         className="w-full accent-rose-500 cursor-pointer"
                       />
+                    </div>
+
+                    {/* Tom e Filtro de Leitura */}
+                    <div>
+                      <span className="text-zinc-400 font-medium block mb-1.5">Tom & Filtro de Leitura</span>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[
+                          { label: 'Padrão', val: 'normal' as ReaderColorFilter },
+                          { label: 'Papel', val: 'warm' as ReaderColorFilter },
+                          { label: 'AMOLED', val: 'amoled' as ReaderColorFilter },
+                          { label: 'Invertido', val: 'inverted' as ReaderColorFilter }
+                        ].map(item => (
+                          <button
+                            key={item.val}
+                            type="button"
+                            onClick={() => changeColorFilter(item.val)}
+                            className={`py-1 text-center rounded border transition-colors cursor-pointer text-[10px] sm:text-[11px] ${
+                              readerColorFilter === item.val
+                                ? 'border-rose-500 bg-rose-500/20 text-rose-300 font-semibold'
+                                : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     {/* Luz Noturna (Eye comfort & blue light filter) */}
@@ -1741,16 +1865,21 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           filter: [
             brightness !== 100 ? `brightness(${brightness}%)` : null,
             nightLightActive ? 'sepia(42%) saturate(85%) brightness(92%) contrast(96%)' : null,
-            nightLight !== 0 ? `sepia(${nightLight}%)` : null
+            nightLight !== 0 ? `sepia(${nightLight}%)` : null,
+            readerColorFilter === 'warm' ? 'sepia(38%) saturate(88%) brightness(94%) contrast(95%)' : null,
+            readerColorFilter === 'amoled' ? 'contrast(108%) brightness(96%)' : null,
+            readerColorFilter === 'inverted' ? 'invert(92%) hue-rotate(180deg) contrast(105%)' : null
           ].filter(Boolean).join(' ') || undefined
         }}
-        className="min-h-[calc(100dvh-3.5rem)] flex flex-col items-center justify-center p-0 sm:p-2 transition-[filter] duration-200 touch-pan-y overflow-x-hidden"
+        className={`min-h-[calc(100dvh-3.5rem)] flex flex-col items-center justify-center p-0 sm:p-2 transition-[filter] duration-200 touch-pan-y overflow-x-hidden ${
+          readerColorFilter === 'amoled' ? 'bg-black' : ''
+        }`}
       >
         {/* Webtoon / Vertical Cascade Mode */}
         {readerMode === 'webtoon' && (
           <div
             ref={pagesContainerRef}
-            className="w-full flex flex-col items-center max-w-4xl"
+            className={`w-full flex flex-col items-center ${MAX_WIDTH_CLASSES[readerMaxWidth]}`}
           >
             {(loadedSections.length > 0
               ? loadedSections

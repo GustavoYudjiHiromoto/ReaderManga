@@ -43,7 +43,9 @@ import { ExtensionService } from '../services/extensionService.js';
 import { FavoriteManga, ReadingProgress } from '../types/manga.js';
 import { ReadingStatsSummary } from '../components/ReadingStatsSummary.js';
 import { TrackersModal } from '../components/TrackersModal.js';
+import { parseTachibk } from '../services/tachibkService.js';
 import { PWAInstallButton } from '../components/PWAInstallButton.js';
+import { BackupProgressModal, BackupProgressState } from '../components/BackupProgressModal.js';
 
 type ReaderMode = 'webtoon' | 'single' | 'double';
 type PageFit = 'width' | 'height' | 'original';
@@ -95,6 +97,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   // File input ref for JSON restore
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoreStatus, setRestoreStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [backupProgress, setBackupProgress] = useState<BackupProgressState>({
+    isOpen: false,
+    stage: 'reading',
+    stageLabel: '',
+    percent: 0
+  });
 
   // Reading & Reader Preferences States (persisted directly to localStorage)
   const [defaultReaderMode, setDefaultReaderMode] = useState<ReaderMode>(() => {
@@ -244,32 +252,144 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   };
 
-  // File restore handler
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // File restore handler (.tachibk / .proto.gz / .json)
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      if (!content) return;
+    const isTachibk = file.name.endsWith('.tachibk') || file.name.endsWith('.proto.gz') || file.type.includes('gzip');
 
-      const result = HistoryService.importBackup(content);
-      if (result.success) {
-        setRestoreStatus({
-          type: 'success',
-          message: `Backup restaurado! ${result.favoritesAdded} favoritos e ${result.historyAdded} históricos carregados.`
+    setBackupProgress({
+      isOpen: true,
+      stage: 'reading',
+      stageLabel: isTachibk ? 'Iniciando leitura do backup Mihon (.tachibk)...' : 'Lendo arquivo de backup JSON...',
+      percent: 5,
+      fileName: file.name,
+      isTachibk,
+      resultSummary: null,
+      error: null
+    });
+
+    try {
+      if (isTachibk) {
+        const parsed = await parseTachibk(file, (info) => {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: info.stage,
+            stageLabel: info.stageLabel,
+            percent: info.percent,
+            currentItem: info.currentItem,
+            currentCount: info.currentCount,
+            totalCount: info.totalCount
+          }));
         });
+
+        setBackupProgress(prev => ({
+          ...prev,
+          stage: 'merging',
+          stageLabel: 'Mesclando favoritos, capítulos lidos e categorias...',
+          percent: 85
+        }));
+
+        await new Promise(r => setTimeout(r, 120));
+
+        const result = HistoryService.importBackup(parsed as any);
+
+        if (result.success) {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: 'completed',
+            stageLabel: 'Restauração concluída com sucesso!',
+            percent: 100,
+            resultSummary: {
+              favoritesAdded: result.favoritesAdded,
+              historyAdded: result.historyAdded,
+              totalFavorites: result.totalFavorites,
+              totalHistory: result.totalHistory,
+              categoriesAdded: result.categoriesAdded
+            }
+          }));
+          setFavorites(HistoryService.getFavorites());
+          setHistory(HistoryService.getHistory());
+        } else {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: 'error',
+            stageLabel: 'Erro ao importar',
+            error: result.message || 'Falha ao importar o arquivo .tachibk.'
+          }));
+        }
       } else {
-        setRestoreStatus({
-          type: 'error',
-          message: result.message || 'Erro ao processar o arquivo de backup.'
-        });
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'decoding',
+              stageLabel: 'Validando estrutura JSON da biblioteca...',
+              percent: 50
+            }));
+
+            await new Promise(r => setTimeout(r, 150));
+
+            const content = event.target?.result as string;
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'merging',
+              stageLabel: 'Mesclando dados da biblioteca...',
+              percent: 85
+            }));
+
+            await new Promise(r => setTimeout(r, 150));
+
+            const result = HistoryService.importBackup(content);
+            if (result.success) {
+              setBackupProgress(prev => ({
+                ...prev,
+                stage: 'completed',
+                stageLabel: 'Restauração concluída com sucesso!',
+                percent: 100,
+                resultSummary: {
+                  favoritesAdded: result.favoritesAdded,
+                  historyAdded: result.historyAdded,
+                  totalFavorites: result.totalFavorites,
+                  totalHistory: result.totalHistory,
+                  categoriesAdded: result.categoriesAdded
+                }
+              }));
+              setFavorites(HistoryService.getFavorites());
+              setHistory(HistoryService.getHistory());
+            } else {
+              setBackupProgress(prev => ({
+                ...prev,
+                stage: 'error',
+                stageLabel: 'Falha na validação',
+                error: result.message || 'Falha ao processar o arquivo de backup.'
+              }));
+            }
+          } catch (err: any) {
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'error',
+              stageLabel: 'Erro de leitura',
+              error: err?.message || 'Arquivo JSON inválido ou corrompido.'
+            }));
+          }
+        };
+        reader.readAsText(file);
       }
-      setTimeout(() => setRestoreStatus(null), 5000);
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+    } catch (err: any) {
+      setBackupProgress(prev => ({
+        ...prev,
+        stage: 'error',
+        stageLabel: 'Erro no processamento',
+        error: err?.message || 'Não foi possível processar o arquivo de backup.'
+      }));
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   };
 
   // Library status counts
@@ -1061,12 +1181,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         {/* TAB 4: BACKUPS, MIHON & OFFLINE STORAGE */}
         {activeTab === 'data' && (
           <div className="space-y-6 animate-in fade-in duration-150">
-            {/* Hidden file input for restore */}
+            {/* Hidden file input for restore (.tachibk / .proto.gz / .json) */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept=".json,application/json"
+              accept=".tachibk,.proto.gz,.json,application/json,application/gzip,application/octet-stream"
               className="hidden"
             />
 
@@ -1090,7 +1210,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                   Backup e Portabilidade da Biblioteca
                 </h3>
                 <p className="text-xs text-zinc-400 mt-1">
-                  Exporte seus favoritos, notas, histórico e marcadores para um arquivo ou restaure um backup anterior.
+                  Exporte sua biblioteca ou restaure diretamente arquivos .tachibk do Mihon/Tachiyomi e backups em JSON.
                 </p>
               </div>
 
@@ -1139,7 +1259,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                   </div>
                   <h4 className="text-xs font-bold text-zinc-100">Restaurar Backup</h4>
                   <p className="text-[11px] text-zinc-500 mt-1">
-                    Carregue um arquivo JSON gerado anteriormente para restaurar sua biblioteca.
+                    Carregue seu arquivo .tachibk do Mihon ou .json para restaurar obras e histórico.
                   </p>
                 </button>
               </div>
@@ -1196,6 +1316,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           onClose={() => setShowTrackersModal(false)}
         />
       )}
+
+      {/* Backup & Restore Progress Feedback Modal */}
+      <BackupProgressModal
+        progress={backupProgress}
+        onClose={() => setBackupProgress(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 };

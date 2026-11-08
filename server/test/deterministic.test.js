@@ -23,10 +23,32 @@ function assert(condition, message) {
 
 async function runDeterministicTests() {
   console.log('====================================================');
-  console.log('PARTE 1: SUÍTE DE TESTES DETERMINÍSTICOS (LOCAL)');
+  console.log('PARTE 1: SUÍTE DE TESTES DETERMINÍSTICOS (LOCAL & CI)');
   console.log('====================================================\n');
 
+  let serverInstance = null;
   try {
+    // Garante que o servidor esteja rodando. Se estiver em ambiente CI (onde o servidor não roda em background), inicializa-o embutido.
+    try {
+      const checkRes = await fetch(`${BASE_URL}/api/sources`, { signal: AbortSignal.timeout(1200) });
+      if (!checkRes.ok) throw new Error('Servidor não ativo');
+    } catch {
+      console.log('⚡ Servidor não detectado em localhost:3000. Inicializando instância de testes para execução em CI...');
+      const express = (await import('express')).default;
+      const { apiRouter } = await import('../api/routes.js');
+      const { trackerRouter } = await import('../trackers/TrackerRouter.js');
+      const app = express();
+      app.use(express.json());
+      app.use('/api/trackers', trackerRouter);
+      app.use('/api', apiRouter);
+      await new Promise((resolve) => {
+        serverInstance = app.listen(3000, '0.0.0.0', () => {
+          console.log('  ✓ Servidor de testes iniciado com sucesso em http://0.0.0.0:3000\n');
+          resolve();
+        });
+      });
+    }
+
     // -------------------------------------------------------------------------
     // 1. CONTRATO DO ENDPOINT /api/sources (SEM MOCK)
     // -------------------------------------------------------------------------
@@ -444,9 +466,77 @@ async function runDeterministicTests() {
     assert(parsedMfHtml.mangaList.length === 1, 'parseMangaFireHtml extrai obra do HTML');
     assert(parsedMfHtml.mangaList[0].id === 'mr_mangafire_one-piece.ov8', 'parseMangaFireHtml gera ID canônico mr_mangafire_one-piece.ov8');
 
+    // -------------------------------------------------------------------------
+    // 11. TESTE DE SUPORTE A BACKUPS .tachibk (MIHON / TACHIYOMI)
+    // -------------------------------------------------------------------------
+    console.log('[11/11] Testando Suporte a Backups .tachibk (Mihon Protobuf & GZIP)...');
+    const { ProtoReader, parseBackupManga, parseTachibk } = await import('../../src/services/tachibkService.js');
+    const zlib = (await import('zlib')).default;
+
+    // 11.1 Teste do leitor de varint e tags do ProtoReader
+    // Codifica varint 300 (0xAC, 0x02)
+    const varintBuf = new Uint8Array([0xac, 0x02]);
+    const pr1 = new ProtoReader(varintBuf);
+    assert(pr1.readVarint() === 300, 'ProtoReader decodifica varints multi-byte corretamente (300)');
+
+    // 11.2 Codifica uma mensagem BackupManga sintética em Protobuf
+    // Tag 3 (wireType 2) -> title = "Chainsaw Man"
+    // Tag 2 (wireType 2) -> url = "/manga/chainsaw-man"
+    // Tag 7 (wireType 2) -> genre = "Ação"
+    const titleBytes = Buffer.from('Chainsaw Man', 'utf8');
+    const urlBytes = Buffer.from('/manga/chainsaw-man', 'utf8');
+    const genreBytes = Buffer.from('Ação', 'utf8');
+
+    const mangaPayload = Buffer.concat([
+      Buffer.from([(3 << 3) | 2, titleBytes.length]),
+      titleBytes,
+      Buffer.from([(2 << 3) | 2, urlBytes.length]),
+      urlBytes,
+      Buffer.from([(7 << 3) | 2, genreBytes.length]),
+      genreBytes
+    ]);
+
+    const decodedManga = parseBackupManga(new Uint8Array(mangaPayload));
+    assert(decodedManga.title === 'Chainsaw Man', 'parseBackupManga extrai título em Protobuf');
+    assert(decodedManga.url === '/manga/chainsaw-man', 'parseBackupManga extrai URL em Protobuf');
+    assert(decodedManga.genre.includes('Ação'), 'parseBackupManga extrai gêneros em Protobuf');
+
+    // 11.3 Codifica mensagem Backup raiz com tag 1 (mangaPayload) e comprime em GZIP (.tachibk)
+    const rootPayload = Buffer.concat([
+      Buffer.from([(1 << 3) | 2, mangaPayload.length]),
+      mangaPayload
+    ]);
+    const gzippedTachibk = zlib.gzipSync(rootPayload);
+
+    // 11.4 Testa descompressão via API local POST /api/backup/decompress
+    const decompressRes = await fetch(`${BASE_URL}/api/backup/decompress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: gzippedTachibk
+    });
+    assert(decompressRes.status === 200, 'POST /api/backup/decompress retorna 200 para payload GZIP');
+    const decompressedBytes = Buffer.from(await decompressRes.arrayBuffer());
+    assert(decompressedBytes.length === rootPayload.length, 'Decompressão no servidor preserva integridade exata dos bytes');
+
+    // 11.5 Testa parseTachibk fim a fim com callback de progresso (feedback visual para o usuário)
+    const progressReports = [];
+    const parsedBackup = await parseTachibk(new Uint8Array(gzippedTachibk), (info) => {
+      progressReports.push(info);
+    });
+    assert(parsedBackup.mangas.length === 1, 'parseTachibk extrai mangas de arquivo .tachibk');
+    assert(parsedBackup.mangas[0].title === 'Chainsaw Man', 'parseTachibk preserva metadados da obra');
+    assert(progressReports.length >= 3, 'parseTachibk emite múltiplos eventos de progresso durante a leitura');
+    assert(progressReports.some(p => p.stage === 'reading' && p.percent > 0), 'parseTachibk reporta estágio de leitura inicial');
+    assert(progressReports.some(p => p.stage === 'decompressing'), 'parseTachibk reporta estágio de descompressão');
+    assert(progressReports.some(p => p.percent >= 70), 'parseTachibk atinge percentual de finalização da decodificação');
+
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);
     failedTests++;
+  } finally {
+    if (serverInstance) {
+      serverInstance.close();
+    }
   }
 
   console.log('\n----------------------------------------------------');

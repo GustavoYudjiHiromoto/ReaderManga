@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Dices, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw, Check, Sparkles, Globe2, Users, Clock, ShieldCheck, ShieldAlert, Blocks } from 'lucide-react';
+import { Search, X, Filter, BookOpen, RefreshCw, Dices, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw, Check, Sparkles, Globe2, Users, Clock, ShieldCheck, ShieldAlert, Blocks, Plus } from 'lucide-react';
 import { Manga } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { MangaCard } from '../components/MangaCard.js';
@@ -120,8 +120,8 @@ export function getMangaDemographic(manga: Manga): string | undefined {
   return undefined;
 }
 
-export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGenre: string): boolean {
-  if (!mangaOrGenres) return true;
+export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGenre: string, scanSynopsis = true): boolean {
+  if (!mangaOrGenres) return false;
   const targetLower = filterGenre.toLowerCase().trim();
   const synonyms = GENRE_TRANSLATIONS[targetLower] || [targetLower];
 
@@ -134,9 +134,11 @@ export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGe
   } else {
     genresLower = (mangaOrGenres.genres || []).map(g => g.toLowerCase());
     titleLower = (mangaOrGenres.title || '').toLowerCase();
-    synopsisLower = (mangaOrGenres.synopsis || '').toLowerCase();
     const alts = (mangaOrGenres.altTitles || []).map(a => a.toLowerCase());
     titleLower += ' ' + alts.join(' ');
+    if (scanSynopsis) {
+      synopsisLower = (mangaOrGenres.synopsis || '').toLowerCase();
+    }
   }
 
   return synonyms.some(syn => {
@@ -177,6 +179,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     if (g && g !== 'all') return [g];
     return [];
   });
+  const [excludedGenres, setExcludedGenres] = useState<string[]>(() => {
+    const eg = getUrlParam('excluded_genres', '');
+    if (eg) return eg.split(',').filter(Boolean);
+    return [];
+  });
+  const [deepSynopsisSearch, setDeepSynopsisSearch] = useState<boolean>(() => getUrlParam('deep', '1') !== '0');
   const [safeSearch, setSafeSearch] = useState<boolean>(() => getUrlParam('safe', '1') === '1');
   const [onlyAvailable, setOnlyAvailable] = useState<boolean>(() => getUrlParam('available', '1') !== '0');
 
@@ -191,10 +199,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     if (selectedType !== 'all') count++;
     if (selectedSource !== 'all') count++;
     if (!safeSearch) count++;
-    if (!onlyAvailable) count++; // Counted if user explicitly disables filtering of catalog-only manga
+    if (!onlyAvailable) count++;
+    if (!deepSynopsisSearch) count++;
     count += includedGenres.length;
+    count += excludedGenres.length;
     return count;
-  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, safeSearch, onlyAvailable, includedGenres]);
+  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch]);
 
   useEffect(() => {
     const startQ = getUrlParam('q', initialQuery);
@@ -205,36 +215,42 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     const startInc = getUrlParam('genres', '')
       ? getUrlParam('genres', '').split(',').filter(Boolean)
       : (getUrlParam('genre', '') && getUrlParam('genre', '') !== 'all' ? [getUrlParam('genre', '')] : []);
+    const startExc = getUrlParam('excluded_genres', '')
+      ? getUrlParam('excluded_genres', '').split(',').filter(Boolean)
+      : [];
     const startSafe = getUrlParam('safe', '1') === '1';
     const startAvail = getUrlParam('available', '1') !== '0';
+    const startDeep = getUrlParam('deep', '1') !== '0';
 
-    executeSearch(startQ, startInc, startStatus, startDemo, startType, startSafe, startAvail, startSrc);
+    executeSearch(startQ, startInc, startExc, startStatus, startDemo, startType, startSafe, startAvail, startSrc, startDeep);
   }, []);
 
   // Subscribe to extension toggles in modal to automatically refresh active sources
   useEffect(() => {
     const unsub = ExtensionService.subscribe(() => {
-      executeSearch(query, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource);
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
     });
     return unsub;
-  }, [query, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource]);
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch]);
 
   useEffect(() => {
     if (initialQuery && initialQuery !== query) {
       setQuery(initialQuery);
-      executeSearch(initialQuery, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource);
+      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
     }
   }, [initialQuery]);
 
   const executeSearch = async (
     searchQuery: string,
     incGenres = includedGenres,
+    excGenres = excludedGenres,
     stat = selectedStatus,
     demo = selectedDemographic,
     typ = selectedType,
     isSafe = safeSearch,
     availOnly = onlyAvailable,
-    src = selectedSource
+    src = selectedSource,
+    deepSynopsis = deepSynopsisSearch
   ) => {
     setLoading(true);
     setSearchPage(1);
@@ -248,8 +264,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       if (typ && typ !== 'all') sp.set('type', typ);
       if (src && src !== 'all') sp.set('source', src);
       if (incGenres.length > 0) sp.set('genres', incGenres.join(','));
+      if (excGenres.length > 0) sp.set('excluded_genres', excGenres.join(','));
       if (!isSafe) sp.set('safe', '0');
       if (!availOnly) sp.set('available', '0');
+      if (!deepSynopsis) sp.set('deep', '0');
       const newUrl = sp.toString() ? `/search?${sp.toString()}` : '/search';
       window.history.replaceState({ ...window.history.state, view: 'search' }, '', newUrl);
     }
@@ -278,9 +296,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
       let data = res.data || [];
 
-      // Filter by genres accurately (checking both tags and synopsis/title for specific tropes)
+      // Filter by included and excluded genres
       if (incGenres.length > 0) {
-        data = data.filter(m => incGenres.every(ig => matchGenre(m, ig)));
+        data = data.filter(m => incGenres.every(ig => matchGenre(m, ig, deepSynopsis)));
+      }
+      if (excGenres.length > 0) {
+        data = data.filter(m => !excGenres.some(eg => matchGenre(m, eg, deepSynopsis)));
       }
 
       // Filter by status
@@ -339,7 +360,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       let newItems = res.data || [];
 
       if (includedGenres.length > 0) {
-        newItems = newItems.filter(m => includedGenres.every(ig => matchGenre(m, ig)));
+        newItems = newItems.filter(m => includedGenres.every(ig => matchGenre(m, ig, deepSynopsisSearch)));
+      }
+      if (excludedGenres.length > 0) {
+        newItems = newItems.filter(m => !excludedGenres.some(eg => matchGenre(m, eg, deepSynopsisSearch)));
       }
       if (selectedStatus !== 'all') {
         newItems = newItems.filter(m => m.status === selectedStatus);
@@ -361,7 +385,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       });
       setSearchPage(nextPage);
     } catch (err) {
-      console.error('Failed to load more search results:', err);
+      console.error('Load more failed:', err);
+      setHasMore(false);
     } finally {
       setLoadingMore(false);
     }
@@ -388,65 +413,82 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    executeSearch(query, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleClear = () => {
     setQuery('');
-    executeSearch('', includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+    executeSearch('', includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleStatusSelect = (stat: string) => {
     const nextStat = selectedStatus === stat ? 'all' : stat;
     setSelectedStatus(nextStat);
-    executeSearch(query, includedGenres, nextStat, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+    executeSearch(query, includedGenres, excludedGenres, nextStat, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleDemographicSelect = (demo: string) => {
     const nextDemo = selectedDemographic === demo ? 'all' : demo;
     setSelectedDemographic(nextDemo);
-    executeSearch(query, includedGenres, selectedStatus, nextDemo, selectedType, safeSearch, onlyAvailable);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, nextDemo, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleTypeSelect = (typ: string) => {
     const nextType = selectedType === typ ? 'all' : typ;
     setSelectedType(nextType);
-    executeSearch(query, includedGenres, selectedStatus, selectedDemographic, nextType, safeSearch, onlyAvailable, selectedSource);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, nextType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleSourceSelect = (src: string) => {
     const nextSrc = selectedSource === src ? 'all' : src;
     setSelectedSource(nextSrc);
-    executeSearch(query, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc, deepSynopsisSearch);
   };
 
-  // 2-state toggle: click 1 = select, click 2 = deselect
-  const handleGenreToggle = (genreId: string) => {
-    let nextInc: string[];
-    if (includedGenres.includes(genreId)) {
-      nextInc = includedGenres.filter(g => g !== genreId);
+  // 3-state cycle: 1st click = Include (+), 2nd click = Exclude (-), 3rd click = Reset
+  const handleGenreCycle = (genreId: string) => {
+    const isInc = includedGenres.includes(genreId);
+    const isExc = excludedGenres.includes(genreId);
+
+    let nextInc = [...includedGenres];
+    let nextExc = [...excludedGenres];
+
+    if (!isInc && !isExc) {
+      nextInc.push(genreId);
+    } else if (isInc) {
+      nextInc = nextInc.filter(g => g !== genreId);
+      nextExc.push(genreId);
     } else {
-      nextInc = [...includedGenres, genreId];
+      nextExc = nextExc.filter(g => g !== genreId);
     }
+
     setIncludedGenres(nextInc);
-    executeSearch(query, nextInc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource);
+    setExcludedGenres(nextExc);
+    executeSearch(query, nextInc, nextExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const handleClearGenres = () => {
     setIncludedGenres([]);
-    executeSearch(query, [], selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource);
+    setExcludedGenres([]);
+    executeSearch(query, [], [], selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const toggleSafeSearch = () => {
     const nextSafe = !safeSearch;
     setSafeSearch(nextSafe);
-    executeSearch(query, includedGenres, selectedStatus, selectedDemographic, selectedType, nextSafe, onlyAvailable, selectedSource);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, nextSafe, onlyAvailable, selectedSource, deepSynopsisSearch);
   };
 
   const toggleOnlyAvailable = () => {
     const nextAvail = !onlyAvailable;
     setOnlyAvailable(nextAvail);
-    executeSearch(query, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, nextAvail, selectedSource);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, nextAvail, selectedSource, deepSynopsisSearch);
+  };
+
+  const toggleDeepSynopsis = () => {
+    const nextDeep = !deepSynopsisSearch;
+    setDeepSynopsisSearch(nextDeep);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, nextDeep);
   };
 
   const handleClearAllFilters = () => {
@@ -456,8 +498,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     setSelectedSource('all');
     setSafeSearch(true);
     setOnlyAvailable(true);
+    setDeepSynopsisSearch(true);
     setIncludedGenres([]);
-    executeSearch(query, [], 'all', 'all', 'all', true, true, 'all');
+    setExcludedGenres([]);
+    executeSearch(query, [], [], 'all', 'all', 'all', true, true, 'all', true);
   };
 
   const handleRandomManga = async () => {
@@ -624,7 +668,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                   type="button"
                   onClick={() => {
                     setQuery(term);
-                    executeSearch(term, includedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+                    executeSearch(term, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
                   }}
                   className="px-2.5 py-1 rounded-md bg-zinc-900/60 hover:bg-zinc-800 hover:text-zinc-200 border border-zinc-800/80 shrink-0 transition-colors cursor-pointer text-[11px]"
                 >
@@ -770,6 +814,20 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                       <BookOpen className={`h-3.5 w-3.5 ${onlyAvailable ? 'text-rose-400' : 'text-zinc-400'}`} />
                       <span>{onlyAvailable ? 'Apenas com Capítulos' : 'Incluir sem Capítulos'}</span>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={toggleDeepSynopsis}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                        deepSynopsisSearch
+                          ? 'bg-indigo-950/40 text-indigo-300 border-indigo-600/50 hover:bg-indigo-950/60 shadow-sm'
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700'
+                      }`}
+                      title="Busca profunda: analisa também a sinopse e títulos alternativos para termos como Overpower, Portais, Reencarnação mesmo em obras não tagueadas"
+                    >
+                      <Sparkles className={`h-3.5 w-3.5 ${deepSynopsisSearch ? 'text-indigo-400' : 'text-zinc-400'}`} />
+                      <span>{deepSynopsisSearch ? 'Busca em Sinopses: Ativa' : 'Sinopses: Inativa'}</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -814,20 +872,27 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </div>
               </div>
 
-              {/* 4. Subgêneros & Tropes Específicos (Yandere, Tomboy, Isekai Village Building, Overpower, etc.) */}
+              {/* 4. Subgêneros & Tropes Específicos (Com inclusão + e exclusão -) */}
               <div className="space-y-2 pt-3 border-t border-zinc-850">
                 <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-1.5 font-medium text-rose-300">
-                    <Sparkles className="h-3.5 w-3.5 text-rose-400" />
-                    <span>Subgêneros & Tropes Populares:</span>
+                  <div className="flex items-center gap-2 font-medium text-rose-300">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="h-3.5 w-3.5 text-rose-400" />
+                      <span>Subgêneros & Tropes:</span>
+                    </div>
+                    <span className="hidden sm:inline text-[10px] text-zinc-500 font-normal">
+                      (1 clique = Incluir <span className="text-emerald-400 font-bold">+</span> | 2 cliques = Excluir <span className="text-rose-400 font-bold">-</span>)
+                    </span>
                   </div>
-                  {includedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g)) && (
+                  {(includedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g)) || excludedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g))) && (
                     <button
                       type="button"
                       onClick={() => {
-                        const remaining = includedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
-                        setIncludedGenres(remaining);
-                        executeSearch(query, remaining, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+                        const remInc = includedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
+                        const remExc = excludedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
+                        setIncludedGenres(remInc);
+                        setExcludedGenres(remExc);
+                        executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer"
                     >
@@ -838,21 +903,32 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
                 <div className="flex flex-wrap items-center gap-1.5">
                   {SPECIFIC_TROPES.map((trope) => {
-                    const isSelected = includedGenres.includes(trope.id);
+                    const isInc = includedGenres.includes(trope.id);
+                    const isExc = excludedGenres.includes(trope.id);
                     return (
                       <button
                         key={trope.id}
                         type="button"
-                        onClick={() => handleGenreToggle(trope.id)}
+                        onClick={() => handleGenreCycle(trope.id)}
+                        title={
+                          isInc 
+                            ? `${trope.label}: Incluído obrigatoriamente (+). Clique para EXCLUIR (-).` 
+                            : isExc 
+                            ? `${trope.label}: Excluído da busca (-). Clique para remover filtro.` 
+                            : `${trope.label}: Clique para INCLUIR (+).`
+                        }
                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
-                          isSelected
-                            ? 'bg-rose-500/25 border-rose-500/70 text-rose-200 font-semibold shadow-sm'
+                          isInc
+                            ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-200 font-semibold shadow-sm ring-1 ring-emerald-500/30'
+                            : isExc
+                            ? 'bg-rose-500/25 border-rose-500/70 text-rose-200 font-semibold shadow-sm line-through decoration-rose-400'
                             : trope.highlight
                             ? 'bg-zinc-900/90 border-zinc-700/80 text-zinc-300 hover:text-rose-300 hover:border-rose-500/50'
                             : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                         }`}
                       >
-                        {isSelected && <Check className="h-3 w-3 text-rose-400 shrink-0" />}
+                        {isInc && <Plus className="h-3 w-3 text-emerald-400 shrink-0" />}
+                        {isExc && <X className="h-3 w-3 text-rose-400 shrink-0" />}
                         <span>{trope.label}</span>
                       </button>
                     );
@@ -860,17 +936,19 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </div>
               </div>
 
-              {/* 4. Gêneros Clássicos */}
+              {/* 5. Gêneros Tradicionais (Com inclusão + e exclusão -) */}
               <div className="space-y-2 pt-3 border-t border-zinc-850">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium text-zinc-400">Gêneros Tradicionais:</span>
-                  {includedGenres.some(g => CLASSIC_GENRES.includes(g)) && (
+                  {(includedGenres.some(g => CLASSIC_GENRES.includes(g)) || excludedGenres.some(g => CLASSIC_GENRES.includes(g))) && (
                     <button
                       type="button"
                       onClick={() => {
-                        const remaining = includedGenres.filter(g => !CLASSIC_GENRES.includes(g));
-                        setIncludedGenres(remaining);
-                        executeSearch(query, remaining, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable);
+                        const remInc = includedGenres.filter(g => !CLASSIC_GENRES.includes(g));
+                        const remExc = excludedGenres.filter(g => !CLASSIC_GENRES.includes(g));
+                        setIncludedGenres(remInc);
+                        setExcludedGenres(remExc);
+                        executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer"
                     >
@@ -881,19 +959,30 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
                 <div className="flex flex-wrap items-center gap-1.5">
                   {CLASSIC_GENRES.map((g) => {
-                    const isSelected = includedGenres.includes(g);
+                    const isInc = includedGenres.includes(g);
+                    const isExc = excludedGenres.includes(g);
                     return (
                       <button
                         key={g}
                         type="button"
-                        onClick={() => handleGenreToggle(g)}
+                        onClick={() => handleGenreCycle(g)}
+                        title={
+                          isInc 
+                            ? `${g}: Incluído (+). Clique para EXCLUIR (-).` 
+                            : isExc 
+                            ? `${g}: Excluído (-). Clique para remover filtro.` 
+                            : `${g}: Clique para INCLUIR (+).`
+                        }
                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer border ${
-                          isSelected
-                            ? 'bg-rose-500/20 border-rose-500/60 text-rose-200 font-semibold shadow-sm'
+                          isInc
+                            ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-200 font-semibold shadow-sm'
+                            : isExc
+                            ? 'bg-rose-500/25 border-rose-500/70 text-rose-200 font-semibold shadow-sm line-through decoration-rose-400'
                             : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                         }`}
                       >
-                        {isSelected && <Check className="h-3 w-3 text-rose-400 shrink-0" />}
+                        {isInc && <Plus className="h-3 w-3 text-emerald-400 shrink-0" />}
+                        {isExc && <X className="h-3 w-3 text-rose-400 shrink-0" />}
                         <span>{g}</span>
                       </button>
                     );
@@ -973,10 +1062,30 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </span>
               )}
 
+              {!deepSynopsisSearch && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-300 border border-zinc-700/60 text-[11px]">
+                  <span>Sinopses: Desativado</span>
+                  <button type="button" onClick={toggleDeepSynopsis} className="hover:text-white cursor-pointer">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
+
               {includedGenres.map(g => (
-                <span key={g} className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-950/40 text-rose-300 border border-rose-600/40 text-[11px]">
+                <span key={`inc-${g}`} className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/40 text-emerald-300 border border-emerald-600/40 text-[11px]">
+                  <span className="font-bold">+</span>
                   <span>{g}</span>
-                  <button type="button" onClick={() => handleGenreToggle(g)} className="hover:text-white cursor-pointer">
+                  <button type="button" onClick={() => handleGenreCycle(g)} className="hover:text-white cursor-pointer ml-0.5">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+
+              {excludedGenres.map(g => (
+                <span key={`exc-${g}`} className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-950/40 text-rose-300 border border-rose-600/40 text-[11px] line-through">
+                  <span className="font-bold no-underline">-</span>
+                  <span>{g}</span>
+                  <button type="button" onClick={() => handleGenreCycle(g)} className="hover:text-white cursor-pointer ml-0.5 no-underline">
                     <X className="h-3 w-3" />
                   </button>
                 </span>

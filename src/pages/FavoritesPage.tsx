@@ -44,6 +44,8 @@ import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
+import { parseTachibk } from '../services/tachibkService.js';
+import { BackupProgressModal, BackupProgressState } from '../components/BackupProgressModal.js';
 
 interface FavoritesPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -120,11 +122,44 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const [showNewCollectionModal, setShowNewCollectionModal] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
   const [managingCollectionsManga, setManagingCollectionsManga] = useState<FavoriteManga | null>(null);
+  const [backupProgress, setBackupProgress] = useState<BackupProgressState>({
+    isOpen: false,
+    stage: 'reading',
+    stageLabel: '',
+    percent: 0
+  });
 
   // Live update tracker state
   const [isCheckingUpdates, setIsCheckingUpdates] = useState<boolean>(() => UpdateTrackerService.isChecking());
   const [updateCheckProgress, setUpdateCheckProgress] = useState<string | null>(() => UpdateTrackerService.getProgress());
   const [updatesMap, setUpdatesMap] = useState<Record<string, MangaUpdateInfo>>(() => UpdateTrackerService.getStoredUpdates());
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => UpdateTrackerService.isNotificationsEnabled());
+
+  const handleToggleNotifications = async () => {
+    if (notificationsEnabled) {
+      UpdateTrackerService.setNotificationsEnabled(false);
+      setNotificationsEnabled(false);
+      setNotification({
+        type: 'success',
+        message: 'Notificações de novos capítulos desativadas.'
+      });
+    } else {
+      const granted = await UpdateTrackerService.requestNotificationPermission();
+      setNotificationsEnabled(granted);
+      if (granted) {
+        setNotification({
+          type: 'success',
+          message: '🔔 Notificações ativadas! Você será avisado quando houver novos capítulos.'
+        });
+      } else {
+        setNotification({
+          type: 'error',
+          message: 'Permissão de notificação negada no navegador. Permita nas configurações de site do navegador.'
+        });
+      }
+    }
+    setTimeout(() => setNotification(null), 4000);
+  };
 
   useEffect(() => {
     // Initial load
@@ -145,6 +180,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
       setIsCheckingUpdates(UpdateTrackerService.isChecking());
       setUpdateCheckProgress(UpdateTrackerService.getProgress());
+      setNotificationsEnabled(UpdateTrackerService.isNotificationsEnabled());
     });
 
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
@@ -176,31 +212,143 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      const res = HistoryService.importBackup(content);
-      if (res.success) {
-        setNotification({
-          type: 'success',
-          message: `Restauração concluída! ${res.favoritesAdded} novo(s) favorito(s) e ${res.historyAdded} histórico(s) mesclados.`
+    const isTachibk = file.name.endsWith('.tachibk') || file.name.endsWith('.proto.gz') || file.type.includes('gzip');
+
+    setBackupProgress({
+      isOpen: true,
+      stage: 'reading',
+      stageLabel: isTachibk ? 'Iniciando leitura do backup Mihon (.tachibk)...' : 'Lendo arquivo de backup JSON...',
+      percent: 5,
+      fileName: file.name,
+      isTachibk,
+      resultSummary: null,
+      error: null
+    });
+
+    try {
+      if (isTachibk) {
+        const parsed = await parseTachibk(file, (info) => {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: info.stage,
+            stageLabel: info.stageLabel,
+            percent: info.percent,
+            currentItem: info.currentItem,
+            currentCount: info.currentCount,
+            totalCount: info.totalCount
+          }));
         });
+
+        setBackupProgress(prev => ({
+          ...prev,
+          stage: 'merging',
+          stageLabel: 'Mesclando favoritos, capítulos lidos e categorias...',
+          percent: 85
+        }));
+
+        await new Promise(r => setTimeout(r, 120));
+
+        const res = HistoryService.importBackup(parsed as any);
+
+        if (res.success) {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: 'completed',
+            stageLabel: 'Restauração concluída com sucesso!',
+            percent: 100,
+            resultSummary: {
+              favoritesAdded: res.favoritesAdded,
+              historyAdded: res.historyAdded,
+              totalFavorites: res.totalFavorites,
+              totalHistory: res.totalHistory,
+              categoriesAdded: res.categoriesAdded
+            }
+          }));
+          setFavorites(HistoryService.getFavorites());
+          setCustomCollections(HistoryService.getCustomCollections());
+        } else {
+          setBackupProgress(prev => ({
+            ...prev,
+            stage: 'error',
+            stageLabel: 'Erro ao importar',
+            error: res.message || 'Falha ao importar o arquivo .tachibk.'
+          }));
+        }
       } else {
-        setNotification({
-          type: 'error',
-          message: res.message || 'Falha ao importar o arquivo de backup.'
-        });
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'decoding',
+              stageLabel: 'Validando estrutura JSON da biblioteca...',
+              percent: 50
+            }));
+
+            await new Promise(r => setTimeout(r, 150));
+
+            const content = event.target?.result as string;
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'merging',
+              stageLabel: 'Mesclando dados da biblioteca...',
+              percent: 85
+            }));
+
+            await new Promise(r => setTimeout(r, 150));
+
+            const res = HistoryService.importBackup(content);
+            if (res.success) {
+              setBackupProgress(prev => ({
+                ...prev,
+                stage: 'completed',
+                stageLabel: 'Restauração concluída com sucesso!',
+                percent: 100,
+                resultSummary: {
+                  favoritesAdded: res.favoritesAdded,
+                  historyAdded: res.historyAdded,
+                  totalFavorites: res.totalFavorites,
+                  totalHistory: res.totalHistory,
+                  categoriesAdded: res.categoriesAdded
+                }
+              }));
+              setFavorites(HistoryService.getFavorites());
+              setCustomCollections(HistoryService.getCustomCollections());
+            } else {
+              setBackupProgress(prev => ({
+                ...prev,
+                stage: 'error',
+                stageLabel: 'Falha na validação',
+                error: res.message || 'Falha ao importar o arquivo de backup.'
+              }));
+            }
+          } catch (err: any) {
+            setBackupProgress(prev => ({
+              ...prev,
+              stage: 'error',
+              stageLabel: 'Erro de leitura',
+              error: err?.message || 'Arquivo JSON inválido ou corrompido.'
+            }));
+          }
+        };
+        reader.readAsText(file);
       }
-      setTimeout(() => setNotification(null), 5000);
+    } catch (err: any) {
+      setBackupProgress(prev => ({
+        ...prev,
+        stage: 'error',
+        stageLabel: 'Erro no processamento',
+        error: err?.message || 'Não foi possível processar o arquivo de backup.'
+      }));
+    } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-    };
-    reader.readAsText(file);
+    }
   };
 
   const handleRemove = (e: React.MouseEvent, mangaId: string) => {
@@ -509,12 +657,12 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
           {/* Consolidated Header Action Toolbar */}
           <div className="flex items-center gap-2 sm:gap-2.5">
-            {/* Hidden file input for restore */}
+            {/* Hidden file input for restore (.tachibk / .proto.gz / .json) */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept=".json,application/json"
+              accept=".tachibk,.proto.gz,.json,application/json,application/gzip,application/octet-stream"
               className="hidden"
             />
 
@@ -568,9 +716,9 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                 <div className="absolute right-0 top-11 w-64 rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
                   {/* Section: Sincronização & Rastreamento */}
                   <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-850">
-                    Integrações & Nuvem
+                    Integrações & Alertas
                   </div>
-                  <div className="py-1">
+                  <div className="py-1 space-y-0.5">
                     <button
                       onClick={() => {
                         setShowLibraryMenu(false);
@@ -583,6 +731,21 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                         <span>AniList & MyAnimeList</span>
                       </div>
                       <span className="text-[10px] font-mono text-zinc-500">Auto-sync</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleToggleNotifications();
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Bell className={`h-3.5 w-3.5 ${notificationsEnabled ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                        <span>Notificações de Lançamentos</span>
+                      </div>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${notificationsEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-850 text-zinc-500'}`}>
+                        {notificationsEnabled ? 'Ativo' : 'Ativar'}
+                      </span>
                     </button>
                   </div>
 
@@ -670,7 +833,10 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     >
                       <div className="flex items-center gap-2">
                         <Upload className="h-3.5 w-3.5 text-emerald-400" />
-                        <span>Restaurar Backup</span>
+                        <div>
+                          <div className="font-medium text-zinc-200">Restaurar Backup</div>
+                          <div className="text-[10px] text-zinc-500">Mihon (.tachibk) ou MangaReader (.json)</div>
+                        </div>
                       </div>
                     </button>
                   </div>
@@ -1912,6 +2078,12 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </div>
           </div>
         )}
+
+        {/* Modal: Backup & Restore Progress with real-time feedback */}
+        <BackupProgressModal
+          progress={backupProgress}
+          onClose={() => setBackupProgress(prev => ({ ...prev, isOpen: false }))}
+        />
       </div>
     </div>
   );

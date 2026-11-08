@@ -805,6 +805,7 @@ export const HistoryService = {
     historyAdded: number;
     totalFavorites: number;
     totalHistory: number;
+    categoriesAdded: number;
     message?: string;
   } {
     try {
@@ -816,12 +817,29 @@ export const HistoryService = {
       // Extract raw favorites & history
       let importedFavorites: FavoriteManga[] = [];
       let importedHistory: ReadingProgress[] = [];
+      let categoriesAdded = 0;
 
       if (Array.isArray(data.favorites)) {
         importedFavorites = data.favorites;
-      } else if (Array.isArray(data.mangas)) {
-        // Tachiyomi / Mihon v2 backup format
-        data.mangas.forEach((tm: any) => {
+      } else if (Array.isArray(data.mangas) || Array.isArray(data.backupManga)) {
+        // Tachiyomi / Mihon v1 & v2 protobuf-json backup format
+        const mangaList = Array.isArray(data.backupManga) ? data.backupManga : data.mangas;
+        
+        // Extract categories if available
+        let categoriesAdded = 0;
+        const rawCategories = Array.isArray(data.backupCategories) ? data.backupCategories : Array.isArray(data.categories) ? data.categories : [];
+        if (rawCategories.length > 0) {
+          rawCategories.forEach((rc: any) => {
+            const name = typeof rc === 'string' ? rc : rc?.name;
+            if (name && typeof name === 'string' && name.trim()) {
+              if (this.createCustomCollection(name.trim())) {
+                categoriesAdded++;
+              }
+            }
+          });
+        }
+
+        mangaList.forEach((tm: any) => {
           if (!tm || !tm.title) return;
           const cleanTitle = tm.title;
           const id = tm.url
@@ -829,8 +847,9 @@ export const HistoryService = {
             : `mr_tachiyomi_${cleanTitle.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
 
           let cat: LibraryCategory = 'reading';
-          if (Array.isArray(tm.categories) && tm.categories.length > 0) {
-            const catStr = String(tm.categories[0]).toLowerCase();
+          const cats = tm.categories || tm.categoriesList || [];
+          if (Array.isArray(cats) && cats.length > 0) {
+            const catStr = String(cats[0]).toLowerCase();
             if (catStr.includes('complet')) cat = 'completed';
             else if (catStr.includes('plan') || catStr.includes('quero')) cat = 'plan_to_read';
             else if (catStr.includes('hold') || catStr.includes('paus')) cat = 'on_hold';
@@ -967,6 +986,9 @@ export const HistoryService = {
       if (Array.isArray(data.customCollections)) {
         const currentCols = this.getCustomCollections();
         const set = new Set([...currentCols, ...data.customCollections.filter((c: any) => typeof c === 'string' && c.trim())]);
+        if (set.size > currentCols.length) {
+          categoriesAdded += (set.size - currentCols.length);
+        }
         localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(Array.from(set)));
       }
 
@@ -977,7 +999,8 @@ export const HistoryService = {
         favoritesAdded: favAdded,
         historyAdded: histAdded,
         totalFavorites: mergedFavorites.length,
-        totalHistory: mergedHistory.length
+        totalHistory: mergedHistory.length,
+        categoriesAdded
       };
     } catch (err) {
       return {
@@ -986,6 +1009,7 @@ export const HistoryService = {
         historyAdded: 0,
         totalFavorites: this.getFavorites().length,
         totalHistory: this.getHistory().length,
+        categoriesAdded: 0,
         message: (err as Error).message || 'Falha ao processar arquivo de restauração.'
       };
     }

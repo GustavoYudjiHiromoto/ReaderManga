@@ -30,8 +30,44 @@ if (typeof window !== 'undefined') {
 let isChecking = false;
 let checkProgress: string | null = null;
 let bgTimerId: any = null;
+const NOTIFICATIONS_ENABLED_KEY = 'mr_notifications_enabled';
 
 export const UpdateTrackerService = {
+  isNotificationsSupported(): boolean {
+    return typeof window !== 'undefined' && 'Notification' in window;
+  },
+
+  isNotificationsEnabled(): boolean {
+    if (!this.isNotificationsSupported()) return false;
+    try {
+      const stored = localStorage.getItem(NOTIFICATIONS_ENABLED_KEY);
+      return stored === 'true' && Notification.permission === 'granted';
+    } catch {
+      return false;
+    }
+  },
+
+  async requestNotificationPermission(): Promise<boolean> {
+    if (!this.isNotificationsSupported()) return false;
+    try {
+      const permission = await Notification.requestPermission();
+      const granted = permission === 'granted';
+      localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, granted ? 'true' : 'false');
+      notifyListeners();
+      return granted;
+    } catch (e) {
+      console.warn('Error requesting notification permission', e);
+      return false;
+    }
+  },
+
+  setNotificationsEnabled(enabled: boolean): void {
+    try {
+      localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, enabled ? 'true' : 'false');
+      notifyListeners();
+    } catch {}
+  },
+
   subscribe(listener: UpdateListener): () => void {
     listeners.add(listener);
     return () => {
@@ -164,6 +200,19 @@ export const UpdateTrackerService = {
               } else if (fav.userCategory === 'reading') {
                 // Se está marcado como lendo mas sem progresso no dispositivo
                 hasNew = true;
+              }
+            }
+
+            const isFreshDiscovery = hasNew && (!existing || !existing.hasNew || existing.latestChapterId !== latest.id);
+            if (isFreshDiscovery && this.isNotificationsEnabled() && typeof Notification !== 'undefined') {
+              try {
+                new Notification(`Novo Capítulo de ${fav.title}! 📖`, {
+                  body: `Capítulo ${latest.chapterNumber}${latest.title ? ` - ${latest.title}` : ''} já está disponível!`,
+                  icon: fav.coverUrl || undefined,
+                  tag: `manga-update-${fav.mangaId}-${latest.id}`
+                });
+              } catch (e) {
+                console.warn('Falha ao emitir notificação web:', e);
               }
             }
 
