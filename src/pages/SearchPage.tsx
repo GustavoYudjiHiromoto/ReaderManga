@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Dices, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw, Check, Sparkles, Globe2, Users, Clock, ShieldCheck, ShieldAlert, Blocks, Plus } from 'lucide-react';
-import { Manga } from '../types/manga.js';
+import { Search, X, Filter, BookOpen, RefreshCw, Dices, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw, Check, Sparkles, Globe2, Users, Clock, ShieldCheck, ShieldAlert, Blocks, Plus, BookmarkX, Bookmark } from 'lucide-react';
+import { Manga, FavoriteManga } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { ExtensionService } from '../services/extensionService.js';
+import { HistoryService } from '../services/history.js';
 
 interface SearchPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -187,10 +188,70 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
   const [deepSynopsisSearch, setDeepSynopsisSearch] = useState<boolean>(() => getUrlParam('deep', '1') !== '0');
   const [safeSearch, setSafeSearch] = useState<boolean>(() => getUrlParam('safe', '1') === '1');
   const [onlyAvailable, setOnlyAvailable] = useState<boolean>(() => getUrlParam('available', '1') !== '0');
+  const [hideLibrary, setHideLibrary] = useState<boolean>(() => {
+    const p = getUrlParam('hide_library', '');
+    if (p === '1') return true;
+    if (p === '0') return false;
+    try {
+      return localStorage.getItem('mr_search_hide_library') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Live favorites synchronization
+  const [favoritesList, setFavoritesList] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
+
+  useEffect(() => {
+    const unsub = HistoryService.subscribe(() => {
+      setFavoritesList(HistoryService.getFavorites());
+    });
+    return unsub;
+  }, []);
+
+  const { savedIdsSet, savedTitlesSet } = useMemo(() => {
+    const ids = new Set<string>();
+    const titles = new Set<string>();
+    favoritesList.forEach(fav => {
+      if (fav.mangaId) ids.add(fav.mangaId);
+      if (fav.title) {
+        const clean = fav.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (clean) titles.add(clean);
+      }
+    });
+    return { savedIdsSet: ids, savedTitlesSet: titles };
+  }, [favoritesList]);
+
+  const isMangaInLibrary = (m: Manga): boolean => {
+    if (savedIdsSet.has(m.id)) return true;
+    if (m.title) {
+      const clean = m.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (clean && savedTitlesSet.has(clean)) return true;
+    }
+    if (m.altTitles && m.altTitles.length > 0) {
+      for (const alt of m.altTitles) {
+        const cleanAlt = alt.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (cleanAlt && savedTitlesSet.has(cleanAlt)) return true;
+      }
+    }
+    if (m.sources && m.sources.length > 0) {
+      for (const s of m.sources) {
+        if (s.externalId && savedIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
+      }
+    }
+    return false;
+  };
 
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
   const [showFilters, setShowFilters] = useState(false);
   const observerRef = useRef<HTMLDivElement | null>(null);
+
+  const displayedResults = useMemo(() => {
+    if (!hideLibrary) return results;
+    return results.filter(m => !isMangaInLibrary(m));
+  }, [results, hideLibrary, savedIdsSet, savedTitlesSet]);
+
+  const hiddenFavoritesCount = results.length - displayedResults.length;
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
@@ -201,10 +262,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     if (!safeSearch) count++;
     if (!onlyAvailable) count++;
     if (!deepSynopsisSearch) count++;
+    if (hideLibrary) count++;
     count += includedGenres.length;
     count += excludedGenres.length;
     return count;
-  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch]);
+  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
 
   useEffect(() => {
     const startQ = getUrlParam('q', initialQuery);
@@ -491,6 +553,25 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, nextDeep);
   };
 
+  const toggleHideLibrary = () => {
+    const next = !hideLibrary;
+    setHideLibrary(next);
+    try {
+      localStorage.setItem('mr_search_hide_library', String(next));
+    } catch {}
+
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/search')) {
+      const sp = new URLSearchParams(window.location.search);
+      if (next) {
+        sp.set('hide_library', '1');
+      } else {
+        sp.delete('hide_library');
+      }
+      const newUrl = sp.toString() ? `/search?${sp.toString()}` : '/search';
+      window.history.replaceState({ ...window.history.state, view: 'search' }, '', newUrl);
+    }
+  };
+
   const handleClearAllFilters = () => {
     setSelectedStatus('all');
     setSelectedDemographic('all');
@@ -499,6 +580,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     setSafeSearch(true);
     setOnlyAvailable(true);
     setDeepSynopsisSearch(true);
+    setHideLibrary(false);
+    try {
+      localStorage.removeItem('mr_search_hide_library');
+    } catch {}
     setIncludedGenres([]);
     setExcludedGenres([]);
     executeSearch(query, [], [], 'all', 'all', 'all', true, true, 'all', true);
@@ -506,7 +591,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
   const handleRandomManga = async () => {
     try {
-      const pool = results.length > 0 ? results : (await MangaApi.getFeatured());
+      const pool = (displayedResults.length > 0 ? displayedResults : results.length > 0 ? results : (await MangaApi.getFeatured()));
       if (pool.length === 0) return;
       const chosen = pool[Math.floor(Math.random() * pool.length)];
       onSelectManga(chosen.id);
@@ -615,8 +700,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
             </form>
 
             {/* Filter Toggle & Quick Actions */}
-            <div className="flex items-center justify-between text-xs px-1">
-              <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setShowFilters(!showFilters)}
@@ -637,6 +722,30 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                   {showFilters ? <ChevronUp className="h-3.5 w-3.5 ml-0.5 text-zinc-400" /> : <ChevronDown className="h-3.5 w-3.5 ml-0.5 text-zinc-400" />}
                 </button>
 
+                {/* Discovery Mode Toggle: Ocultar da Biblioteca */}
+                <button
+                  type="button"
+                  onClick={toggleHideLibrary}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer font-medium ${
+                    hideLibrary
+                      ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 shadow-sm ring-1 ring-emerald-500/30'
+                      : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-zinc-800'
+                  }`}
+                  title={
+                    hideLibrary
+                      ? `Modo Descoberta ativo: ${hiddenFavoritesCount} obra(s) já favoritadas estão ocultadas. Clique para mostrar todas.`
+                      : 'Modo Descoberta: Clique para ocultar mangás que você já tem na biblioteca e encontrar apenas títulos novos'
+                  }
+                >
+                  <Sparkles className={`h-3.5 w-3.5 ${hideLibrary ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                  <span>{hideLibrary ? 'Apenas Novos Mangás' : 'Ocultar da Biblioteca'}</span>
+                  {hideLibrary && hiddenFavoritesCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-200 text-[10px] font-mono font-bold">
+                      -{hiddenFavoritesCount}
+                    </span>
+                  )}
+                </button>
+
                 {activeFiltersCount > 0 && (
                   <button
                     type="button"
@@ -651,7 +760,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
               <button
                 type="button"
                 onClick={handleRandomManga}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 transition-all cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 transition-all cursor-pointer shrink-0"
                 title="Sortear um mangá aleatório para ler agora"
               >
                 <Dices className="h-3.5 w-3.5 text-rose-400" />
@@ -827,6 +936,20 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                     >
                       <Sparkles className={`h-3.5 w-3.5 ${deepSynopsisSearch ? 'text-indigo-400' : 'text-zinc-400'}`} />
                       <span>{deepSynopsisSearch ? 'Busca em Sinopses: Ativa' : 'Sinopses: Inativa'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={toggleHideLibrary}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                        hideLibrary
+                          ? 'bg-emerald-950/40 text-emerald-300 border-emerald-600/50 hover:bg-emerald-950/60 shadow-sm ring-1 ring-emerald-500/20'
+                          : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700'
+                      }`}
+                      title="Oculta dos resultados as obras que você já tem na biblioteca de favoritos para encontrar apenas mangás novos"
+                    >
+                      <BookmarkX className={`h-3.5 w-3.5 ${hideLibrary ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                      <span>{hideLibrary ? 'Ocultando Salvos: Ativo' : 'Ocultar Salvos'}</span>
                     </button>
                   </div>
                 </div>
@@ -1071,6 +1194,16 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </span>
               )}
 
+              {hideLibrary && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/40 text-emerald-300 border border-emerald-600/40 text-[11px]">
+                  <Sparkles className="h-3 w-3 text-emerald-400" />
+                  <span>Ocultando Salvos{hiddenFavoritesCount > 0 ? ` (-${hiddenFavoritesCount})` : ''}</span>
+                  <button type="button" onClick={toggleHideLibrary} className="hover:text-white cursor-pointer ml-0.5">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
+
               {includedGenres.map(g => (
                 <span key={`inc-${g}`} className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-950/40 text-emerald-300 border border-emerald-600/40 text-[11px]">
                   <span className="font-bold">+</span>
@@ -1114,11 +1247,19 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 <span>Consultando repositórios ativos...</span>
               </span>
             ) : (
-              <span>
-                <strong className="text-zinc-200 font-mono tabular-nums">{results.length}</strong>{' '}
-                {results.length === 1 ? 'resultado encontrado' : 'resultados encontrados'}
-                {query ? ` para "${query}"` : ''}
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span>
+                  <strong className="text-zinc-200 font-mono tabular-nums">{displayedResults.length}</strong>{' '}
+                  {displayedResults.length === 1 ? 'resultado encontrado' : 'resultados encontrados'}
+                  {query ? ` para "${query}"` : ''}
+                </span>
+                {hideLibrary && hiddenFavoritesCount > 0 && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px]">
+                    <Sparkles className="h-3 w-3 text-emerald-400 shrink-0" />
+                    <span>{hiddenFavoritesCount} já salvos na biblioteca foram ocultados</span>
+                  </span>
+                )}
+              </div>
             )}
           </div>
           {sourcesQueried.length > 0 && (
@@ -1154,18 +1295,43 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
             <RefreshCw className="h-7 w-7 animate-spin text-rose-500 mb-3" />
             <p className="text-sm">Buscando mangás nas fontes integradas...</p>
           </div>
-        ) : results.length === 0 ? (
-          <div className="text-center py-20 text-zinc-500 bg-zinc-900/30 rounded-xl border border-zinc-800/60 max-w-xl mx-auto">
-            <BookOpen className="h-10 w-10 mx-auto mb-3 text-zinc-600" />
-            <h3 className="text-base font-semibold text-zinc-300">Nenhum mangá encontrado</h3>
-            <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto">
-              Tente pesquisar por outro título, autor, ou alterne os filtros de demografia, status e gênero.
-            </p>
+        ) : displayedResults.length === 0 ? (
+          <div className="text-center py-16 px-4 text-zinc-400 bg-zinc-900/30 rounded-2xl border border-zinc-800/60 max-w-xl mx-auto space-y-3">
+            {results.length > 0 && hideLibrary ? (
+              <>
+                <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
+                  <Sparkles className="h-6 w-6" />
+                </div>
+                <h3 className="text-base font-semibold text-zinc-200">
+                  Todas as obras encontradas já estão na sua biblioteca!
+                </h3>
+                <p className="text-xs text-zinc-400 max-w-md mx-auto">
+                  Foram localizados <strong>{results.length}</strong> mangá(s) para esta busca, mas todos já estão salvos nos seus favoritos.
+                </p>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={toggleHideLibrary}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-950/40 transition-all cursor-pointer"
+                  >
+                    Exibir Obras da Biblioteca
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <BookOpen className="h-10 w-10 mx-auto mb-2 text-zinc-600" />
+                <h3 className="text-base font-semibold text-zinc-300">Nenhum mangá encontrado</h3>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                  Tente pesquisar por outro título, autor, ou alterne os filtros de demografia, status e gênero.
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
-              {results.map((manga) => (
+              {displayedResults.map((manga) => (
                 <MangaCard
                   key={manga.id}
                   manga={manga}
@@ -1182,9 +1348,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                   <span>Carregando mais mangás automaticamente...</span>
                 </div>
               )}
-              {!hasMore && results.length > 0 && (
+              {!hasMore && displayedResults.length > 0 && (
                 <p className="text-xs text-zinc-600">
-                  Fim dos resultados da busca ({results.length} obras carregadas)
+                  Fim dos resultados da busca ({displayedResults.length} obras exibidas{hideLibrary && hiddenFavoritesCount > 0 ? `, ${hiddenFavoritesCount} salvas ocultadas` : ''})
                 </p>
               )}
             </div>

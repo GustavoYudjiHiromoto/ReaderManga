@@ -28,7 +28,9 @@ import {
   LayoutList,
   LayoutGrid,
   Folder,
-  Globe
+  Globe,
+  BookmarkX,
+  Compass
 } from 'lucide-react';
 import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -36,6 +38,7 @@ import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { TrackerService, TrackerMediaMapping } from '../services/trackerService.js';
+import { RecommendationService, SimilarMangaMatch } from '../services/recommendationService.js';
 import { TrackersModal } from '../components/TrackersModal.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
@@ -59,7 +62,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 }) => {
   const [manga, setManga] = useState<Manga | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [recommendedManga, setRecommendedManga] = useState<Manga[]>([]);
+  const [similarMatches, setSimilarMatches] = useState<SimilarMangaMatch[]>([]);
+  const [hideSavedInSimilar, setHideSavedInSimilar] = useState(true);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -181,11 +185,11 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const loadRecommendations = async (targetManga: Manga) => {
     setLoadingRecommendations(true);
     try {
-      const recs = await MangaApi.getRelatedRecommendations(targetManga);
-      setRecommendedManga(recs.slice(0, 6));
+      const recs = await RecommendationService.getSimilarMangas(targetManga, { hideLibrary: false, limit: 12 });
+      setSimilarMatches(recs);
     } catch (err) {
-      console.warn('Failed to load recommended manga:', err);
-      setRecommendedManga([]);
+      console.warn('Failed to load similar manga matches:', err);
+      setSimilarMatches([]);
     } finally {
       setLoadingRecommendations(false);
     }
@@ -1538,34 +1542,168 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           )}
         </section>
 
-        {/* Recommended & Similar Manga Section */}
-        {recommendedManga.length > 0 && (
+        {/* Similar & Recommended Manga Section (Idea 2) */}
+        {similarMatches.length > 0 && (
           <section className="mt-14 pt-8 border-t border-zinc-800">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h3 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-amber-400" />
-                  <span>Obras Relacionadas & Recomendações</span>
-                </h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  Títulos similares com base em temática, autores e gêneros compartilhados
-                </p>
-              </div>
-            </div>
+            {(() => {
+              const displayed = hideSavedInSimilar
+                ? similarMatches.filter(m => !m.isInLibrary)
+                : similarMatches;
+              const hiddenSavedCount = similarMatches.length - displayed.length;
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-              {recommendedManga.map((rec) => (
-                <MangaCard
-                  key={rec.id}
-                  manga={rec}
-                  onSelect={(id) => {
-                    onSelectManga?.(id);
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  onQuickRead={(id) => onReadChapter(id, '')}
-                />
-              ))}
-            </div>
+              return (
+                <>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+                        <Sparkles className="h-5 w-5 text-amber-400" />
+                        <span>Se você curtiu este, leia também...</span>
+                      </h3>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        Obras irmãs com afinidade temática, estilo narrativo e tropos compartilhados
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Discovery Mode toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setHideSavedInSimilar(prev => !prev)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                          hideSavedInSimilar
+                            ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                        title={hideSavedInSimilar ? 'Mostrando apenas obras que você não tem na biblioteca' : 'Clique para ocultar obras já salvas'}
+                      >
+                        {hideSavedInSimilar ? (
+                          <>
+                            <BookmarkX className="h-3.5 w-3.5 text-rose-400" />
+                            <span>Apenas Inéditos</span>
+                            {hiddenSavedCount > 0 && (
+                              <span className="px-1.5 py-0.2 rounded-full bg-rose-500/30 text-rose-200 text-[10px] font-mono">
+                                -{hiddenSavedCount}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <Bookmark className="h-3.5 w-3.5" />
+                            <span>Ocultar da Biblioteca</span>
+                          </>
+                        )}
+                      </button>
+
+                      {/* Explore more in search */}
+                      {onNavigateToSearch && manga?.genres && manga.genres.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => onNavigateToSearch(undefined, manga.genres[0])}
+                          className="px-3 py-1.5 rounded-xl text-xs font-medium bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                          title={`Ver mais obras de ${manga.genres[0]} na busca`}
+                        >
+                          <Compass className="h-3.5 w-3.5 text-rose-400" />
+                          <span className="hidden sm:inline">Explorar {manga.genres[0]}</span>
+                          <span className="sm:hidden">Mais</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {displayed.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                      {displayed.map((item) => (
+                        <div
+                          key={item.manga.id}
+                          onClick={() => {
+                            onSelectManga?.(item.manga.id);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="group relative flex flex-col bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+                        >
+                          <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
+                            {item.manga.coverUrl ? (
+                              <img
+                                src={item.manga.coverUrl}
+                                alt={item.manga.title}
+                                referrerPolicy="no-referrer"
+                                className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="h-full w-full flex items-center justify-center p-3 text-center bg-zinc-900 text-zinc-400 text-xs">
+                                {item.manga.title}
+                              </div>
+                            )}
+
+                            {/* Similarity Score Pill */}
+                            <div className="absolute top-2 left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
+                              <span className={item.similarityScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>
+                                ★ {item.similarityScore}%
+                              </span>
+                              <span className="text-[9px] text-zinc-400 font-normal">similar</span>
+                            </div>
+
+                            {/* Saved badge if in library and filter is off */}
+                            {item.isInLibrary && (
+                              <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
+                                Salvo
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="p-3 flex flex-1 flex-col justify-between">
+                            <div>
+                              <h4 className="font-semibold text-xs text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
+                                {item.manga.title}
+                              </h4>
+                              <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
+                                {item.isSameAuthor ? (
+                                  <span className="text-indigo-400 font-medium">Do mesmo autor</span>
+                                ) : (
+                                  item.manga.authors?.[0] || item.manga.sources?.[0]?.sourceName || 'MangaReader'
+                                )}
+                              </p>
+                            </div>
+
+                            <div className="pt-2 border-t border-zinc-800/60 mt-2">
+                              {item.sharedGenres.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {item.sharedGenres.slice(0, 2).map(g => (
+                                    <span key={g} className="px-1.5 py-0.2 rounded bg-zinc-800/80 text-zinc-300 text-[9px]">
+                                      {g}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-zinc-400">Recomendação afim</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 px-4 rounded-xl bg-zinc-900/40 border border-dashed border-zinc-800">
+                      <Bookmark className="h-8 w-8 text-zinc-600 mx-auto mb-2" />
+                      <p className="text-sm font-medium text-zinc-300">
+                        Todas as obras irmãs já estão salvas na sua biblioteca!
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-1 mb-3">
+                        Desative o filtro para rever as obras semelhantes que você já conhece.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setHideSavedInSimilar(false)}
+                        className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                      >
+                        Exibir Todas as Obras Irmãs
+                      </button>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </section>
         )}
       </div>

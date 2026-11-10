@@ -17,13 +17,16 @@ import {
   Smile,
   Globe2,
   Bookmark,
-  Blocks
+  BookmarkX,
+  Blocks,
+  Dna
 } from 'lucide-react';
 import { Manga, MangaSourceInfo, ReadingProgress, FavoriteManga, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { ExtensionService } from '../services/extensionService.js';
+import { RecommendationService, ReaderDNA, RecommendationMatch } from '../services/recommendationService.js';
 
 interface HomePageProps {
   onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
@@ -103,12 +106,17 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
   const [updatesMap, setUpdatesMap] = useState<Record<string, MangaUpdateInfo>>(() => UpdateTrackerService.getStoredUpdates());
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
+  const [readerDNA, setReaderDNA] = useState<ReaderDNA>(() => RecommendationService.calculateReaderDNA());
+  const [personalizedRecs, setPersonalizedRecs] = useState<RecommendationMatch[]>([]);
+  const [loadingPersonalized, setLoadingPersonalized] = useState(false);
+  const [hideLibraryPersonalized, setHideLibraryPersonalized] = useState(true);
 
   useEffect(() => {
     loadInitialData();
     const unsubHistory = HistoryService.subscribe(() => {
       setLocalHistory(HistoryService.getHistory());
       setFavorites(HistoryService.getFavorites());
+      setReaderDNA(RecommendationService.calculateReaderDNA());
     });
     const unsubUpdates = UpdateTrackerService.subscribe(() => {
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
@@ -129,6 +137,22 @@ export const HomePage: React.FC<HomePageProps> = ({
     return UpdateTrackerService.getMangasWithUpdates();
   }, [updatesMap, favorites]);
 
+  const loadPersonalizedRecommendations = async (hideLib = hideLibraryPersonalized) => {
+    setLoadingPersonalized(true);
+    try {
+      const recs = await RecommendationService.getPersonalizedRecommendations({
+        hideLibrary: hideLib,
+        limit: 12
+      });
+      setPersonalizedRecs(recs);
+    } catch (err) {
+      console.warn('Failed to load personalized recommendations', err);
+      setPersonalizedRecs([]);
+    } finally {
+      setLoadingPersonalized(false);
+    }
+  };
+
   const loadInitialData = async () => {
     setLoading(true);
     try {
@@ -142,6 +166,9 @@ export const HomePage: React.FC<HomePageProps> = ({
 
       // Preload the first thematic collection
       loadCollection('seinen', featured);
+
+      // Load personalized recommendations
+      loadPersonalizedRecommendations(hideLibraryPersonalized);
     } catch (err) {
       console.error('Failed to load home page data:', err);
     } finally {
@@ -215,6 +242,15 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
+  const isAlreadySaved = (manga: Manga): boolean => {
+    const normTitle = (manga.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return favorites.some(f => {
+      if (f.mangaId === manga.id) return true;
+      const fNorm = (f.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      return fNorm && fNorm === normTitle;
+    });
+  };
+
   const handleRollVibe = async (vibeId: VibeCategory) => {
     setSelectedVibe(vibeId);
     setIsRollingVibe(true);
@@ -238,7 +274,11 @@ export const HomePage: React.FC<HomePageProps> = ({
         candidates = featuredManga.filter(m => !m.isAdult);
       }
 
-      const randomManga = candidates[Math.floor(Math.random() * candidates.length)];
+      // Prioritize manga that the user hasn't saved yet for a fresh discovery experience
+      const unsavedCandidates = candidates.filter(m => !isAlreadySaved(m));
+      const pool = unsavedCandidates.length > 0 ? unsavedCandidates : candidates;
+
+      const randomManga = pool[Math.floor(Math.random() * pool.length)];
       setVibeResult(randomManga || null);
     } catch {
       if (featuredManga.length > 0) {
@@ -601,6 +641,196 @@ export const HomePage: React.FC<HomePageProps> = ({
         ) : null}
 
         {/* =========================================================================
+            DNA DO LEITOR & RECOMENDAÇÕES PERSONALIZADAS (IDEIA 1)
+        ========================================================================= */}
+        <section className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-zinc-900/90 via-zinc-900/50 to-zinc-950 border border-zinc-800 shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800 mb-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+                  <span>Recomendados Para o Seu Perfil</span>
+                  {readerDNA.topGenres.length > 0 && (
+                    <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-mono font-medium">
+                      <Dna className="h-3 w-3" />
+                      {readerDNA.dominantMood}
+                    </span>
+                  )}
+                </h2>
+              </div>
+              <p className="text-xs text-zinc-400 mt-1">
+                Sugestões geradas sob medida calculando a afinidade com os gêneros e obras que você mais consome
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Discovery Mode Toggle */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !hideLibraryPersonalized;
+                  setHideLibraryPersonalized(nextVal);
+                  loadPersonalizedRecommendations(nextVal);
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  hideLibraryPersonalized
+                    ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+                title={hideLibraryPersonalized ? 'Ocultando mangás da sua biblioteca' : 'Clique para ocultar mangás já favoritados'}
+              >
+                {hideLibraryPersonalized ? (
+                  <>
+                    <BookmarkX className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Apenas Inéditos</span>
+                  </>
+                ) : (
+                  <>
+                    <Bookmark className="h-3.5 w-3.5" />
+                    <span>Ocultar Biblioteca</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => loadPersonalizedRecommendations(hideLibraryPersonalized)}
+                disabled={loadingPersonalized}
+                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                title="Recalcular recomendações"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loadingPersonalized ? 'animate-spin text-amber-400' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          {/* DNA Stats Strip */}
+          {readerDNA.topGenres.length > 0 ? (
+            <div className="mb-6 p-3 rounded-xl bg-zinc-950/70 border border-zinc-800/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-zinc-400 font-medium flex items-center gap-1 text-[11px]">
+                  <Dna className="h-3.5 w-3.5 text-amber-400" />
+                  Seu DNA de Leitura:
+                </span>
+                {readerDNA.topGenres.slice(0, 4).map((g) => (
+                  <span
+                    key={g.name}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-750 text-zinc-200 text-[11px]"
+                  >
+                    <span className="font-medium">{g.name}</span>
+                    <span className="text-[10px] text-amber-400 font-mono font-bold">{g.percentage}%</span>
+                  </span>
+                ))}
+              </div>
+
+              {readerDNA.sampleInspirations.length > 0 && (
+                <div className="text-[11px] text-zinc-500 truncate max-w-full">
+                  <span className="text-zinc-400">Inspirado em:</span>{' '}
+                  <span className="italic text-zinc-300">{readerDNA.sampleInspirations.slice(0, 2).join(', ')}</span>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {/* Recommendations Content */}
+          {loadingPersonalized ? (
+            <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
+              <RefreshCw className="h-6 w-6 animate-spin text-amber-400 mb-2" />
+              <p className="text-xs">Mapeando seu DNA de leitura e buscando recomendações...</p>
+            </div>
+          ) : personalizedRecs.length > 0 ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {personalizedRecs.map((match) => (
+                <div
+                  key={match.manga.id}
+                  onClick={() => onSelectManga(match.manga.id)}
+                  className="group relative flex flex-col bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800/80 hover:border-amber-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+                >
+                  <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
+                    {!coverErrors[match.manga.id] && match.manga.coverUrl ? (
+                      <img
+                        src={match.manga.coverUrl}
+                        alt={match.manga.title}
+                        referrerPolicy="no-referrer"
+                        onError={() => markCoverError(match.manga.id)}
+                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="h-full w-full flex items-center justify-center p-3 text-center bg-zinc-900 text-zinc-400 text-xs">
+                        {match.manga.title}
+                      </div>
+                    )}
+
+                    {/* Affinity Score Badge */}
+                    <div className="absolute top-2 left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
+                      <span className={match.affinityScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>
+                        ★ {match.affinityScore}%
+                      </span>
+                      <span className="text-[9px] text-zinc-400 font-normal">afinidade</span>
+                    </div>
+
+                    {match.isInLibrary && (
+                      <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
+                        Salvo
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-3 flex flex-1 flex-col justify-between">
+                    <div>
+                      <h4 className="font-semibold text-xs text-zinc-100 group-hover:text-amber-300 transition-colors line-clamp-1">
+                        {match.manga.title}
+                      </h4>
+                      <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
+                        {match.manga.authors?.[0] || match.manga.sources[0]?.sourceName || 'MangaReader'}
+                      </p>
+                    </div>
+
+                    <div className="pt-2 border-t border-zinc-800/60 mt-2">
+                      <p className="text-[10px] text-zinc-400 line-clamp-1">
+                        {match.matchReasons[0] || 'Baseado nas suas preferências'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : readerDNA.totalAnalyzed === 0 ? (
+            <div className="text-center py-10 px-4 rounded-xl bg-zinc-950/40 border border-dashed border-zinc-800">
+              <Dna className="h-8 w-8 text-amber-500/60 mx-auto mb-2 animate-pulse" />
+              <h4 className="text-sm font-semibold text-zinc-200">Seu DNA de Leitura será ativado em breve</h4>
+              <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
+                Favorite suas obras preferidas ou leia alguns capítulos. Nosso motor inteligente analisará seus gêneros favoritos e criará uma prateleira personalizada sob medida para você!
+              </p>
+              <button
+                type="button"
+                onClick={() => onNavigateToSearch()}
+                className="mt-4 px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                Explorar Catálogo Agora
+              </button>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-zinc-500">
+              <p className="text-xs">Nenhuma recomendação inédita encontrada no momento.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setHideLibraryPersonalized(false);
+                  loadPersonalizedRecommendations(false);
+                }}
+                className="mt-2 text-xs text-amber-400 hover:underline cursor-pointer"
+              >
+                Exibir obras recomendadas mesmo se já estiverem na biblioteca
+              </button>
+            </div>
+          )}
+        </section>
+
+        {/* =========================================================================
             3. TRILHAS TEMÁTICAS & COLEÇÕES EDITORIAIS
         ========================================================================= */}
         <section>
@@ -788,8 +1018,18 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                   <div className="flex flex-1 flex-col justify-between overflow-hidden">
                     <div>
-                      <div className="flex items-center gap-1.5 text-[10px] text-amber-400 font-mono mb-1">
-                        <span>RECOMENDAÇÃO SORTEADA</span>
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono mb-1">
+                        <span className="text-amber-400">RECOMENDAÇÃO</span>
+                        <span className="text-zinc-600">·</span>
+                        {isAlreadySaved(vibeResult) ? (
+                          <span className="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 text-[9px]">
+                            Na sua biblioteca
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-semibold">
+                            Nova descoberta
+                          </span>
+                        )}
                       </div>
                       <h3 className="font-serif font-bold text-base text-zinc-100 line-clamp-1">
                         {vibeResult.title}
