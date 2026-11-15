@@ -26,6 +26,45 @@ export interface RecommendationFeedResponse {
   }>;
 }
 
+export type SimilarityCategory = 'twin_premise' | 'same_dynamic' | 'same_vibe';
+
+export interface DetectedTropeTag {
+  tag: string;
+  votes?: number;
+  source: 'mangaupdates' | 'anilist' | 'mal';
+}
+
+export interface HybridSimilarityApiResponse {
+  matches: Array<{
+    manga: Manga;
+    similarityScore: number;
+    category: SimilarityCategory;
+    sharedGenres: string[];
+    plotThemes: string[];
+    matchExplanation: string;
+    synopsisSimilarity: number;
+    isSameAuthor: boolean;
+    isAnilistRec?: boolean;
+    aiPowered?: boolean;
+  }>;
+  corePremise?: string;
+  microTropes: string[];
+  anilistTags: string[];
+  detectedTags?: DetectedTropeTag[];
+  aiPowered: boolean;
+}
+
+export interface HybridPersonalizedApiResponse {
+  matches: Array<{
+    manga: Manga;
+    affinityScore: number;
+    matchReasons: string[];
+    aiPowered?: boolean;
+  }>;
+  aiPowered: boolean;
+  profileSummary?: string;
+}
+
 export const MangaApi = {
   async getSources(): Promise<MangaSourceInfo[]> {
     const res = await fetch('/api/sources');
@@ -68,6 +107,7 @@ export const MangaApi = {
     demographic?: string;
     type?: string;
     status?: string;
+    language?: string;
     limit?: number;
     offset?: number;
     page?: number;
@@ -82,6 +122,7 @@ export const MangaApi = {
     if (options?.demographic && options.demographic !== 'all') params.set('demographic', options.demographic);
     if (options?.type && options.type !== 'all') params.set('type', options.type);
     if (options?.status && options.status !== 'all') params.set('status', options.status);
+    if (options?.language && options.language !== 'all') params.set('language', options.language);
     if (options?.genres && options.genres.length > 0) {
       params.set('genres', options.genres.join(','));
       if (!options?.genre) params.set('genre', options.genres[0]);
@@ -151,5 +192,57 @@ export const MangaApi = {
     } catch {
       return [];
     }
+  },
+
+  async getHybridSimilarMangas(payload: {
+    targetManga: {
+      id: string;
+      title: string;
+      altTitles?: string[];
+      synopsis?: string;
+      genres?: string[];
+      authors?: string[];
+      publicationInfo?: { country?: string; demographic?: string };
+    };
+    language?: string;
+    localCandidates?: Manga[];
+    ignoredIds?: string[];
+    ignoredTitles?: string[];
+    focusTags?: string[];
+    focusQuery?: string;
+    limit?: number;
+  }): Promise<HybridSimilarityApiResponse> {
+    const res = await fetch('/api/similarity/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Falha ao buscar obras similares');
+    const json = await res.json();
+    return json.data;
+  },
+
+  async getHybridPersonalized(payload: {
+    favorites: Array<{
+      mangaId: string;
+      title: string;
+      genres?: string[];
+      userScore?: number;
+      userCategory?: string;
+      synopsis?: string;
+    }>;
+    ignored: Array<{ mangaId: string; title: string }>;
+    language?: string;
+    hideLibrary?: boolean;
+    limit?: number;
+  }): Promise<HybridPersonalizedApiResponse> {
+    const res = await fetch('/api/recommendations/personalized', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Falha ao gerar recomendações personalizadas');
+    const json = await res.json();
+    return json.data;
   }
 };

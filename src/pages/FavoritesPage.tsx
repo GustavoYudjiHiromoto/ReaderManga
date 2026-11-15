@@ -636,14 +636,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const unreadCount = Object.values(updatesMap).filter(u => u.hasNew).length;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-20">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-8 sm:pt-10">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
+      <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 pt-5 sm:pt-10">
         
         {/* Header Section */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-zinc-800/80 mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 sm:pb-6 border-b border-zinc-800/80 mb-6 sm:mb-8">
           <div>
             <div className="flex items-center gap-2.5 mb-1.5">
-              <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400">
+              <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 shrink-0">
                 <Bookmark className="h-5 w-5 fill-rose-500/30" />
               </div>
               <h1 className="font-serif text-2xl sm:text-3xl font-bold tracking-tight text-white">
@@ -656,7 +656,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
           </div>
 
           {/* Consolidated Header Action Toolbar */}
-          <div className="flex items-center gap-2 sm:gap-2.5">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
             {/* Hidden file input for restore (.tachibk / .proto.gz / .json) */}
             <input
               type="file"
@@ -713,7 +713,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
               {/* Dropdown Menu Popover */}
               {showLibraryMenu && (
-                <div className="absolute right-0 top-11 w-64 rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 top-11 w-64 max-w-[calc(100vw-1.5rem)] rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
                   {/* Section: Sincronização & Rastreamento */}
                   <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-850">
                     Integrações & Alertas
@@ -992,7 +992,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Category Navigation Tabs (AniList / MAL Style) */}
         {favorites.length > 0 && (
-          <div id="library-collection-tabs" className="mb-6 flex flex-wrap items-center gap-2 border-b border-zinc-800/80 pb-3">
+          <div id="library-collection-tabs" className="mb-4 sm:mb-6 flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar pb-2 sm:pb-3 sm:flex-wrap border-b border-zinc-800/80">
             {[
               { id: 'all', label: 'Todos', count: categoryCounts.all },
               { id: 'reading', label: 'Lendo', count: categoryCounts.reading },
@@ -1004,7 +1004,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               <button
                 key={tab.id}
                 onClick={() => setSelectedCategory(tab.id as any)}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                className={`flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer shrink-0 whitespace-nowrap ${
                   selectedCategory === tab.id
                     ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40'
                     : 'bg-zinc-900/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80'
@@ -1023,15 +1023,15 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Custom Collections / Pastas Personalizadas Bar */}
         {favorites.length > 0 && (
-          <div className="mb-6 flex flex-wrap items-center gap-2 pb-3 border-b border-zinc-850 text-xs">
-            <div className="flex items-center gap-1.5 text-zinc-400 font-medium mr-1">
+          <div className="mb-4 sm:mb-6 flex items-center gap-2 overflow-x-auto no-scrollbar pb-2.5 sm:pb-3 sm:flex-wrap border-b border-zinc-850 text-xs">
+            <div className="flex items-center gap-1.5 text-zinc-400 font-medium mr-1 shrink-0">
               <Folder className="h-3.5 w-3.5 text-rose-400" />
               <span>Pastas:</span>
             </div>
 
             <button
               onClick={() => setSelectedCustomCollection(null)}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer border ${
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer border shrink-0 whitespace-nowrap ${
                 selectedCustomCollection === null
                   ? 'bg-zinc-800 text-white border-zinc-700 font-semibold'
                   : 'bg-zinc-950/60 hover:bg-zinc-900 text-zinc-400 border-zinc-800'
@@ -1044,10 +1044,10 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               const count = favorites.filter(f => f.customCollections?.includes(colName)).length;
               const isSelected = selectedCustomCollection === colName;
               return (
-                <div key={colName} className="flex items-center">
+                <div key={colName} className="flex items-center shrink-0">
                   <button
                     onClick={() => setSelectedCustomCollection(isSelected ? null : colName)}
-                    className={`flex items-center gap-1.5 px-3 py-1 rounded-l-lg text-xs font-medium transition-colors cursor-pointer border ${
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-l-lg text-xs font-medium transition-colors cursor-pointer border whitespace-nowrap ${
                       isSelected
                         ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 font-semibold shadow-sm shadow-rose-950/30'
                         : 'bg-zinc-950/60 hover:bg-zinc-900 text-zinc-400 border-zinc-800'
@@ -1072,7 +1072,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
             <button
               onClick={() => setShowNewCollectionModal(true)}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 hover:border-rose-500/50 text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-dashed border-zinc-700 hover:border-rose-500/50 text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer shrink-0 whitespace-nowrap"
               title="Criar nova pasta personalizada para organizar obras"
             >
               <Plus className="h-3 w-3 text-rose-400" />
@@ -1083,7 +1083,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Filter & Search Toolbar (Only when library has items) */}
         {favorites.length > 0 && (
-          <div className="mb-6 space-y-3.5 p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/70">
+          <div className="mb-5 sm:mb-6 space-y-3 p-3 sm:p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/70">
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
               
               {/* Search bar within Favorites */}
@@ -1214,9 +1214,9 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             )}
 
             {/* Source Filter Pills & Unread Toggle */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-800/60 text-xs">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-zinc-500 font-medium mr-1">Fonte:</span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-zinc-800/60 text-xs">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0 sm:flex-wrap">
+                <span className="text-[11px] text-zinc-500 font-medium mr-1 shrink-0">Fonte:</span>
                 {[
                   { id: 'all', label: 'Todas' },
                   { id: 'mangadex', label: 'MangaDex' },
@@ -1227,7 +1227,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                   <button
                     key={s.id}
                     onClick={() => setSelectedSource(s.id)}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
                       selectedSource === s.id
                         ? 'bg-rose-600 text-white'
                         : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
@@ -1484,7 +1484,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
           </div>
         ) : (
           /* Favorites Grid */
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
+          <div className="manga-cover-grid">
             {filteredFavorites.map((fav) => {
               const updateInfo = updatesMap[fav.mangaId];
               const progress = HistoryService.getProgress(fav.mangaId);
@@ -1496,7 +1496,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                 <div
                   key={fav.mangaId}
                   onClick={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : undefined}
-                  className={`group relative flex flex-col rounded-xl transition-all ${
+                  className={`group relative flex flex-col min-w-0 rounded-xl transition-all ${
                     isBatchMode
                       ? isSelected
                         ? 'ring-2 ring-rose-500 shadow-lg shadow-rose-950/40 bg-rose-950/15 p-1 cursor-pointer'
@@ -1528,16 +1528,21 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                       manga={mapFavoriteToManga(fav)}
                       onSelect={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : onSelectManga}
                       onQuickRead={isBatchMode ? undefined : handleQuickRead}
+                      hideBookmarkButton={isBatchMode}
                       showTrackerStatus={!isBatchMode}
                       onOpenTrackers={(id, title) => {
                         setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
                         setShowTrackersModal(true);
                       }}
                     />
-                    
-                    {/* Floating New Chapter Badge */}
+                  </div>
+
+                  {/* Category Status, Score & Progress underneath card (zero overlay collision) */}
+                  <div className="mt-2 flex flex-col gap-1.5 px-0.5 min-w-0">
+                    {/* New Chapter Notification Pill */}
                     {updateInfo?.hasNew && (
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           UpdateTrackerService.markMangaUpdateAsSeen(fav.mangaId);
@@ -1547,53 +1552,20 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                             onSelectManga(fav.mangaId);
                           }
                         }}
-                        className="absolute top-2 left-2 z-20 flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-600 text-white text-[10px] font-bold shadow-lg shadow-rose-950/80 animate-pulse hover:bg-rose-500 transition-colors cursor-pointer"
+                        className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-[10px] font-bold transition-colors cursor-pointer"
                         title={`Novo capítulo disponível: Cap. ${updateInfo.latestChapterNumber}. Clique para ler!`}
                       >
-                        <Sparkles className="h-3 w-3" />
-                        <span>Novo Cap. {updateInfo.latestChapterNumber}</span>
+                        <Sparkles className="h-3 w-3 text-rose-400 shrink-0" />
+                        <span className="truncate">Novo Cap. {updateInfo.latestChapterNumber}</span>
                       </button>
                     )}
 
-                    {/* Floating User Rating Badge */}
-                    {fav.userScore ? (
-                      <button
-                        onClick={(e) => openScoreModal(e, fav)}
-                        title="Ver ou editar avaliação pessoal"
-                        className="absolute bottom-2 left-2 z-20 flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-950/90 border border-amber-500/50 text-amber-400 text-[10px] font-bold shadow-lg backdrop-blur-sm cursor-pointer hover:border-amber-400"
-                      >
-                        <Star className="h-3 w-3 fill-amber-400" />
-                        <span>{fav.userScore}/10</span>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => openScoreModal(e, fav)}
-                        title="Avaliar esta obra (1-10 estrelas)"
-                        className="absolute bottom-2 left-2 z-20 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-zinc-950/80 border border-zinc-800 text-zinc-400 text-[10px] opacity-0 group-hover:opacity-100 transition-all backdrop-blur-sm cursor-pointer hover:text-amber-400 hover:border-amber-500/50"
-                      >
-                        <Star className="h-3 w-3" />
-                        <span>Avaliar</span>
-                      </button>
-                    )}
-
-                    {/* Remove button badge */}
-                    <button
-                      onClick={(e) => handleRemove(e, fav.mangaId)}
-                      title="Remover dos favoritos"
-                      className="absolute top-2 right-2 z-20 p-1.5 rounded-lg bg-zinc-950/80 hover:bg-rose-950/90 text-zinc-400 hover:text-rose-300 border border-zinc-800 hover:border-rose-500/50 opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer shadow-md backdrop-blur-sm"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-
-                  {/* Category Status & Progress underneath card */}
-                  <div className="mt-2 flex flex-col gap-1 px-0.5">
-                    <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center justify-between gap-1 min-w-0">
                       {/* Category Selector Pill */}
                       <select
                         value={currentCat}
                         onChange={(e) => handleChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${catMeta.badgeBg} ${catMeta.color} bg-zinc-950 cursor-pointer focus:outline-none`}
+                        className={`text-[10px] font-semibold px-1.5 sm:px-2 py-1 rounded border ${catMeta.badgeBg} ${catMeta.color} bg-zinc-950 cursor-pointer focus:outline-none min-w-0 truncate`}
                         title="Alterar status de leitura"
                       >
                         <option value="reading" className="bg-zinc-900 text-rose-300">Lendo</option>
@@ -1603,9 +1575,25 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                         <option value="dropped" className="bg-zinc-900 text-zinc-400">Abandonado</option>
                       </select>
 
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        {/* Rate / Score button */}
+                        <button
+                          type="button"
+                          onClick={(e) => openScoreModal(e, fav)}
+                          title={fav.userScore ? `Minha nota: ${fav.userScore}/10 (clique para editar)` : 'Avaliar esta obra (1-10)'}
+                          className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                            fav.userScore
+                              ? 'text-amber-400 bg-amber-500/10 border border-amber-500/30 font-bold'
+                              : 'text-zinc-500 hover:text-amber-400 hover:bg-zinc-900'
+                          }`}
+                        >
+                          <Star className={`h-3 w-3 ${fav.userScore ? 'fill-amber-400' : ''}`} />
+                          {fav.userScore ? <span>{fav.userScore}</span> : null}
+                        </button>
+
                         {/* Manage folders icon */}
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             setManagingCollectionsManga(fav);
@@ -1617,23 +1605,24 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                               : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
                           }`}
                         >
-                          <FolderPlus className="h-3 w-3" />
+                          <FolderPlus className="h-3.5 w-3.5" />
                         </button>
 
-                        {/* Edit score icon */}
+                        {/* Remove button */}
                         <button
-                          onClick={(e) => openScoreModal(e, fav)}
-                          title="Adicionar nota ou avaliação"
-                          className="p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
+                          type="button"
+                          onClick={(e) => handleRemove(e, fav.mangaId)}
+                          title="Remover dos favoritos"
+                          className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors cursor-pointer"
                         >
-                          <Edit3 className="h-3 w-3" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>
 
                     {/* Custom Collection Badges */}
                     {fav.customCollections && fav.customCollections.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1 my-0.5">
+                      <div className="flex flex-wrap items-center gap-1">
                         {fav.customCollections.map(col => (
                           <span
                             key={col}
@@ -1652,14 +1641,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
                     {/* Reading Progress Chapter */}
                     {progress && (
-                      <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono">
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-2.5 w-2.5 text-rose-400/80" />
-                          Lido: Cap. {progress.chapterNumber}
+                      <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono gap-1">
+                        <span className="flex items-center gap-1 truncate">
+                          <Clock className="h-2.5 w-2.5 text-rose-400/80 shrink-0" />
+                          <span>Lido: c.{progress.chapterNumber}</span>
                         </span>
                         {updateInfo?.latestChapterNumber && (
-                          <span className="text-zinc-500">
-                            Recente: {updateInfo.latestChapterNumber}
+                          <span className="text-zinc-500 shrink-0">
+                            /{updateInfo.latestChapterNumber}
                           </span>
                         )}
                       </div>
@@ -1846,7 +1835,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         {isBatchMode && selectedMangaIds.length > 0 && (
           <aside
             aria-label="Ações em lote para obras selecionadas"
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 w-[95%] max-w-2xl bg-zinc-950/95 border border-zinc-700/80 p-3 sm:p-4 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-3 animate-in slide-in-from-bottom-5 duration-200"
+            className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 w-[94%] max-w-2xl bg-zinc-950/95 border border-zinc-700/80 p-3 sm:p-4 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 animate-in slide-in-from-bottom-5 duration-200"
           >
             <div className="flex items-center gap-2">
               <span className="flex h-2.5 w-2.5 rounded-full bg-rose-500 animate-pulse" />

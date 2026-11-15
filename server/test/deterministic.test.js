@@ -530,6 +530,227 @@ async function runDeterministicTests() {
     assert(progressReports.some(p => p.stage === 'decompressing'), 'parseTachibk reporta estágio de descompressão');
     assert(progressReports.some(p => p.percent >= 70), 'parseTachibk atinge percentual de finalização da decodificação');
 
+    // -------------------------------------------------------------------------
+    // 12. MOTOR INTELIGENTE DE SIMILARIDADE POR SINOPSE & ENREDO
+    // -------------------------------------------------------------------------
+    console.log('\n[12/12] Testando Similaridade Semântica por Sinopse e Enredo...');
+    const {
+      extractSemanticThemes,
+      extractNarrativeSearchQueries,
+      scoreSimilarMangaCandidate
+    } = await import('../../src/services/recommendationService.js');
+
+    const targetRomcom = {
+      id: 'mr_comick_dirtpoor',
+      title: "The Dirt-Poor Me Was Bought by My Childhood Friend, and Now I'm Living a Slightly Thrilling Life",
+      altTitles: ['Chou Binbou na Ore wa Osananajimi ni Kaware'],
+      synopsis:
+        'Born into extreme poverty, Yukiya Ichinose works nonstop part-time jobs until his parents vanish overnight, dumping a massive mountain of debt on him. Approached by his estranged childhood friend Yui, Yukiya is bought in exchange for paying off the debt and moves in to live under the same roof in a sweet high school romcom with a devoted heroine.',
+      genres: ['Manga', 'Seinen', 'Comedy', 'Romance', 'Slice of life'],
+      authors: ['Kamishiro']
+    };
+
+    const detectedThemes = extractSemanticThemes(`${targetRomcom.title} ${targetRomcom.synopsis}`);
+    assert(detectedThemes.includes('Amigo(a) de Infância'), 'Extrai tema narrativo "Amigo(a) de Infância" da sinopse');
+    assert(detectedThemes.includes('Dívida & Acordo Financeiro'), 'Extrai tema narrativo "Dívida & Acordo Financeiro" da sinopse');
+    assert(detectedThemes.includes('Mesmo Teto & Coabitação'), 'Extrai tema narrativo "Mesmo Teto & Coabitação" da sinopse');
+
+    const extractedQueries = extractNarrativeSearchQueries(targetRomcom);
+    assert(extractedQueries.length >= 2, 'Extrai consultas de busca guiadas pelos tropos da sinopse');
+
+    // Candidato A: Sinopse muito parecida (dívida, amigo de infância, morar junto) mesmo tendo gênero Shounen ao invés de Seinen
+    const narrativeTwin = {
+      id: 'mr_mangadex_twin',
+      title: 'Paying Off My Debt by Living With My Childhood Friend',
+      altTitles: [],
+      coverUrl: '',
+      synopsis:
+        'After his parents disappear and leave a huge debt, a broke high school student is helped by his devoted childhood friend who pays off the loan so they move in together under the same roof in a teasing romantic comedy.',
+      authors: ['Outro Autor'],
+      artists: [],
+      genres: ['Shounen', 'Romance'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    };
+
+    // Candidato B: Compartilha os mesmos 4 gêneros genéricos (Seinen, Comedy, Romance, Slice of life), mas enredo totalmente diferente
+    const unrelatedSameGenres = {
+      id: 'mr_mangadex_unrelated',
+      title: 'Gourmet Chef in a Quiet Bakery',
+      altTitles: [],
+      coverUrl: '',
+      synopsis:
+        'A retired samurai opens a bread bakery in a seaside town and teaches townsfolk how to bake croissants and drink herbal tea while enjoying calm afternoons.',
+      authors: ['Autor C'],
+      artists: [],
+      genres: ['Seinen', 'Comedy', 'Romance', 'Slice of life'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    };
+
+    const twinMatch = scoreSimilarMangaCandidate(targetRomcom, narrativeTwin, undefined, true);
+    const genericMatch = scoreSimilarMangaCandidate(targetRomcom, unrelatedSameGenres, undefined, false);
+
+    assert(twinMatch.similarityScore > genericMatch.similarityScore, `Gêmeo de sinopse (${twinMatch.similarityScore}%) pontua acima de obra genérica de mesmos gêneros (${genericMatch.similarityScore}%)`);
+    assert((twinMatch.synopsisSimilarity || 0) >= 35, `Afinidade narrativa calculada significativamente (${twinMatch.synopsisSimilarity}%)`);
+    assert((twinMatch.plotThemes?.length || 0) >= 2, 'Identifica múltiplos tropos compartilhados entre as sinopses');
+    assert(twinMatch.isInLibrary === true, 'Preserva flag isInLibrary para permitir exibir obras parecidas já lidas');
+    assert(twinMatch.category === 'twin_premise', `Classifica gêmeo de premissa na categoria twin_premise (recebeu ${twinMatch.category})`);
+    assert(genericMatch.category === 'same_vibe', `Classifica obra de mesmo gênero sem tropos na categoria same_vibe (recebeu ${genericMatch.category})`);
+
+    // Caso 2: Trope nichada (Office Workers + Ecchi + Heroína alta/provocadora) vs comédia genérica
+    const dekaiTarget = {
+      id: 'mr_comick_dekai',
+      title: 'Dekai Usagi ni Natsukareta!?',
+      altTitles: [],
+      synopsis:
+        'A new member of the workforce, Hajime is so nervous before his first day that he heads out for a midnight stroll and is accosted by a strangely over-familiar giant drunk woman.',
+      genres: ['Comedy', 'Ecchi', 'Romance', 'Slice of Life', 'Office Workers'],
+      authors: ['Magao Itsuka']
+    };
+    const nicheOfficeTwin = {
+      id: 'mr_mangadex_office_twin',
+      title: 'My Tall Drunk Senpai at Work',
+      altTitles: [],
+      coverUrl: '',
+      synopsis:
+        'A nervous new office worker is constantly teased by his tall, bold coworker after midnight drinks in this workplace romantic comedy.',
+      authors: ['Autor D'],
+      artists: [],
+      genres: ['Comedy', 'Ecchi', 'Romance', 'Office Workers'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    };
+    const broadUmbrellaOnly = {
+      id: 'mr_mangadex_umbrella',
+      title: 'High School Club Shenanigans',
+      altTitles: [],
+      coverUrl: '',
+      synopsis: 'Four energetic students join a ping pong club after class and compete in local tournaments.',
+      authors: ['Autor E'],
+      artists: [],
+      genres: ['Comedy', 'Romance', 'Slice of Life'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    };
+
+    const nicheOfficeScore = scoreSimilarMangaCandidate(dekaiTarget, nicheOfficeTwin, undefined, false);
+    const umbrellaOnlyScore = scoreSimilarMangaCandidate(dekaiTarget, broadUmbrellaOnly, undefined, false);
+    assert(
+      nicheOfficeScore.similarityScore > umbrellaOnlyScore.similarityScore + 15,
+      `Subgêneros nichados + dinâmica (${nicheOfficeScore.similarityScore}%) superam com folga gêneros amplos (${umbrellaOnlyScore.similarityScore}%)`
+    );
+    assert(
+      nicheOfficeScore.category === 'twin_premise' || nicheOfficeScore.category === 'same_dynamic',
+      `Classifica match nichado fora de same_vibe (recebeu ${nicheOfficeScore.category})`
+    );
+
+    // Caso 3: Trope 100% inédita sem regra hardcoded (vocabulário aberto puro)
+    const unseenTropeTarget = {
+      id: 'mr_comick_violin',
+      title: 'The Blind Violinist and the Midnight Clockmaker',
+      synopsis: 'A blind concert violinist meets an eccentric clockmaker repairing antique pocketwatches in a snowy mountain village.',
+      genres: ['Drama', 'Romance']
+    };
+    const unseenQueries = extractNarrativeSearchQueries(unseenTropeTarget);
+    assert(unseenQueries.length >= 1, 'Extrai consulta por vocabulário aberto mesmo sem trope hardcoded');
+
+    const unseenMatch = scoreSimilarMangaCandidate(unseenTropeTarget, {
+      id: 'mr_comick_violin2',
+      title: 'Antique Clockmaker Melody',
+      altTitles: [],
+      coverUrl: '',
+      synopsis: 'In a snowy village, a blind violinist plays beside a quiet clockmaker fixing antique watches.',
+      authors: ['Autor F'],
+      artists: [],
+      genres: ['Drama'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    });
+    const unseenWrong = scoreSimilarMangaCandidate(unseenTropeTarget, {
+      id: 'mr_comick_wrong',
+      title: 'Generic School Drama',
+      altTitles: [],
+      coverUrl: '',
+      synopsis: 'Students argue over their theater festival budget.',
+      authors: ['Autor G'],
+      artists: [],
+      genres: ['Drama', 'Romance'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: new Date().toISOString()
+    });
+    assert(
+      unseenMatch.similarityScore > unseenWrong.similarityScore,
+      `Vocabulário aberto identifica trope inédita (${unseenMatch.similarityScore}% vs ${unseenWrong.similarityScore}%) sem precisar cadastrar subgênero`
+    );
+
+    // Caso 4: Direcionamento de foco livre (tall girl, muscle mommy, size difference) & contrato /api/similarity/match
+    const { resolveFocusToCategoriesAndQueries } = await import('../services/aiSimilarityService.js');
+    const resolvedTallMuscle = resolveFocusToCategoriesAndQueries(
+      ['Muscular Female Lead'],
+      'tall girl, muscle mommy, size difference'
+    );
+    assert(
+      resolvedTallMuscle.muCategories.includes('Muscular Female Lead') &&
+      resolvedTallMuscle.muCategories.includes('Tall Female Short Male') &&
+      resolvedTallMuscle.muCategories.includes('Height Difference'),
+      'Mapeia gírias e preferências de fandom (tall girl, muscle mommy, size difference) para categorias canônicas do MangaUpdates'
+    );
+    assert(
+      resolvedTallMuscle.searchQueries.includes('muscle girl') &&
+      resolvedTallMuscle.searchQueries.includes('tall girl'),
+      'Gera queries focadas no arquétipo escolhido sem perder termos originais'
+    );
+
+    const simMatchRes = await fetch(`${BASE_URL}/api/similarity/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetManga: {
+          id: 'mr_comick_dekai',
+          title: 'Dekai Usagi ni Natsukareta!?',
+          synopsis: dekaiTarget.synopsis,
+          genres: dekaiTarget.genres,
+          authors: dekaiTarget.authors
+        },
+        focusTags: ['Height Difference'],
+        focusQuery: 'tall girl muscle mommy',
+        localCandidates: [
+          {
+            id: 'mr_local_tall_muscle',
+            title: 'Saotome Girl, Hitakakusu',
+            altTitles: [],
+            coverUrl: '',
+            synopsis: 'A tall muscular female athlete and a short male trainer develop a romantic height difference comedy.',
+            authors: ['Mizuguchi Naoki'],
+            artists: [],
+            genres: ['Comedy', 'Romance', 'Height Difference'],
+            status: 'completed',
+            publicationInfo: {},
+            sources: [],
+            updatedAt: new Date().toISOString()
+          }
+        ],
+        limit: 8
+      })
+    });
+    assert(simMatchRes.status === 200, 'POST /api/similarity/match aceita focusTags e focusQuery retornando HTTP 200');
+    const simMatchJson = await simMatchRes.json();
+    assert(simMatchJson.success === true && Array.isArray(simMatchJson.data?.matches), 'Resposta de similaridade com foco possui matches válidos');
+    assert(Array.isArray(simMatchJson.data?.detectedTags), 'Resposta inclui detectedTags para renderizar chips clicáveis na interface');
+
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);
     failedTests++;

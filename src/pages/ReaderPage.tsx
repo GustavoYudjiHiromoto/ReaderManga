@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ArrowLeft,
   ChevronLeft,
@@ -32,7 +32,8 @@ import {
   ListFilter,
   Search,
   Clock,
-  Volume2
+  Volume2,
+  ExternalLink
 } from 'lucide-react';
 import { Manga, Chapter, MangaPage } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -41,11 +42,18 @@ import { OfflineCacheService } from '../services/offlineCache.js';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal.js';
 import { PageBookmarksModal } from '../components/PageBookmarksModal.js';
 import { TrackersModal } from '../components/TrackersModal.js';
+import {
+  filterChaptersByLanguage,
+  getPreferredLanguage,
+  matchesLanguageFilter,
+  subscribePreferredLanguage
+} from '../utils/languagePreference.js';
 
 interface ReaderPageProps {
   mangaId: string;
   chapterId: string;
   onBackToManga: () => void;
+  onOpenMangaDetail?: () => void;
   onChangeChapter: (newChapterId: string) => void;
 }
 
@@ -68,8 +76,9 @@ const MAX_WIDTH_CLASSES: Record<ReaderMaxWidth, string> = {
   full: 'max-w-full'
 };
 
-// Global memory cache for prefetched chapter pages to eliminate loading pauses
+// Global memory cache for prefetched chapter pages & already-loaded image URLs
 const prefetchedChapterPagesCache = new Map<string, MangaPage[]>();
+const loadedImageUrlsCache = new Set<string>();
 
 interface ReaderPageImageProps {
   pageNumber: number;
@@ -91,23 +100,27 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
   const [currentSrc, setCurrentSrc] = useState(imageUrl);
   const [attempt, setAttempt] = useState(0);
   const [retryKey, setRetryKey] = useState(0);
-  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>(() =>
+    loadedImageUrlsCache.has(imageUrl) ? 'loaded' : 'loading'
+  );
   const imgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     setCurrentSrc(imageUrl);
     setAttempt(0);
     setRetryKey(0);
-    setStatus('loading');
+    setStatus(loadedImageUrlsCache.has(imageUrl) ? 'loaded' : 'loading');
   }, [imageUrl]);
 
   // Check if browser already has image completed in cache upon mount or src change
   useEffect(() => {
     if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      loadedImageUrlsCache.add(imageUrl);
+      loadedImageUrlsCache.add(currentSrc);
       setStatus('loaded');
       onLoad?.();
     }
-  }, [currentSrc, retryKey]);
+  }, [currentSrc, retryKey, imageUrl]);
 
   const handleError = () => {
     // Attempt 1: If URL is from mangadex.network volunteer node, try official uploads.mangadex.org CDN
@@ -116,16 +129,17 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
       if (uploadFallback !== currentSrc) {
         setAttempt(1);
         setCurrentSrc(uploadFallback);
-        setStatus('loading');
+        setStatus(loadedImageUrlsCache.has(uploadFallback) ? 'loaded' : 'loading');
         return;
       }
     }
 
     // Attempt 2: Try through local backend image proxy with appropriate CDN referrers
     if (attempt <= 1 && !currentSrc.startsWith('/api/proxy/image')) {
+      const proxied = `/api/proxy/image?url=${encodeURIComponent(currentSrc)}`;
       setAttempt(2);
-      setCurrentSrc(`/api/proxy/image?url=${encodeURIComponent(currentSrc)}`);
-      setStatus('loading');
+      setCurrentSrc(proxied);
+      setStatus(loadedImageUrlsCache.has(proxied) ? 'loaded' : 'loading');
       return;
     }
 
@@ -135,18 +149,20 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
 
   const handleRetry = (e: React.MouseEvent) => {
     e.stopPropagation();
+    loadedImageUrlsCache.delete(imageUrl);
     setStatus('loading');
     setAttempt(0);
     setRetryKey(prev => prev + 1);
-    // Add cache buster parameter to force a fresh network request instead of reusing a failed/aborted cache entry
     const separator = imageUrl.includes('?') ? '&' : '?';
     setCurrentSrc(`${imageUrl}${separator}_retry=${Date.now()}`);
   };
 
+  const isAlreadyWarm = status === 'loaded' || loadedImageUrlsCache.has(currentSrc);
+
   return (
-    <div className="relative flex flex-col items-center justify-center w-full min-h-[320px]">
-      {status === 'loading' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/40 rounded-lg text-zinc-500 py-16 z-10 pointer-events-none">
+    <div className="relative flex flex-col items-center justify-center w-full h-full min-h-[260px]">
+      {status === 'loading' && !isAlreadyWarm && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-950/25 rounded-lg text-zinc-500 py-16 z-10 pointer-events-none">
           <RefreshCw className="h-6 w-6 animate-spin text-zinc-400 mb-2" />
           <span className="text-xs">Carregando página {pageNumber}...</span>
         </div>
@@ -176,9 +192,15 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
           src={currentSrc}
           alt={alt || `Página ${pageNumber}`}
           referrerPolicy="no-referrer"
-          className={`${className} ${status === 'loading' ? 'opacity-0' : 'opacity-100 transition-opacity duration-200'}`}
+          decoding="async"
+          draggable={false}
+          className={`${className} ${
+            isAlreadyWarm ? 'opacity-100' : 'opacity-0 transition-opacity duration-150'
+          }`}
           loading={loading}
           onLoad={() => {
+            loadedImageUrlsCache.add(imageUrl);
+            loadedImageUrlsCache.add(currentSrc);
             setStatus('loaded');
             onLoad?.();
           }}
@@ -193,6 +215,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   mangaId,
   chapterId,
   onBackToManga,
+  onOpenMangaDetail,
   onChangeChapter
 }) => {
   const [manga, setManga] = useState<Manga | null>(null);
@@ -233,6 +256,44 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       return true;
     }
   });
+
+  type PageTransitionEffect = 'slide' | 'fade' | 'instant';
+  const [pageTransition, setPageTransition] = useState<PageTransitionEffect>(() => {
+    try {
+      return (localStorage.getItem('mr_reader_page_transition') as PageTransitionEffect) || 'slide';
+    } catch {
+      return 'slide';
+    }
+  });
+  const [turnDirection, setTurnDirection] = useState<'next' | 'prev' | null>(null);
+
+  // Background eager preloading & pre-decoding of adjacent pages to eliminate black flash
+  useEffect(() => {
+    if (pages.length === 0) return;
+    const toPreload = [
+      currentPageIndex + 1,
+      currentPageIndex + 2,
+      currentPageIndex + 3,
+      currentPageIndex - 1,
+      currentPageIndex - 2
+    ].filter(i => i >= 0 && i < pages.length);
+
+    toPreload.forEach(i => {
+      const url = pages[i]?.imageUrl;
+      if (url && !loadedImageUrlsCache.has(url)) {
+        const img = new Image();
+        img.referrerPolicy = 'no-referrer';
+        img.decoding = 'async';
+        img.onload = () => {
+          loadedImageUrlsCache.add(url);
+          if (typeof img.decode === 'function') {
+            img.decode().catch(() => {});
+          }
+        };
+        img.src = url;
+      }
+    });
+  }, [currentPageIndex, pages]);
 
   const toggleVolumeNav = () => {
     setVolumeNav(prev => {
@@ -289,10 +350,17 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
   const [showChapterDrawer, setShowChapterDrawer] = useState(false);
   const [drawerSearch, setDrawerSearch] = useState('');
+  const [preferredLang, setPreferredLang] = useState<string>(() => getPreferredLanguage());
   const [currentTime, setCurrentTime] = useState<string>(() => {
     const d = new Date();
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   });
+
+  useEffect(() => {
+    return subscribePreferredLanguage((lang) => {
+      setPreferredLang(lang);
+    });
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -331,12 +399,66 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     });
   };
 
-  // Mobile Touch Gestures & Zen Mode
+  // Mobile Touch Gestures, Interactive Swipe Carousel & Zen Mode
   const [isZenMode, setIsZenMode] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
+  const [dragOffsetPx, setDragOffsetPx] = useState(0);
+  const [isDraggingCarousel, setIsDraggingCarousel] = useState(false);
+  const [skipCarouselTransition, setSkipCarouselTransition] = useState(false);
   const touchStartPos = useRef<{ x: number; y: number; time: number } | null>(null);
   const touchDistRef = useRef<number | null>(null);
   const lastTapTimeRef = useRef<number>(0);
+  const gestureAxisRef = useRef<'horizontal' | 'vertical' | null>(null);
+  const justDraggedRef = useRef<number>(0);
+
+  // Build normalized slide items for seamless carousel transitions in Single & Double modes
+  const readerSlides = useMemo(() => {
+    if (pages.length === 0) return [] as Array<{ key: string; slideIdx: number; startIdx: number; spreadPages: MangaPage[] }>;
+    if (readerMode === 'double') {
+      const list: Array<{ key: string; slideIdx: number; startIdx: number; spreadPages: MangaPage[] }> = [];
+      for (let i = 0; i < pages.length; i += 2) {
+        list.push({
+          key: `d_${i}`,
+          slideIdx: list.length,
+          startIdx: i,
+          spreadPages: pages[i + 1] ? [pages[i], pages[i + 1]] : [pages[i]]
+        });
+      }
+      return list;
+    }
+    return pages.map((p, idx) => ({
+      key: `s_${idx}`,
+      slideIdx: idx,
+      startIdx: idx,
+      spreadPages: [p]
+    }));
+  }, [pages, readerMode]);
+
+  const activeSlideIdx = useMemo(() => {
+    if (readerSlides.length === 0) return 0;
+    const raw = readerMode === 'double' ? Math.floor(currentPageIndex / 2) : currentPageIndex;
+    return Math.min(Math.max(0, raw), readerSlides.length - 1);
+  }, [readerMode, currentPageIndex, readerSlides.length]);
+
+  const visualSlides = useMemo(() => {
+    return readingDirection === 'rtl' ? [...readerSlides].reverse() : readerSlides;
+  }, [readerSlides, readingDirection]);
+
+  const activeVisualIdx = useMemo(() => {
+    if (visualSlides.length === 0) return 0;
+    return readingDirection === 'rtl' ? visualSlides.length - 1 - activeSlideIdx : activeSlideIdx;
+  }, [visualSlides.length, activeSlideIdx, readingDirection]);
+
+  // Snap track immediately on chapter change without flying across slides
+  useEffect(() => {
+    setSkipCarouselTransition(true);
+    setDragOffsetPx(0);
+    setIsDraggingCarousel(false);
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setSkipCarouselTransition(false));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [chapterId, readerMode, readingDirection]);
 
   const toggleZenMode = () => {
     setIsZenMode(prev => {
@@ -353,7 +475,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         y: e.touches[0].clientY,
         time: Date.now()
       };
+      gestureAxisRef.current = null;
     } else if (e.touches.length === 2) {
+      gestureAxisRef.current = null;
+      setIsDraggingCarousel(false);
+      setDragOffsetPx(0);
       const dist = Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
@@ -371,15 +497,45 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       const ratio = dist / touchDistRef.current;
       setZoomScale(prev => Math.min(2.5, Math.max(1, prev * (ratio > 1 ? 1.02 : 0.98))));
       touchDistRef.current = dist;
+      return;
+    }
+
+    if (e.touches.length === 1 && touchStartPos.current && readerMode !== 'webtoon' && zoomScale === 1) {
+      const dx = e.touches[0].clientX - touchStartPos.current.x;
+      const dy = e.touches[0].clientY - touchStartPos.current.y;
+
+      if (!gestureAxisRef.current && Math.hypot(dx, dy) > 8) {
+        gestureAxisRef.current = Math.abs(dx) > Math.abs(dy) * 1.05 ? 'horizontal' : 'vertical';
+      }
+
+      if (gestureAxisRef.current === 'horizontal') {
+        const atVisualStart = activeVisualIdx === 0;
+        const atVisualEnd = activeVisualIdx >= visualSlides.length - 1;
+        const pullingPastEdge = (dx > 0 && atVisualStart) || (dx < 0 && atVisualEnd);
+        const damped = pullingPastEdge ? dx * 0.32 : dx;
+        setIsDraggingCarousel(true);
+        setDragOffsetPx(damped);
+      }
     }
   };
 
   const handleReaderTouchEnd = (e: React.TouchEvent) => {
     touchDistRef.current = null;
-    if (!touchStartPos.current) return;
+    if (!touchStartPos.current) {
+      setIsDraggingCarousel(false);
+      setDragOffsetPx(0);
+      gestureAxisRef.current = null;
+      return;
+    }
 
     const changed = e.changedTouches[0];
-    if (!changed) return;
+    if (!changed) {
+      setIsDraggingCarousel(false);
+      setDragOffsetPx(0);
+      gestureAxisRef.current = null;
+      touchStartPos.current = null;
+      return;
+    }
 
     const diffX = changed.clientX - touchStartPos.current.x;
     const diffY = changed.clientY - touchStartPos.current.y;
@@ -388,6 +544,9 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     const now = Date.now();
     // Detect double tap for Zen Mode (within 300ms)
     if (Math.abs(diffX) < 15 && Math.abs(diffY) < 15 && elapsed < 250) {
+      setIsDraggingCarousel(false);
+      setDragOffsetPx(0);
+      gestureAxisRef.current = null;
       if (now - lastTapTimeRef.current < 300) {
         toggleZenMode();
         lastTapTimeRef.current = 0;
@@ -395,19 +554,33 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         return;
       }
       lastTapTimeRef.current = now;
+      touchStartPos.current = null;
+      return;
     }
 
-    // Detect horizontal swipe in single or double page mode
-    if (readerMode !== 'webtoon' && Math.abs(diffX) > 40 && Math.abs(diffY) < 60 && elapsed < 450) {
-      if (diffX < 0) {
-        // Swiped Left: next page in LTR, prev page in RTL
-        readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
-      } else {
-        // Swiped Right: prev page in LTR, next page in RTL
-        readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
+    // Handle live carousel swipe release in single or double page mode
+    if (readerMode !== 'webtoon' && (gestureAxisRef.current === 'horizontal' || (Math.abs(diffX) > 36 && Math.abs(diffY) < 60 && elapsed < 450))) {
+      const viewportW = typeof window !== 'undefined' ? window.innerWidth : 400;
+      const threshold = Math.min(82, viewportW * 0.18);
+      const velocity = Math.abs(diffX) / Math.max(16, elapsed);
+
+      if (Math.abs(diffX) > threshold || (Math.abs(diffX) > 26 && velocity > 0.35)) {
+        justDraggedRef.current = Date.now();
+        if (diffX < 0) {
+          // Swiped Left: next page in LTR, prev page in RTL
+          readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
+        } else {
+          // Swiped Right: prev page in LTR, next page in RTL
+          readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
+        }
+      } else if (Math.abs(diffX) > 10) {
+        justDraggedRef.current = Date.now();
       }
     }
 
+    setIsDraggingCarousel(false);
+    setDragOffsetPx(0);
+    gestureAxisRef.current = null;
     touchStartPos.current = null;
   };
 
@@ -587,7 +760,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             mangaId,
             chapterNumber: '1',
             title: '',
-            language: 'pt-br',
+            language: preferredLang === 'en' ? 'en' : 'pt-br',
             sourceId: 'unknown',
             externalChapterId: chapterId,
             pagesCount: effectivePages.length
@@ -599,10 +772,15 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       isLoadingNextChapterRef.current = false;
       setNextChapterError(null);
 
-      // Proactive zero-loading prefetch: background download next chapter pages & images
+      // Proactive zero-loading prefetch: background download next chapter in user's preferred/active language
       if (chaptersData && chaptersData.length > 0 && foundChapter) {
-        const curIdx = chaptersData.findIndex(c => c.id === foundChapter!.id || c.variants?.some(v => v.id === foundChapter!.id));
-        const nextToPreload = curIdx >= 0 && curIdx < chaptersData.length - 1 ? chaptersData[curIdx + 1] : null;
+        const activePref = getPreferredLanguage();
+        const effectivePref = (foundChapter.language && activePref !== 'all' && !matchesLanguageFilter(foundChapter.language, activePref))
+          ? foundChapter.language
+          : activePref;
+        const { chapters: langChapters } = filterChaptersByLanguage(chaptersData, effectivePref);
+        const curIdx = langChapters.findIndex(c => c.id === foundChapter!.id || c.variants?.some(v => v.id === foundChapter!.id));
+        const nextToPreload = curIdx >= 0 && curIdx < langChapters.length - 1 ? langChapters[curIdx + 1] : null;
         if (nextToPreload && !prefetchedChapterPagesCache.has(nextToPreload.id)) {
           MangaApi.getChapterPages(nextToPreload.id).then(prePages => {
             if (prePages && prePages.length > 0) {
@@ -965,36 +1143,43 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }
   };
 
-  // Next / Previous chapter helpers
+  // Next / Previous chapter helpers (strictly filtered by active/preferred language)
+  const navigableChapters = useMemo(() => {
+    if (chapters.length === 0) return [];
+    const activePref = (currentChapter?.language && preferredLang !== 'all' && !matchesLanguageFilter(currentChapter.language, preferredLang))
+      ? currentChapter.language
+      : preferredLang;
+    return filterChaptersByLanguage(chapters, activePref).chapters;
+  }, [chapters, preferredLang, currentChapter?.language]);
+
   const effectiveActiveChapterId = currentChapter?.id || chapterId;
-  const currentChapterIndex = chapters.findIndex(
+  const currentChapterIndex = navigableChapters.findIndex(
     c => c.id === effectiveActiveChapterId || c.variants?.some(v => v.id === effectiveActiveChapterId)
   );
-  const prevChapter = currentChapterIndex > 0 ? chapters[currentChapterIndex - 1] : null;
-  const nextChapter = currentChapterIndex >= 0 && currentChapterIndex < chapters.length - 1 ? chapters[currentChapterIndex + 1] : null;
+  const prevChapter = currentChapterIndex > 0 ? navigableChapters[currentChapterIndex - 1] : null;
+  const nextChapter = currentChapterIndex >= 0 && currentChapterIndex < navigableChapters.length - 1 ? navigableChapters[currentChapterIndex + 1] : null;
 
   // Track the tail of currently loaded continuous sections
   const lastLoadedSec = loadedSections[loadedSections.length - 1];
   const lastLoadedChapter = lastLoadedSec?.chapter || currentChapter;
-  const lastChapterIndex = chapters.findIndex(
+  const lastChapterIndex = navigableChapters.findIndex(
     c => c.id === lastLoadedChapter?.id || c.variants?.some(v => v.id === lastLoadedChapter?.id)
   );
-  const subsequentChapter = lastChapterIndex >= 0 && lastChapterIndex < chapters.length - 1 ? chapters[lastChapterIndex + 1] : null;
+  const subsequentChapter = lastChapterIndex >= 0 && lastChapterIndex < navigableChapters.length - 1 ? navigableChapters[lastChapterIndex + 1] : null;
 
   const goToNextPage = () => {
+    setTurnDirection('next');
     if (readerMode === 'webtoon') {
       window.scrollBy({ top: window.innerHeight * 0.75, behavior: 'smooth' });
     } else if (readerMode === 'single') {
       if (currentPageIndex < pages.length - 1) {
         setCurrentPageIndex(prev => prev + 1);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (nextChapter) {
         onChangeChapter(nextChapter.id);
       }
     } else if (readerMode === 'double') {
       if (currentPageIndex < pages.length - 2) {
         setCurrentPageIndex(prev => prev + 2);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (nextChapter) {
         onChangeChapter(nextChapter.id);
       }
@@ -1002,19 +1187,18 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   };
 
   const goToPrevPage = () => {
+    setTurnDirection('prev');
     if (readerMode === 'webtoon') {
       window.scrollBy({ top: -window.innerHeight * 0.75, behavior: 'smooth' });
     } else if (readerMode === 'single') {
       if (currentPageIndex > 0) {
         setCurrentPageIndex(prev => prev - 1);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (prevChapter) {
         onChangeChapter(prevChapter.id);
       }
     } else if (readerMode === 'double') {
       if (currentPageIndex > 1) {
         setCurrentPageIndex(prev => prev - 2);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (prevChapter) {
         onChangeChapter(prevChapter.id);
       }
@@ -1074,11 +1258,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           if (scrollDistanceToEnd < 1400) {
             const lastSec = loadedSections[loadedSections.length - 1];
             if (lastSec) {
-              const lastIdx = chapters.findIndex(
+              const lastIdx = navigableChapters.findIndex(
                 c => c.id === lastSec.chapter.id || c.variants?.some(v => v.id === lastSec.chapter.id)
               );
-              if (lastIdx !== -1 && lastIdx < chapters.length - 1) {
-                const nextToLoad = chapters[lastIdx + 1];
+              if (lastIdx !== -1 && lastIdx < navigableChapters.length - 1) {
+                const nextToLoad = navigableChapters[lastIdx + 1];
                 loadNextChapterSection(nextToLoad);
               }
             }
@@ -1091,7 +1275,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [readerMode, continuousScroll, loadedSections, currentChapter?.id, chapters, mangaId]);
+  }, [readerMode, continuousScroll, loadedSections, currentChapter?.id, navigableChapters, mangaId]);
 
   // Themes mapping
   const themeClasses: Record<ReaderTheme, string> = {
@@ -1170,19 +1354,27 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       >
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-3 sm:px-6">
           
-          {/* Back button & Manga Title */}
-          <div className="flex items-center gap-3 overflow-hidden">
+          {/* Back button & Manga Title (clickable to open Manga Detail page) */}
+          <div className="flex items-center gap-2 sm:gap-3 overflow-hidden min-w-0">
             <button
               onClick={onBackToManga}
               className="p-1.5 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer shrink-0"
-              title="Voltar aos detalhes do mangá"
+              title="Voltar à tela anterior"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
 
-            <div className="overflow-hidden">
-              <div className="flex items-center gap-2">
-                <h2 className="font-semibold text-xs sm:text-sm line-clamp-1">{manga?.title}</h2>
+            <button
+              type="button"
+              onClick={() => (onOpenMangaDetail ? onOpenMangaDetail() : onBackToManga())}
+              className="group text-left overflow-hidden min-w-0 cursor-pointer rounded-lg px-1.5 py-1 hover:bg-zinc-800/50 transition-colors"
+              title="Ir para a página do mangá (sinopse, capítulos e similares)"
+            >
+              <div className="flex items-center gap-1.5">
+                <h2 className="font-semibold text-xs sm:text-sm line-clamp-1 group-hover:text-rose-400 transition-colors">
+                  {manga?.title || 'Carregando obra...'}
+                </h2>
+                <ExternalLink className="h-3 w-3 text-zinc-500 group-hover:text-rose-400 shrink-0 transition-colors" />
               </div>
               <div className="flex items-center gap-2 text-[11px] text-zinc-400">
                 <span className="font-mono tabular-nums">
@@ -1195,7 +1387,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   </>
                 )}
               </div>
-            </div>
+            </button>
           </div>
 
           {/* Quick Chapter Drawer Trigger & Selector */}
@@ -1207,7 +1399,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             >
               <ListFilter className="h-3.5 w-3.5 text-rose-400" />
               <span className="font-mono tabular-nums font-semibold">Cap. {currentChapter?.chapterNumber}</span>
-              <span className="hidden sm:inline text-[10px] text-zinc-500 font-sans">({chapters.length} caps)</span>
+              <span className="hidden sm:inline text-[10px] text-zinc-500 font-sans">({navigableChapters.length} caps)</span>
             </button>
 
             <select
@@ -1215,7 +1407,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               onChange={(e) => onChangeChapter(e.target.value)}
               className="hidden lg:block px-2.5 py-1 bg-zinc-950/80 border border-zinc-800 rounded-lg text-xs font-mono tabular-nums focus:outline-none focus:border-rose-500 cursor-pointer text-zinc-300 max-w-[160px] truncate"
             >
-              {chapters.map((ch) => (
+              {navigableChapters.map((ch) => (
                 <option key={ch.id} value={ch.id}>
                   c.{ch.chapterNumber} {ch.title ? `- ${ch.title}` : ''}
                 </option>
@@ -1393,6 +1585,38 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       </button>
                     </div>
                   </div>
+
+                  {/* Page Transition Effect (Single / Double mode) */}
+                  {(readerMode === 'single' || readerMode === 'double') && (
+                    <div>
+                      <span className="text-zinc-400 font-medium block mb-2">Transição de Página</span>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { label: 'Deslize', val: 'slide' as PageTransitionEffect },
+                          { label: 'Suave (Fade)', val: 'fade' as PageTransitionEffect },
+                          { label: 'Rápido', val: 'instant' as PageTransitionEffect }
+                        ].map(item => (
+                          <button
+                            key={item.val}
+                            type="button"
+                            onClick={() => {
+                              setPageTransition(item.val);
+                              try {
+                                localStorage.setItem('mr_reader_page_transition', item.val);
+                              } catch {}
+                            }}
+                            className={`py-1 text-center rounded border transition-colors cursor-pointer text-[11px] ${
+                              pageTransition === item.val
+                                ? 'border-rose-500 bg-rose-500/20 text-rose-300 font-semibold'
+                                : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Webtoon Ergonomics: Infinite Scroll, Autoscroll & Spacing */}
                   {readerMode === 'webtoon' && (
@@ -1977,142 +2201,146 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           </div>
         )}
 
-        {/* Single Page Mode */}
-        {readerMode === 'single' && (
-          <div className="relative w-full h-[calc(100dvh-3.5rem)] flex items-center justify-center max-w-5xl overflow-hidden py-1">
+        {/* Single & Double Paged Modes: Continuous Horizontal Carousel (Zero Black Flash + Swipe Peek) */}
+        {(readerMode === 'single' || readerMode === 'double') && visualSlides.length > 0 && (
+          <div
+            className={`relative w-full h-[calc(100dvh-3.5rem)] flex items-center justify-center overflow-hidden ${
+              readerMode === 'double' ? 'max-w-7xl py-2' : 'max-w-5xl py-1'
+            }`}
+          >
             <div
-              className={`flex items-center justify-center relative cursor-pointer overflow-hidden transition-transform duration-200 ease-out ${
-                pageFit === 'height' ? 'h-full' : 'w-full h-full'
-              }`}
+              className="w-full h-full overflow-hidden flex items-center"
               style={{
                 transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
-                transformOrigin: 'center center'
+                transformOrigin: 'center center',
+                transition: zoomScale !== 1 ? 'transform 160ms ease-out' : undefined
               }}
             >
-              {pages[currentPageIndex] && (
-                <div
-                  key={`single-anim-${currentPageIndex}`}
-                  className="w-full h-full flex items-center justify-center animate-in fade-in duration-150 ease-out"
-                >
-                  <ReaderPageImage
-                    key={`single_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
-                    pageNumber={currentPageIndex + 1}
-                    imageUrl={pages[currentPageIndex].imageUrl}
-                    className={`object-contain transition-all shadow-2xl select-none max-h-[calc(100dvh-4rem)] max-w-full ${
-                      pageFit === 'height' ? 'h-full w-auto' : 'w-auto'
-                    }`}
-                    loading="eager"
-                  />
-                </div>
-              )}
-
-              {/* Click zones for easy flipping on touch or mouse */}
+              {/* Horizontal Sliding Track */}
               <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
+                className="flex w-full h-full will-change-transform motion-reduce:transition-none"
+                style={{
+                  transform: `translate3d(calc(${-activeVisualIdx * 100}% + ${
+                    pageTransition === 'slide' ? dragOffsetPx : 0
+                  }px), 0, 0)`,
+                  transition:
+                    isDraggingCarousel || skipCarouselTransition || pageTransition !== 'slide'
+                      ? 'none'
+                      : 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)'
                 }}
-                className="absolute left-0 inset-y-0 w-1/3 cursor-w-resize z-20"
-                title={readingDirection === 'rtl' ? 'Avançar (Direção Mangá RTL - tecla ←)' : 'Página Anterior (tecla ←)'}
-              />
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
-                }}
-                className="absolute right-0 inset-y-0 w-1/3 cursor-e-resize z-20"
-                title={readingDirection === 'rtl' ? 'Página Anterior (Direção Mangá RTL - tecla →)' : 'Próxima Página (tecla →)'}
-              />
-            </div>
-          </div>
-        )}
+              >
+                {visualSlides.map((slide) => {
+                  const distance = Math.abs(slide.slideIdx - activeSlideIdx);
+                  const shouldRender = distance <= 2;
 
-        {/* Double Page Spread Mode */}
-        {readerMode === 'double' && (
-          <div className="relative w-full h-[calc(100dvh-3.5rem)] flex items-center justify-center max-w-7xl overflow-hidden py-2">
-            <div
-              key={`double-anim-${currentPageIndex}`}
-              className="grid grid-cols-2 gap-2 h-full max-h-[calc(100dvh-4rem)] items-center animate-in fade-in duration-150 ease-out transition-transform duration-200"
-              style={{
-                transform: zoomScale !== 1 ? `scale(${zoomScale})` : undefined,
-                transformOrigin: 'center center'
-              }}
-            >
-              {/* First Column: in RTL this is the higher page (left), in LTR this is the lower page (left) */}
-              <div className="flex justify-end h-full items-center overflow-hidden">
-                {readingDirection === 'rtl' ? (
-                  pages[currentPageIndex + 1] ? (
-                    <ReaderPageImage
-                      key={`double_left_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
-                      pageNumber={currentPageIndex + 2}
-                      imageUrl={pages[currentPageIndex + 1].imageUrl}
-                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
-                      loading="eager"
-                    />
-                  ) : (
-                    <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
-                      Fim do capítulo
-                    </div>
-                  )
-                ) : (
-                  pages[currentPageIndex] && (
-                    <ReaderPageImage
-                      key={`double_left_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
-                      pageNumber={currentPageIndex + 1}
-                      imageUrl={pages[currentPageIndex].imageUrl}
-                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
-                      loading="eager"
-                    />
-                  )
-                )}
-              </div>
+                  return (
+                    <div
+                      key={slide.key}
+                      className={`w-full h-full flex-none flex items-center justify-center relative select-none transition-opacity duration-200 ${
+                        pageTransition === 'fade' && slide.slideIdx !== activeSlideIdx ? 'opacity-0' : 'opacity-100'
+                      }`}
+                    >
+                      {shouldRender ? (
+                        readerMode === 'single' ? (
+                          <div className="w-full h-full flex items-center justify-center px-0.5 sm:px-2">
+                            <ReaderPageImage
+                              key={`slide_single_${slide.startIdx}_${slide.spreadPages[0].imageUrl}`}
+                              pageNumber={slide.startIdx + 1}
+                              imageUrl={slide.spreadPages[0].imageUrl}
+                              className={`object-contain shadow-2xl select-none max-h-[calc(100dvh-4rem)] max-w-full ${
+                                pageFit === 'height' ? 'h-full w-auto' : 'w-auto'
+                              }`}
+                              loading="eager"
+                            />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2 w-full h-full max-h-[calc(100dvh-4rem)] items-center px-1 sm:px-3">
+                            {/* Left Slot of Double Spread */}
+                            <div className="flex justify-end h-full items-center overflow-hidden">
+                              {readingDirection === 'rtl' ? (
+                                slide.spreadPages[1] ? (
+                                  <ReaderPageImage
+                                    key={`double_left_${slide.startIdx + 1}_${slide.spreadPages[1].imageUrl}`}
+                                    pageNumber={slide.startIdx + 2}
+                                    imageUrl={slide.spreadPages[1].imageUrl}
+                                    className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
+                                    loading="eager"
+                                  />
+                                ) : (
+                                  <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
+                                    Fim do capítulo
+                                  </div>
+                                )
+                              ) : (
+                                slide.spreadPages[0] && (
+                                  <ReaderPageImage
+                                    key={`double_left_${slide.startIdx}_${slide.spreadPages[0].imageUrl}`}
+                                    pageNumber={slide.startIdx + 1}
+                                    imageUrl={slide.spreadPages[0].imageUrl}
+                                    className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
+                                    loading="eager"
+                                  />
+                                )
+                              )}
+                            </div>
 
-              {/* Second Column: in RTL this is current page (right), in LTR this is next page (right) */}
-              <div className="flex justify-start h-full items-center overflow-hidden">
-                {readingDirection === 'rtl' ? (
-                  pages[currentPageIndex] && (
-                    <ReaderPageImage
-                      key={`double_right_${currentPageIndex}_${pages[currentPageIndex].imageUrl}`}
-                      pageNumber={currentPageIndex + 1}
-                      imageUrl={pages[currentPageIndex].imageUrl}
-                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
-                      loading="eager"
-                    />
-                  )
-                ) : (
-                  pages[currentPageIndex + 1] ? (
-                    <ReaderPageImage
-                      key={`double_right_${currentPageIndex + 1}_${pages[currentPageIndex + 1].imageUrl}`}
-                      pageNumber={currentPageIndex + 2}
-                      imageUrl={pages[currentPageIndex + 1].imageUrl}
-                      className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
-                      loading="eager"
-                    />
-                  ) : (
-                    <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
-                      Fim do capítulo
+                            {/* Right Slot of Double Spread */}
+                            <div className="flex justify-start h-full items-center overflow-hidden">
+                              {readingDirection === 'rtl' ? (
+                                slide.spreadPages[0] && (
+                                  <ReaderPageImage
+                                    key={`double_right_${slide.startIdx}_${slide.spreadPages[0].imageUrl}`}
+                                    pageNumber={slide.startIdx + 1}
+                                    imageUrl={slide.spreadPages[0].imageUrl}
+                                    className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
+                                    loading="eager"
+                                  />
+                                )
+                              ) : slide.spreadPages[1] ? (
+                                <ReaderPageImage
+                                  key={`double_right_${slide.startIdx + 1}_${slide.spreadPages[1].imageUrl}`}
+                                  pageNumber={slide.startIdx + 2}
+                                  imageUrl={slide.spreadPages[1].imageUrl}
+                                  className="max-h-[calc(100dvh-4.5rem)] w-auto object-contain shadow-xl"
+                                  loading="eager"
+                                />
+                              ) : (
+                                <div className="h-40 w-40 bg-zinc-900/30 rounded-xl flex items-center justify-center text-xs text-zinc-600">
+                                  Fim do capítulo
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      ) : null}
                     </div>
-                  )
-                )}
+                  );
+                })}
               </div>
             </div>
 
-            {/* Click navigation overlays */}
+            {/* Tap/Click zones for easy flipping on touch or mouse (guarded against horizontal swipe) */}
             <div
               onClick={(e) => {
                 e.stopPropagation();
+                if (Date.now() - justDraggedRef.current < 260) return;
                 readingDirection === 'rtl' ? goToNextPage() : goToPrevPage();
               }}
-              className="absolute left-0 inset-y-0 w-1/4 cursor-w-resize z-20"
-              title={readingDirection === 'rtl' ? 'Avançar (RTL)' : 'Voltar (LTR)'}
+              className={`absolute left-0 inset-y-0 ${
+                readerMode === 'double' ? 'w-1/4' : 'w-1/3'
+              } cursor-w-resize z-20`}
+              title={readingDirection === 'rtl' ? 'Avançar (Direção Mangá RTL - tecla ←)' : 'Página Anterior (tecla ←)'}
             />
             <div
               onClick={(e) => {
                 e.stopPropagation();
+                if (Date.now() - justDraggedRef.current < 260) return;
                 readingDirection === 'rtl' ? goToPrevPage() : goToNextPage();
               }}
-              className="absolute right-0 inset-y-0 w-1/4 cursor-e-resize z-20"
-              title={readingDirection === 'rtl' ? 'Voltar (RTL)' : 'Avançar (LTR)'}
+              className={`absolute right-0 inset-y-0 ${
+                readerMode === 'double' ? 'w-1/4' : 'w-1/3'
+              } cursor-e-resize z-20`}
+              title={readingDirection === 'rtl' ? 'Página Anterior (Direção Mangá RTL - tecla →)' : 'Próxima Página (tecla →)'}
             />
           </div>
         )}
@@ -2480,22 +2708,37 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           <div className="absolute inset-y-0 right-0 max-w-full flex">
             <div className="w-screen max-w-sm sm:max-w-md bg-zinc-950/95 border-l border-zinc-800 backdrop-blur-xl shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
               {/* Drawer Header */}
-              <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between">
-                <div>
+              <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between gap-2">
+                <div className="min-w-0">
                   <h3 className="font-bold text-sm text-zinc-100 flex items-center gap-2">
-                    <ListFilter className="h-4 w-4 text-rose-400" />
-                    <span>Capítulos ({chapters.length})</span>
+                    <ListFilter className="h-4 w-4 text-rose-400 shrink-0" />
+                    <span>Capítulos ({navigableChapters.length})</span>
                   </h3>
-                  <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-[260px]">
+                  <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-[220px]">
                     {manga?.title}
                   </p>
                 </div>
-                <button
-                  onClick={() => setShowChapterDrawer(false)}
-                  className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowChapterDrawer(false);
+                      if (onOpenMangaDetail) onOpenMangaDetail();
+                      else onBackToManga();
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-rose-600/20 border border-zinc-800 hover:border-rose-500/40 text-[11px] font-medium text-zinc-200 hover:text-rose-300 transition-colors cursor-pointer flex items-center gap-1"
+                    title="Abrir página da obra"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    <span>Ver Obra</span>
+                  </button>
+                  <button
+                    onClick={() => setShowChapterDrawer(false)}
+                    className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
 
               {/* Drawer Search */}
@@ -2515,7 +2758,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
               {/* Scrollable Chapter List */}
               <div className="flex-1 overflow-y-auto p-3 space-y-1">
-                {chapters
+                {navigableChapters
                   .filter(ch => !drawerSearch.trim() || ch.chapterNumber.includes(drawerSearch.trim()) || (ch.title && ch.title.toLowerCase().includes(drawerSearch.toLowerCase().trim())))
                   .map((ch) => {
                     const isCurrent = ch.id === currentChapter?.id || ch.id === chapterId;

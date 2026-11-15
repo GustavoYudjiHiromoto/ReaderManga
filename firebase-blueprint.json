@@ -52,6 +52,10 @@
           "type": "array",
           "description": "Pastas e coleções personalizadas criadas pelo usuário"
         },
+        "ignoredMangaIds": {
+          "type": "array",
+          "description": "IDs de mangás dispensados da busca sem serem adicionados aos favoritos"
+        },
         "totalSecondsSpent": {
           "type": "number",
           "description": "Tempo total acumulado de leitura em segundos"

@@ -1,16 +1,44 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --breakpoint-xs: 375px;
+
+  --color-zinc-650: #484850;
+  --color-zinc-750: #323238;
+  --color-zinc-850: #1f1f23;
+
+  --font-serif: 'Cinzel', Georgia, serif;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
 
 @layer base {
   :root {
     --font-serif: 'Cinzel', Georgia, serif;
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
     font-family: var(--font-sans);
     background-color: #09090b;
     color: #f4f4f5;
+    overflow-x: clip;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
   }
 
   h1, h2, .font-serif {
@@ -20,9 +48,167 @@
   code, pre, .font-mono {
     font-family: var(--font-mono);
   }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid rgba(244, 63, 94, 0.75);
+    outline-offset: 2px;
+  }
 }
 
-/* Custom scrollbar for manga reader */
+/* ============================================================================
+   RESPONSIVE MEDIA QUERIES & FLUID LAYOUT UTILITIES
+   ============================================================================ */
+
+/* Safe-area padding helpers for notched phones & PWAs */
+@utility pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+}
+
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Cross-browser hidden scrollbar for horizontal mobile carousels/tabs */
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Fluid Cover Grid: guarantees crisp aspect proportions from 320px mobile to 4K desktop */
+.manga-cover-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (min-width: 480px) {
+  .manga-cover-grid {
+    gap: 0.875rem;
+  }
+}
+
+@media (min-width: 640px) {
+  .manga-cover-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.125rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .manga-cover-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.25rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .manga-cover-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1.375rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .manga-cover-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+}
+
+/* Compact Cover Grid: 3 columns on mobile phones, scaling smoothly to 8 on wide displays */
+.manga-cover-grid-compact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+@media (min-width: 480px) {
+  .manga-cover-grid-compact {
+    gap: 0.625rem;
+  }
+}
+
+@media (min-width: 640px) {
+  .manga-cover-grid-compact {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .manga-cover-grid-compact {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .manga-cover-grid-compact {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .manga-cover-grid-compact {
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+  }
+}
+
+/* Fluid mobile spacing & touch device refinements */
+@media (max-width: 639px) {
+  .mobile-px-fluid {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  /* Prevent accidental horizontal squeeze on ultra-small 320px devices */
+  .manga-cover-grid,
+  .manga-cover-grid-compact {
+    width: 100%;
+  }
+}
+
+@media (max-width: 359px) {
+  /* Ultra-compact phones (320px): keep compact grid legible */
+  .manga-cover-grid-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Disable sticky hover lifts on touch-only screens to avoid stuck cards after tap */
+@media (hover: none) and (pointer: coarse) {
+  .manga-card-interactive:hover {
+    transform: none !important;
+  }
+}
+
+/* Respect OS reduced motion accessibility preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Custom scrollbar for desktop manga reader */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -39,4 +225,22 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
+}
+
+@keyframes mr-indeterminate-slide {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(40%) scaleX(0.65);
+  }
+  100% {
+    transform: translateX(220%) scaleX(0.35);
+  }
+}
+
+.mr-loading-bar {
+  width: 45%;
+  transform-origin: left center;
+  animation: mr-indeterminate-slide 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }

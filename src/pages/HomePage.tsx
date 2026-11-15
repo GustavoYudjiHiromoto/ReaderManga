@@ -27,6 +27,8 @@ import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { ExtensionService } from '../services/extensionService.js';
 import { RecommendationService, ReaderDNA, RecommendationMatch } from '../services/recommendationService.js';
+import { subscribePreferredLanguage } from '../utils/languagePreference.js';
+import { RecommendationLoadingState } from '../components/RecommendationLoadingState.js';
 
 interface HomePageProps {
   onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
@@ -108,6 +110,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
   const [readerDNA, setReaderDNA] = useState<ReaderDNA>(() => RecommendationService.calculateReaderDNA());
   const [personalizedRecs, setPersonalizedRecs] = useState<RecommendationMatch[]>([]);
+  const [personalizedMeta, setPersonalizedMeta] = useState<{ aiPowered: boolean; profileSummary?: string }>({ aiPowered: false });
   const [loadingPersonalized, setLoadingPersonalized] = useState(false);
   const [hideLibraryPersonalized, setHideLibraryPersonalized] = useState(true);
 
@@ -124,27 +127,31 @@ export const HomePage: React.FC<HomePageProps> = ({
     const unsubExtensions = ExtensionService.subscribe(() => {
       loadInitialData();
     });
+    const unsubLang = subscribePreferredLanguage(() => {
+      loadPersonalizedRecommendations(hideLibraryPersonalized);
+    });
     return () => {
       unsubHistory();
       unsubUpdates();
       unsubExtensions();
+      unsubLang();
     };
   }, []);
 
   const activeHistory = propHistory || localHistory;
 
-  const mangasWithUpdates = useMemo(() => {
-    return UpdateTrackerService.getMangasWithUpdates();
-  }, [updatesMap, favorites]);
-
   const loadPersonalizedRecommendations = async (hideLib = hideLibraryPersonalized) => {
     setLoadingPersonalized(true);
     try {
-      const recs = await RecommendationService.getPersonalizedRecommendations({
+      const detailed = await RecommendationService.getPersonalizedRecommendationsDetailed({
         hideLibrary: hideLib,
         limit: 12
       });
-      setPersonalizedRecs(recs);
+      setPersonalizedRecs(detailed.matches);
+      setPersonalizedMeta({
+        aiPowered: detailed.aiPowered,
+        profileSummary: detailed.profileSummary
+      });
     } catch (err) {
       console.warn('Failed to load personalized recommendations', err);
       setPersonalizedRecs([]);
@@ -315,14 +322,14 @@ export const HomePage: React.FC<HomePageProps> = ({
             <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/70 to-transparent" />
           </div>
 
-          <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10 md:py-16">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+          <div className="relative z-10 mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 py-6 sm:py-10 md:py-16">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-8 lg:gap-12 items-center">
               
               {/* Left Column: Cover Anchor with Volume Styling */}
               <div className="lg:col-span-4 flex flex-col items-center lg:items-start">
                 <div
                   onClick={() => onSelectManga(currentHero.id)}
-                  className="group relative w-60 sm:w-64 aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 hover:border-zinc-700 bg-zinc-900 cursor-pointer transform hover:-translate-y-1.5 transition-all duration-300"
+                  className="manga-card-interactive group relative w-44 xs:w-52 sm:w-60 md:w-64 aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 hover:border-zinc-700 bg-zinc-900 cursor-pointer transform transition-all duration-300"
                 >
                   {!coverErrors[`hero_${currentHero.id}`] && currentHero.coverUrl ? (
                     <img
@@ -333,8 +340,8 @@ export const HomePage: React.FC<HomePageProps> = ({
                       className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                     />
                   ) : (
-                    <div className="relative h-full w-full flex flex-col justify-between p-5 bg-gradient-to-br from-zinc-900 via-rose-950/30 to-zinc-950">
-                      <div className="text-8xl font-serif font-black text-white/[0.04] absolute -right-2 -bottom-4 select-none">
+                    <div className="relative h-full w-full flex flex-col justify-between p-4 sm:p-5 bg-gradient-to-br from-zinc-900 via-rose-950/30 to-zinc-950">
+                      <div className="text-7xl sm:text-8xl font-serif font-black text-white/[0.04] absolute -right-2 -bottom-4 select-none">
                         漫画
                       </div>
                       <div className="flex justify-between text-[11px] font-mono text-zinc-500 border-b border-zinc-800/80 pb-2">
@@ -342,7 +349,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                         <span>MANGA</span>
                       </div>
                       <div className="my-auto py-2 text-center">
-                        <BookOpen className="h-8 w-8 text-rose-400 mx-auto mb-2" />
+                        <BookOpen className="h-7 w-7 sm:h-8 sm:w-8 text-rose-400 mx-auto mb-2" />
                         <h4 className="font-serif font-bold text-sm text-zinc-100 line-clamp-3">
                           {currentHero.title}
                         </h4>
@@ -363,9 +370,9 @@ export const HomePage: React.FC<HomePageProps> = ({
               </div>
 
               {/* Right Column: Editorial Typography & Actions */}
-              <div className="lg:col-span-8 flex flex-col justify-center text-center lg:text-left">
+              <div className="lg:col-span-8 flex flex-col justify-center text-center lg:text-left min-w-0">
                 {/* Quiet unboxed metadata */}
-                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2 text-xs text-rose-400 font-medium mb-3">
+                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-x-2 gap-y-1 text-xs text-rose-400 font-medium mb-2.5 sm:mb-3">
                   <span className="uppercase tracking-widest text-[11px] font-semibold">
                     Destaque Editorial #{heroIndex + 1}
                   </span>
@@ -392,12 +399,12 @@ export const HomePage: React.FC<HomePageProps> = ({
                   )}
                 </div>
 
-                <h1 className="font-serif text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white mb-4 text-balance leading-tight">
+                <h1 className="font-serif text-2xl xs:text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white mb-3 sm:mb-4 text-balance leading-tight">
                   {currentHero.title}
                 </h1>
 
                 {/* Author & Status */}
-                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2 text-sm text-zinc-400 mb-5">
+                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-x-2 gap-y-1 text-xs sm:text-sm text-zinc-400 mb-4 sm:mb-5">
                   <span className="font-medium text-zinc-300">
                     {currentHero.authors.join(', ') || 'Autor Desconhecido'}
                   </span>
@@ -416,17 +423,17 @@ export const HomePage: React.FC<HomePageProps> = ({
                 </div>
 
                 {/* Synopsis snippet */}
-                <p className="text-sm sm:text-base text-zinc-300 line-clamp-3 leading-relaxed mb-6 font-light max-w-2xl mx-auto lg:mx-0">
+                <p className="text-xs sm:text-base text-zinc-300 line-clamp-3 leading-relaxed mb-5 sm:mb-6 font-light max-w-2xl mx-auto lg:mx-0">
                   {currentHero.synopsis || 'Sinopse disponível na página de detalhes da obra.'}
                 </p>
 
                 {/* Primary Action Buttons */}
-                <div className="flex flex-wrap items-center justify-center lg:justify-start gap-3 mb-8">
+                <div className="flex flex-col xs:flex-row sm:flex-wrap items-stretch xs:items-center justify-center lg:justify-start gap-2.5 sm:gap-3 mb-6 sm:mb-8">
                   <button
                     onClick={() => handleHeroRead(currentHero)}
-                    className="px-6 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-medium text-sm transition-all flex items-center gap-2 shadow-lg shadow-rose-950/60 cursor-pointer active:scale-95"
+                    className="px-5 sm:px-6 py-2.5 min-h-[42px] bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 cursor-pointer active:scale-95"
                   >
-                    <BookOpen className="h-4 w-4" />
+                    <BookOpen className="h-4 w-4 shrink-0" />
                     <span>
                       {HistoryService.getProgress(currentHero.id) ? 'Continuar Leitura' : 'Iniciar Leitura (Cap. 1)'}
                     </span>
@@ -434,7 +441,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                   <button
                     onClick={() => onSelectManga(currentHero.id)}
-                    className="px-5 py-2.5 bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white rounded-xl font-medium text-sm border border-zinc-800 hover:border-zinc-700 transition-colors cursor-pointer"
+                    className="px-5 py-2.5 min-h-[42px] bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white rounded-xl font-medium text-sm border border-zinc-800 hover:border-zinc-700 transition-colors cursor-pointer flex items-center justify-center"
                   >
                     Ver Capítulos & Detalhes
                   </button>
@@ -443,15 +450,15 @@ export const HomePage: React.FC<HomePageProps> = ({
                 {/* Quick Spotlight Switcher Tabs */}
                 {spotlightList.length > 1 && (
                   <div className="pt-4 border-t border-zinc-900 flex flex-col sm:flex-row items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-1 scrollbar-none">
-                      <span className="text-xs text-zinc-400 font-medium mr-1 hidden sm:inline">
+                    <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto max-w-full pb-1 no-scrollbar">
+                      <span className="text-xs text-zinc-400 font-medium mr-1 hidden sm:inline shrink-0">
                         Destaques:
                       </span>
                       {spotlightList.map((spot, idx) => (
                         <button
                           key={spot.id}
                           onClick={() => setHeroIndex(idx)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer truncate max-w-[140px] sm:max-w-[170px] ${
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer truncate max-w-[125px] sm:max-w-[170px] shrink-0 ${
                             idx === heroIndex
                               ? 'bg-zinc-800 text-white border border-rose-500/40 shadow-sm'
                               : 'bg-zinc-900/60 hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80'
@@ -462,18 +469,18 @@ export const HomePage: React.FC<HomePageProps> = ({
                       ))}
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         onClick={handleHeroPrev}
                         aria-label="Destaque anterior"
-                        className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
+                        className="p-2 sm:p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
                       >
                         <ChevronLeft className="h-4 w-4" />
                       </button>
                       <button
                         onClick={handleHeroNext}
                         aria-label="Próximo destaque"
-                        className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
+                        className="p-2 sm:p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
                       >
                         <ChevronRight className="h-4 w-4" />
                       </button>
@@ -486,76 +493,7 @@ export const HomePage: React.FC<HomePageProps> = ({
         </section>
       )}
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-12 space-y-16">
-        
-        {/* =========================================================================
-            RADAR DE LANÇAMENTOS (NOVOS CAPÍTULOS DISPONÍVEIS)
-        ========================================================================= */}
-        {mangasWithUpdates.length > 0 && (
-          <section className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-rose-950/25 via-zinc-900/60 to-zinc-900/30 border border-rose-500/30 shadow-xl">
-            <div className="flex items-center justify-between pb-3 border-b border-rose-500/20 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">
-                  <Sparkles className="h-4 w-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">Radar de Lançamentos</h2>
-                    <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-bold tracking-wider uppercase">
-                      {mangasWithUpdates.length} Novo{mangasWithUpdates.length > 1 ? 's' : ''}
-                    </span>
-                  </div>
-                  <p className="text-xs text-zinc-400">Novos capítulos chegaram para as obras da sua biblioteca</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {mangasWithUpdates.map((update) => {
-                const fav = favorites.find(f => f.mangaId === update.mangaId);
-                if (!fav) return null;
-                return (
-                  <div
-                    key={update.mangaId}
-                    onClick={() => {
-                      UpdateTrackerService.markMangaUpdateAsSeen(update.mangaId);
-                      if (onReadChapter) {
-                        onReadChapter(update.mangaId, update.latestChapterId);
-                      } else {
-                        onSelectManga(update.mangaId);
-                      }
-                    }}
-                    className="group flex items-center gap-3 p-2.5 rounded-xl bg-zinc-950/80 hover:bg-zinc-900/90 border border-zinc-800/80 hover:border-rose-500/50 transition-all cursor-pointer shadow-md"
-                  >
-                    <img
-                      src={fav.coverUrl || '/icon.svg'}
-                      alt={fav.title}
-                      className="w-12 h-16 object-cover rounded-lg shrink-0 bg-zinc-900 border border-zinc-800"
-                    />
-                    <div className="flex flex-col min-w-0 flex-1">
-                      <span className="text-xs font-semibold text-zinc-200 group-hover:text-rose-300 truncate">
-                        {fav.title}
-                      </span>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <span className="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold">
-                          Cap. {update.latestChapterNumber}
-                        </span>
-                        {update.lastReadNumber && (
-                          <span className="text-[10px] text-zinc-500 font-mono truncate">
-                            (leu: {update.lastReadNumber})
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[11px] text-rose-400 font-medium mt-1 flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
-                        Ler agora →
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
+      <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 mt-8 sm:mt-12 space-y-10 sm:space-y-14">
 
         {/* =========================================================================
             2. MESA DO LEITOR (CONTINUAR LENDO - RECENT READING SHELF)
@@ -591,47 +529,90 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <div
                     key={item.mangaId}
                     onClick={() => onReadChapter(item.mangaId, item.chapterId)}
-                    className="group relative flex gap-3.5 p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/30 rounded-xl cursor-pointer transition-all duration-200 shadow-sm hover:shadow-lg"
+                    className="group relative flex flex-col gap-3 p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/30 rounded-xl cursor-pointer transition-all duration-200 shadow-sm hover:shadow-lg"
                   >
-                    <img
-                      src={item.mangaCover}
-                      alt={item.mangaTitle}
-                      referrerPolicy="no-referrer"
-                      className="w-16 h-22 object-cover rounded-lg shrink-0 bg-zinc-950 border border-zinc-800"
-                    />
+                    <div className="flex gap-3.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectManga(item.mangaId);
+                        }}
+                        title="Abrir página da obra"
+                        className="shrink-0 cursor-pointer rounded-lg overflow-hidden border border-zinc-800 hover:border-rose-500/50 transition-colors"
+                      >
+                        <img
+                          src={item.mangaCover}
+                          alt={item.mangaTitle}
+                          referrerPolicy="no-referrer"
+                          className="w-16 h-22 object-cover bg-zinc-950"
+                        />
+                      </button>
 
-                    <div className="flex flex-1 flex-col justify-between overflow-hidden">
-                      <div>
-                        <h4 className="font-semibold text-sm text-zinc-100 line-clamp-1 group-hover:text-rose-400 transition-colors">
-                          {item.mangaTitle}
-                        </h4>
-                        <div className="flex items-center justify-between gap-1 text-xs text-zinc-400 mt-1">
-                          <div className="flex items-center gap-1">
-                            <span>Capítulo</span>
-                            <span className="font-mono text-zinc-200 font-semibold tabular-nums">
-                              {item.chapterNumber}
-                            </span>
+                      <div className="flex flex-1 flex-col justify-between overflow-hidden min-w-0">
+                        <div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectManga(item.mangaId);
+                            }}
+                            title="Abrir página da obra"
+                            className="text-left font-semibold text-sm text-zinc-100 line-clamp-1 hover:text-rose-400 transition-colors cursor-pointer block w-full"
+                          >
+                            {item.mangaTitle}
+                          </button>
+                          <div className="flex items-center justify-between gap-1 text-xs text-zinc-400 mt-1">
+                            <div className="flex items-center gap-1">
+                              <span>Capítulo</span>
+                              <span className="font-mono text-zinc-200 font-semibold tabular-nums">
+                                {item.chapterNumber}
+                              </span>
+                            </div>
+                            {updatesMap[item.mangaId]?.hasNew && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono text-[9px] font-bold tabular-nums">
+                                <Sparkles className="h-2.5 w-2.5" />
+                                Novo Cap. {updatesMap[item.mangaId]?.latestChapterNumber}
+                              </span>
+                            )}
                           </div>
-                          {updatesMap[item.mangaId]?.hasNew && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-mono text-[9px] font-bold animate-pulse">
-                              <Sparkles className="h-2.5 w-2.5" />
-                              Novo Cap. {updatesMap[item.mangaId]?.latestChapterNumber}
-                            </span>
-                          )}
+                          <p className="text-[11px] text-zinc-400 font-mono tabular-nums mt-0.5">
+                            Página {item.pageNumber} de {item.totalPages} ({percent}%)
+                          </p>
                         </div>
-                        <p className="text-[11px] text-zinc-400 font-mono tabular-nums mt-0.5">
-                          Página {item.pageNumber} de {item.totalPages} ({percent}%)
-                        </p>
-                      </div>
 
-                      <div>
-                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden mt-2">
                           <div
                             className="bg-rose-500 h-1.5 rounded-full transition-all"
                             style={{ width: `${percent}%` }}
                           />
                         </div>
                       </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2 border-t border-zinc-800/70">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onReadChapter(item.mangaId, item.chapterId);
+                        }}
+                        className="flex-1 py-1.5 px-2.5 rounded-lg bg-rose-600/90 hover:bg-rose-500 text-white text-[11px] font-semibold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <BookOpen className="h-3 w-3 shrink-0" />
+                        <span>Continuar Cap. {item.chapterNumber}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectManga(item.mangaId);
+                        }}
+                        className="py-1.5 px-2.5 rounded-lg bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 hover:text-white border border-zinc-700/70 text-[11px] font-medium transition-colors cursor-pointer shrink-0"
+                        title="Ver sinopse, lista de capítulos e similares"
+                      >
+                        Página da Obra
+                      </button>
                     </div>
                   </div>
                 );
@@ -643,14 +624,14 @@ export const HomePage: React.FC<HomePageProps> = ({
         {/* =========================================================================
             DNA DO LEITOR & RECOMENDAÇÕES PERSONALIZADAS (IDEIA 1)
         ========================================================================= */}
-        <section className="p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-zinc-900/90 via-zinc-900/50 to-zinc-950 border border-zinc-800 shadow-xl">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-800 mb-5">
+        <section className="p-3.5 sm:p-6 rounded-2xl bg-gradient-to-br from-zinc-900/90 via-zinc-900/50 to-zinc-950 border border-zinc-800 shadow-xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pb-4 border-b border-zinc-800 mb-4 sm:mb-5">
             <div>
               <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 shrink-0">
                   <Sparkles className="h-4 w-4" />
                 </div>
-                <h2 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
+                <h2 className="text-lg sm:text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2 flex-wrap">
                   <span>Recomendados Para o Seu Perfil</span>
                   {readerDNA.topGenres.length > 0 && (
                     <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-mono font-medium">
@@ -658,10 +639,17 @@ export const HomePage: React.FC<HomePageProps> = ({
                       {readerDNA.dominantMood}
                     </span>
                   )}
+                  {personalizedMeta.aiPowered && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      IA Semântica
+                    </span>
+                  )}
                 </h2>
               </div>
               <p className="text-xs text-zinc-400 mt-1">
-                Sugestões geradas sob medida calculando a afinidade com os gêneros e obras que você mais consome
+                {personalizedMeta.profileSummary
+                  ? personalizedMeta.profileSummary
+                  : 'Sugestões geradas sob medida calculando a afinidade com os gêneros, tropos e obras que você mais consome'}
               </p>
             </div>
 
@@ -736,17 +724,19 @@ export const HomePage: React.FC<HomePageProps> = ({
 
           {/* Recommendations Content */}
           {loadingPersonalized ? (
-            <div className="flex flex-col items-center justify-center py-12 text-zinc-500">
-              <RefreshCw className="h-6 w-6 animate-spin text-amber-400 mb-2" />
-              <p className="text-xs">Mapeando seu DNA de leitura e buscando recomendações...</p>
-            </div>
+            <RecommendationLoadingState
+              title="Mapeando seu DNA de leitura e analisando sinopses..."
+              subtitle="Selecionando obras alinhadas ao seu gosto"
+              accent="amber"
+              cardCount={6}
+            />
           ) : personalizedRecs.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            <div className="manga-cover-grid">
               {personalizedRecs.map((match) => (
                 <div
                   key={match.manga.id}
                   onClick={() => onSelectManga(match.manga.id)}
-                  className="group relative flex flex-col bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800/80 hover:border-amber-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+                  className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800/80 hover:border-amber-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
                 >
                   <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
                     {!coverErrors[match.manga.id] && match.manga.coverUrl ? (
@@ -765,23 +755,23 @@ export const HomePage: React.FC<HomePageProps> = ({
                     )}
 
                     {/* Affinity Score Badge */}
-                    <div className="absolute top-2 left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
+                    <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
                       <span className={match.affinityScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>
                         ★ {match.affinityScore}%
                       </span>
-                      <span className="text-[9px] text-zinc-400 font-normal">afinidade</span>
+                      <span className="hidden xs:inline text-[9px] text-zinc-400 font-normal">afinidade</span>
                     </div>
 
                     {match.isInLibrary && (
-                      <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
+                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
                         Salvo
                       </div>
                     )}
                   </div>
 
-                  <div className="p-3 flex flex-1 flex-col justify-between">
-                    <div>
-                      <h4 className="font-semibold text-xs text-zinc-100 group-hover:text-amber-300 transition-colors line-clamp-1">
+                  <div className="p-2.5 sm:p-3 flex flex-1 flex-col justify-between min-w-0">
+                    <div className="min-w-0">
+                      <h4 className="font-semibold text-xs sm:text-[13px] text-zinc-100 group-hover:text-amber-300 transition-colors line-clamp-2 leading-snug">
                         {match.manga.title}
                       </h4>
                       <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
@@ -789,8 +779,8 @@ export const HomePage: React.FC<HomePageProps> = ({
                       </p>
                     </div>
 
-                    <div className="pt-2 border-t border-zinc-800/60 mt-2">
-                      <p className="text-[10px] text-zinc-400 line-clamp-1">
+                    <div className="pt-1.5 sm:pt-2 border-t border-zinc-800/60 mt-1.5 sm:mt-2">
+                      <p className="text-[10px] text-amber-300/90 font-medium line-clamp-2 leading-snug">
                         {match.matchReasons[0] || 'Baseado nas suas preferências'}
                       </p>
                     </div>
@@ -800,7 +790,7 @@ export const HomePage: React.FC<HomePageProps> = ({
             </div>
           ) : readerDNA.totalAnalyzed === 0 ? (
             <div className="text-center py-10 px-4 rounded-xl bg-zinc-950/40 border border-dashed border-zinc-800">
-              <Dna className="h-8 w-8 text-amber-500/60 mx-auto mb-2 animate-pulse" />
+              <Dna className="h-8 w-8 text-amber-500/60 mx-auto mb-2" />
               <h4 className="text-sm font-semibold text-zinc-200">Seu DNA de Leitura será ativado em breve</h4>
               <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
                 Favorite suas obras preferidas ou leia alguns capítulos. Nosso motor inteligente analisará seus gêneros favoritos e criará uma prateleira personalizada sob medida para você!
@@ -876,12 +866,12 @@ export const HomePage: React.FC<HomePageProps> = ({
               <p className="text-xs">Carregando trilha temática...</p>
             </div>
           ) : collectionItems.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            <div className="manga-cover-grid">
               {collectionItems.map((manga) => (
                 <div
                   key={manga.id}
                   onClick={() => onSelectManga(manga.id)}
-                  className="group relative flex flex-col bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+                  className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
                 >
                   <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
                     {!coverErrors[manga.id] && manga.coverUrl ? (
@@ -914,16 +904,16 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                     {/* Rating badge */}
                     {manga.rating && (
-                      <div className="absolute top-2 right-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-amber-300 border border-zinc-800">
+                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-amber-300 border border-zinc-800">
                         <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
                         <span>{manga.rating.toFixed(1)}</span>
                       </div>
                     )}
                   </div>
 
-                  <div className="p-3 flex flex-1 flex-col justify-between">
-                    <div>
-                      <h4 className="font-semibold text-xs text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
+                  <div className="p-2.5 sm:p-3 flex flex-1 flex-col justify-between min-w-0">
+                    <div className="min-w-0">
+                      <h4 className="font-semibold text-xs sm:text-[13px] text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-2 leading-snug">
                         {manga.title}
                       </h4>
                       <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
@@ -931,9 +921,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                       </p>
                     </div>
 
-                    <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-2 border-t border-zinc-800/60 mt-2">
-                      <span className="truncate max-w-[85px]">{manga.genres[0] || 'Obra'}</span>
-                      <span className="text-rose-400 font-medium group-hover:translate-x-0.5 transition-transform">
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1.5 sm:pt-2 border-t border-zinc-800/60 mt-1.5 sm:mt-2 gap-1">
+                      <span className="truncate">{manga.genres[0] || 'Obra'}</span>
+                      <span className="text-rose-400 font-medium group-hover:translate-x-0.5 transition-transform shrink-0">
                         Ler →
                       </span>
                     </div>
@@ -952,8 +942,8 @@ export const HomePage: React.FC<HomePageProps> = ({
         {/* =========================================================================
             4. ROLETA DE DESCOBERTA POR VIBE / HUMOR (SURPREENDA-ME INTERATIVO)
         ========================================================================= */}
-        <section className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900/90 via-zinc-900/40 to-zinc-950 p-6 sm:p-8">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+        <section className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900/90 via-zinc-900/40 to-zinc-950 p-4 sm:p-8">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-center">
             
             {/* Left Column: Vibe Selector */}
             <div className="lg:col-span-6">
@@ -964,11 +954,11 @@ export const HomePage: React.FC<HomePageProps> = ({
                 </span>
               </div>
 
-              <h2 className="font-serif text-2xl sm:text-3xl font-bold tracking-tight text-white mb-3">
+              <h2 className="font-serif text-xl sm:text-3xl font-bold tracking-tight text-white mb-2 sm:mb-3">
                 Qual é a sua vibe de leitura hoje?
               </h2>
 
-              <p className="text-xs sm:text-sm text-zinc-400 mb-6 font-light leading-relaxed">
+              <p className="text-xs sm:text-sm text-zinc-400 mb-5 sm:mb-6 font-light leading-relaxed">
                 Escolha o tom desejado e receba uma recomendação instantânea sorteada diretamente das nossas fontes ao vivo.
               </p>
 
@@ -982,7 +972,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                       key={vibe.id}
                       onClick={() => handleRollVibe(vibe.id)}
                       disabled={isRollingVibe}
-                      className={`p-3 rounded-xl border text-xs font-medium text-left transition-all flex flex-col gap-1.5 cursor-pointer ${
+                      className={`p-2.5 sm:p-3 rounded-xl border text-xs font-medium text-left transition-all flex flex-col gap-1.5 cursor-pointer ${
                         isSelected
                           ? 'bg-amber-500/15 border-amber-500/50 text-amber-300 shadow-md'
                           : 'bg-zinc-950/60 hover:bg-zinc-800/80 border-zinc-800 text-zinc-300 hover:text-white'
@@ -999,8 +989,8 @@ export const HomePage: React.FC<HomePageProps> = ({
             {/* Right Column: Revealed Result Card */}
             <div className="lg:col-span-6 flex justify-center lg:justify-end">
               {vibeResult ? (
-                <div className="w-full max-w-md p-4 sm:p-5 rounded-2xl bg-zinc-950 border border-zinc-800 flex gap-4 items-center shadow-xl animate-in fade-in zoom-in-95 duration-200">
-                  <div className="w-24 sm:w-28 aspect-[3/4] rounded-xl overflow-hidden bg-zinc-900 shrink-0 border border-zinc-800">
+                <div className="w-full max-w-md p-3.5 sm:p-5 rounded-2xl bg-zinc-950 border border-zinc-800 flex gap-3.5 sm:gap-4 items-center shadow-xl animate-in fade-in zoom-in-95 duration-200">
+                  <div className="w-20 xs:w-24 sm:w-28 aspect-[3/4] rounded-xl overflow-hidden bg-zinc-900 shrink-0 border border-zinc-800">
                     {!coverErrors[`vibe_${vibeResult.id}`] && vibeResult.coverUrl ? (
                       <img
                         src={vibeResult.coverUrl}
@@ -1139,7 +1129,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   </div>
                   {isEnabled ? (
                     <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                       Ativa
                     </span>
                   ) : (

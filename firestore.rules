@@ -44,9 +44,10 @@ service cloud.firestore {
     // Library sync validation
     function isValidLibrarySync(data) {
       return data.keys().hasAll(['readChapters', 'customCollections']) &&
-        data.keys().hasOnly(['readChapters', 'customCollections', 'totalSecondsSpent', 'lastReadDate', 'updatedAt']) &&
+        data.keys().hasOnly(['readChapters', 'customCollections', 'ignoredMangaIds', 'totalSecondsSpent', 'lastReadDate', 'updatedAt']) &&
         data.readChapters is list && data.readChapters.size() <= 5000 &&
         data.customCollections is list && data.customCollections.size() <= 100 &&
+        (!('ignoredMangaIds' in data) || (data.ignoredMangaIds is list && data.ignoredMangaIds.size() <= 3000 && (data.ignoredMangaIds.size() == 0 || data.ignoredMangaIds[0] is string))) &&
         (!('totalSecondsSpent' in data) || (data.totalSecondsSpent is number && data.totalSecondsSpent >= 0)) &&
         (!('lastReadDate' in data) || (data.lastReadDate is string && data.lastReadDate.size() <= 64)) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));

@@ -42,6 +42,7 @@ export interface Manga {
   isAdult?: boolean;
   hasAvailableChapters?: boolean;
   availabilityStatus?: MangaAvailabilityStatus;
+  availableLanguages?: string[];
 }
 
 export interface ChapterVariant {
@@ -149,6 +150,8 @@ export interface FavoriteManga {
   userScore?: number; // 1 to 10
   userNotes?: string;
   customCollections?: string[]; // e.g. ["Favoritos do Ano", "Para Reler"]
+  synopsis?: string;
+  altTitles?: string[];
   updatedAt: number;
 }
 
@@ -176,6 +179,15 @@ export interface PageBookmark {
   createdAt: number;
 }
 
+export interface IgnoredManga {
+  mangaId: string;
+  title: string;
+  coverUrl?: string;
+  sourceId?: string;
+  sourceName?: string;
+  dismissedAt: number;
+}
+
 export interface LibraryBackup {
   version: number;
   exportedAt: string;
@@ -186,6 +198,7 @@ export interface LibraryBackup {
   readChapters?: string[];
   pageBookmarks?: PageBookmark[];
   customCollections?: string[];
+  ignoredMangas?: IgnoredManga[];
 }
 
 export interface MangaUpdateInfo {
@@ -193,7 +206,9 @@ export interface MangaUpdateInfo {
   latestChapterId: string;
   latestChapterNumber: string;
   latestChapterTitle?: string;
+  releaseDate?: string;
   hasNew: boolean;
   lastReadNumber?: string;
+  discoveredAt?: number;
   checkedAt: number;
 }

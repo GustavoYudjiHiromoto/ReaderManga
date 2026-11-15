@@ -16,7 +16,7 @@ import {
 } from 'firebase/auth';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../lib/firebase.js';
 import { HistoryService } from './history.js';
-import { FavoriteManga, ReadingProgress } from '../types/manga.js';
+import { FavoriteManga, ReadingProgress, IgnoredManga } from '../types/manga.js';
 import { TrackerService } from './trackerService.js';
 
 export function sanitizeDocId(rawId: string): string {
@@ -296,6 +296,22 @@ export const FirebaseSyncService = {
       const cloudCollections: string[] = Array.isArray(cloudSyncData?.customCollections) ? cloudSyncData.customCollections : [];
       const mergedCollections = Array.from(new Set([...localCollections, ...cloudCollections])).slice(0, 90);
 
+      const localIgnored = HistoryService.getIgnoredMangas();
+      const cloudIgnoredIds: string[] = Array.isArray(cloudSyncData?.ignoredMangaIds) ? cloudSyncData.ignoredMangaIds : [];
+      const ignoredMap = new Map<string, IgnoredManga>();
+      localIgnored.forEach(item => ignoredMap.set(item.mangaId, item));
+      cloudIgnoredIds.forEach(id => {
+        if (typeof id === 'string' && id && !ignoredMap.has(id)) {
+          ignoredMap.set(id, {
+            mangaId: id,
+            title: id.replace(/^mr_[^_]+_/, '').replace(/[-_]/g, ' ') || 'Obra Dispensada',
+            dismissedAt: Date.now()
+          });
+        }
+      });
+      const mergedIgnoredList = Array.from(ignoredMap.values()).slice(0, 3000);
+      const mergedIgnoredIds = mergedIgnoredList.map(i => i.mangaId);
+
       const localSec = HistoryService.getStoredSeconds();
       const cloudSec = typeof cloudSyncData?.totalSecondsSpent === 'number' ? cloudSyncData.totalSecondsSpent : 0;
       const mergedSec = Math.max(localSec, cloudSec);
@@ -303,6 +319,7 @@ export const FirebaseSyncService = {
       const syncPayload = {
         readChapters: mergedReadChapters,
         customCollections: mergedCollections,
+        ignoredMangaIds: mergedIgnoredIds,
         totalSecondsSpent: mergedSec,
         lastReadDate: new Date().toISOString(),
         updatedAt: new Date().toISOString()
@@ -318,6 +335,7 @@ export const FirebaseSyncService = {
       try {
         localStorage.setItem('manga_reader_read_chapters_v1', JSON.stringify(mergedReadChapters));
         localStorage.setItem('manga_reader_custom_collections_v1', JSON.stringify(mergedCollections));
+        localStorage.setItem('manga_reader_ignored_v1', JSON.stringify(mergedIgnoredList));
         localStorage.setItem('manga_reader_reading_stats_v1', JSON.stringify({
           totalSeconds: mergedSec,
           lastReadDate: new Date().toISOString()
@@ -442,6 +460,18 @@ export const FirebaseSyncService = {
             if (Array.isArray(data.customCollections)) {
               localStorage.setItem('manga_reader_custom_collections_v1', JSON.stringify(data.customCollections));
             }
+            if (Array.isArray(data.ignoredMangaIds)) {
+              const currentIgnored = HistoryService.getIgnoredMangas();
+              const currentMap = new Map(currentIgnored.map(i => [i.mangaId, i]));
+              const nextIgnored: IgnoredManga[] = data.ignoredMangaIds
+                .filter((id: any) => typeof id === 'string' && id)
+                .map((id: string) => currentMap.get(id) || {
+                  mangaId: id,
+                  title: id.replace(/^mr_[^_]+_/, '').replace(/[-_]/g, ' ') || 'Obra Dispensada',
+                  dismissedAt: Date.now()
+                });
+              localStorage.setItem('manga_reader_ignored_v1', JSON.stringify(nextIgnored));
+            }
             if (typeof data.totalSecondsSpent === 'number') {
               localStorage.setItem('manga_reader_reading_stats_v1', JSON.stringify({
                 totalSeconds: data.totalSecondsSpent,
@@ -547,6 +577,7 @@ export const FirebaseSyncService = {
       const payload = {
         readChapters: HistoryService.getReadChapters().slice(0, 4500),
         customCollections: HistoryService.getCustomCollections().slice(0, 90),
+        ignoredMangaIds: HistoryService.getIgnoredMangas().map(i => i.mangaId).slice(0, 3000),
         totalSecondsSpent: HistoryService.getStoredSeconds(),
         lastReadDate: new Date().toISOString(),
         updatedAt: new Date().toISOString()

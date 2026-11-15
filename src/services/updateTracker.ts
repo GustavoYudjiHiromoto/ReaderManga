@@ -1,6 +1,7 @@
 import { MangaUpdateInfo } from '../types/manga.js';
 import { HistoryService } from './history.js';
 import { MangaApi } from './api.js';
+import { filterChaptersByLanguage, getPreferredLanguage } from '../utils/languagePreference.js';
 
 const UPDATES_KEY = 'manga_reader_updates_v1';
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache para não sobrecarregar as fontes
@@ -111,6 +112,11 @@ export const UpdateTrackerService = {
     return checkProgress;
   },
 
+  getAllTrackedUpdates(): MangaUpdateInfo[] {
+    const all = this.getStoredUpdates();
+    return Object.values(all).sort((a, b) => (b.checkedAt || 0) - (a.checkedAt || 0));
+  },
+
   markMangaUpdateAsSeen(mangaId: string): void {
     try {
       const all = this.getStoredUpdates();
@@ -124,6 +130,25 @@ export const UpdateTrackerService = {
       }
     } catch (e) {
       console.warn('Failed to mark update as seen', e);
+    }
+  },
+
+  markAllUpdatesAsSeen(): void {
+    try {
+      const all = this.getStoredUpdates();
+      let changed = false;
+      Object.keys(all).forEach(mangaId => {
+        if (all[mangaId]?.hasNew) {
+          all[mangaId] = { ...all[mangaId], hasNew: false };
+          changed = true;
+        }
+      });
+      if (changed) {
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(all));
+        notifyListeners();
+      }
+    } catch (e) {
+      console.warn('Failed to mark all updates as seen', e);
     }
   },
 
@@ -182,7 +207,8 @@ export const UpdateTrackerService = {
         }
 
         try {
-          const chapters = await MangaApi.getChapters(fav.mangaId, { order: 'desc', deduplicate: true });
+          const rawChapters = await MangaApi.getChapters(fav.mangaId, { order: 'desc', deduplicate: true });
+          const { chapters } = filterChaptersByLanguage(rawChapters, getPreferredLanguage());
           if (chapters.length > 0) {
             const latest = chapters[0];
             const progress = HistoryService.getProgress(fav.mangaId);
@@ -216,13 +242,20 @@ export const UpdateTrackerService = {
               }
             }
 
+            const sameLatest = existing && existing.latestChapterId === latest.id;
+            const discoveredAt = sameLatest && existing.discoveredAt
+              ? existing.discoveredAt
+              : (sameLatest && existing.checkedAt ? existing.checkedAt : now);
+
             newUpdates[fav.mangaId] = {
               mangaId: fav.mangaId,
               latestChapterId: latest.id,
               latestChapterNumber: latest.chapterNumber,
               latestChapterTitle: latest.title,
+              releaseDate: latest.releaseDate || existing?.releaseDate,
               hasNew,
               lastReadNumber: progress?.chapterNumber,
+              discoveredAt,
               checkedAt: now
             };
           }

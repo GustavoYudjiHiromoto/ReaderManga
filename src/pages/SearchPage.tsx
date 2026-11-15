@@ -1,10 +1,45 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, X, Filter, BookOpen, RefreshCw, Dices, SlidersHorizontal, ChevronDown, ChevronUp, RotateCcw, Check, Sparkles, Globe2, Users, Clock, ShieldCheck, ShieldAlert, Blocks, Plus, BookmarkX, Bookmark } from 'lucide-react';
-import { Manga, FavoriteManga } from '../types/manga.js';
+import {
+  Search,
+  X,
+  Filter,
+  BookOpen,
+  RefreshCw,
+  Dices,
+  SlidersHorizontal,
+  ChevronDown,
+  ChevronUp,
+  RotateCcw,
+  Check,
+  Sparkles,
+  Globe2,
+  Users,
+  Clock,
+  ShieldCheck,
+  ShieldAlert,
+  Blocks,
+  Plus,
+  BookmarkX,
+  Bookmark,
+  LayoutGrid,
+  LayoutList,
+  Grid3x3,
+  ArrowUpDown,
+  EyeOff,
+  Eye,
+  Trash2
+} from 'lucide-react';
+import { Manga, FavoriteManga, IgnoredManga } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
-import { MangaCard } from '../components/MangaCard.js';
+import { MangaCard, MangaCardLayoutMode } from '../components/MangaCard.js';
 import { ExtensionService } from '../services/extensionService.js';
 import { HistoryService } from '../services/history.js';
+import {
+  LANGUAGE_OPTIONS,
+  getPreferredLanguage,
+  setPreferredLanguage,
+  subscribePreferredLanguage
+} from '../utils/languagePreference.js';
 
 interface SearchPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -14,6 +49,42 @@ interface SearchPageProps {
 
 export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   // Tropes & Subgêneros Específicos
+  'yaoi / bl': [
+    'yaoi', 'bl', "boys' love", 'boys love', 'shounen ai', 'shounen-ai', 'danmei', 'fujoshi'
+  ],
+  'yuri / gl': [
+    'yuri', 'gl', "girls' love", 'girls love', 'shoujo ai', 'shoujo-ai', 'baihe'
+  ],
+  'harém': [
+    'harem', 'harém', 'polyamory', 'poly'
+  ],
+  'ecchi': [
+    'ecchi', 'fanservice', 'sensual', 'borderline h', 'softcore'
+  ],
+  'troca de gênero': [
+    'gender bender', 'gender swap', 'genderswap', 'troca de gênero', 'troca de sexo', 'crossdressing'
+  ],
+  'mecha / robôs': [
+    'mecha', 'robot', 'robô', 'robos', 'robôs', 'mechas', 'giant robot', 'piloto'
+  ],
+  'culinária / gastronomia': [
+    'cooking', 'food', 'culinária', 'culinaria', 'gastronomia', 'chef', 'gourmet', 'restaurant', 'comida'
+  ],
+  'monstros / demônios': [
+    'monsters', 'monster', 'demons', 'demon', 'demônios', 'demonio', 'vampire', 'vampiro', 'youkai', 'yokai'
+  ],
+  'militar / guerra': [
+    'military', 'war', 'militar', 'guerra', 'army', 'exército', 'soldado'
+  ],
+  'policial / detetive': [
+    'detective', 'police', 'policial', 'detetive', 'crime', 'investigation', 'investigação'
+  ],
+  'isekai reverso': [
+    'reverse isekai', 'isekai reverso', 'modern fantasy'
+  ],
+  'música / artes': [
+    'music', 'música', 'musica', 'band', 'banda', 'idol', 'ídolo', 'art', 'teatro'
+  ],
   'overpower (op)': [
     'overpower', 'overpowered', 'op protagonist', 'cheat skill', 'cheat ability',
     'apelão', 'strongest', 'unrivaled', 'invincible', 'max level', 'saikyou',
@@ -23,10 +94,10 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'tomboy': ['tomboy', 'garota moleca', 'moleca', 'boyish'],
   'construção de vila': ['village building', 'kingdom building', 'city building', 'nation building', 'territory', 'construção de vila', 'reino', 'settlement', 'estate developer', 'fief', 'território', 'construcao de vila'],
   'fazenda / agricultura': ['farming', 'fazenda', 'agricultura', 'slow life', 'vida calma', 'vida lenta', 'agriculture', 'harvest', 'farm life'],
-  'vilã (villainess)': ['villainess', 'vilã', 'vila', 'antagonista', 'villain'],
+  'vilã (villainess)': ['villainess', 'vilã', 'vila', 'antagonista', 'villain', 'otome', 'otome game'],
   'reencarnação': ['reincarnation', 'reencarnação', 'transmigration', 'reborn', 'reencarnado', 'isekai'],
   'regressão / tempo': ['time travel', 'regression', 'regressor', 'viagem no tempo', 'retorno', 'loop', 'timeline', 'regressão', 'regressao'],
-  'dungeon / sistema': ['dungeon', 'system', 'sistema', 'portais', 'hunter', 'leveling', 'ranker', 'tower', 'awakening'],
+  'dungeon / sistema': ['dungeon', 'system', 'sistema', 'portais', 'hunter', 'leveling', 'ranker', 'tower', 'awakening', 'solo leveling'],
   'cultivação / murim': ['cultivation', 'cultivo', 'murim', 'wuxia', 'xianxia', 'martial arts', 'artes marciais', 'qi', 'sect'],
   'domador de monstros': ['monster tamer', 'tamer', 'domador', 'monster pet', 'beast tamer', 'monster', 'pet'],
   'vingança': ['revenge', 'vingança', 'betrayal', 'traição', 'retribution', 'avenger'],
@@ -35,6 +106,13 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'psicológico': ['psychological', 'psicológico', 'psicologico'],
   'sobrevivência': ['survival', 'sobrevivência', 'sobrevivencia', 'death game'],
   'isekai': ['isekai', 'another world', 'outro mundo', 'summoned', 'transported'],
+  'apocalipse / zumbis': ['zombie', 'apocalypse', 'apocalipse', 'zumbi', 'survival', 'post-apocalyptic', 'fim do mundo'],
+  'academia de magia': ['magic academy', 'academia de magia', 'magic school', 'escola de magia'],
+  'romcom / comédia romântica': ['romcom', 'romantic comedy', 'comédia romântica', 'comedia romantica'],
+  'trabalho / adulto': ['office', 'office romance', 'workplace', 'ceo', 'trabalho', 'adult romance', 'empresa'],
+  'delinquente / gangue': ['delinquent', 'gang', 'yankee', 'delinquente', 'gangue', 'brawler', 'bosozoku'],
+  'caçada de monstros': ['monster hunter', 'monster hunting', 'caçador de monstros', 'caçada', 'beasts'],
+  'jogo da morte': ['death game', 'jogo da morte', 'battle royale', 'deathmatch'],
 
   // Gêneros Clássicos
   'ação': ['action', 'ação', 'acao'],
@@ -46,7 +124,7 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'histórico': ['historical', 'histórico', 'historico'],
   'horror': ['horror', 'terror'],
   'sci-fi': ['sci-fi', 'sci fi', 'science fiction', 'ficção científica'],
-  'romance': ['romance', 'love'],
+  'romance': ['romance', 'romantic'],
   'mistério': ['mystery', 'mistério', 'misterio'],
   'slice of life': ['slice of life', 'cotidiano'],
   'esportes': ['sports', 'esportes', 'esporte']
@@ -55,17 +133,36 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
 export const SPECIFIC_TROPES = [
   { id: 'Isekai', label: 'Isekai', highlight: true },
   { id: 'Overpower (OP)', label: 'Overpower (OP)', highlight: true },
-  { id: 'Yandere', label: 'Yandere', highlight: true },
-  { id: 'Tomboy', label: 'Tomboy', highlight: true },
-  { id: 'Construção de Vila', label: 'Construção de Vila / Reino', highlight: true },
-  { id: 'Fazenda / Agricultura', label: 'Fazenda / Agricultura', highlight: true },
+  { id: 'Dungeon / Sistema', label: 'Dungeon / Sistema', highlight: true },
+  { id: 'Regressão / Tempo', label: 'Regressão / Tempo', highlight: true },
+  { id: 'Reencarnação', label: 'Reencarnação', highlight: true },
   { id: 'Vilã (Villainess)', label: 'Vilã (Villainess)', highlight: true },
-  { id: 'Reencarnação', label: 'Reencarnação' },
-  { id: 'Regressão / Tempo', label: 'Regressão / Tempo' },
-  { id: 'Dungeon / Sistema', label: 'Dungeon / Sistema' },
-  { id: 'Cultivação / Murim', label: 'Cultivação / Murim' },
+  { id: 'Cultivação / Murim', label: 'Cultivação / Murim', highlight: true },
+  { id: 'Vingança', label: 'Vingança / Traição', highlight: true },
+  { id: 'Yaoi / BL', label: 'Yaoi / BL (Boys\' Love)', highlight: true },
+  { id: 'Yuri / GL', label: 'Yuri / GL (Girls\' Love)', highlight: true },
+  { id: 'Harém', label: 'Harém', highlight: true },
+  { id: 'Ecchi', label: 'Ecchi / Sensual', highlight: true },
+  { id: 'RomCom / Comédia Romântica', label: 'Comédia Romântica', highlight: true },
+  { id: 'Apocalipse / Zumbis', label: 'Apocalipse / Zumbis' },
+  { id: 'Construção de Vila', label: 'Construção de Reino' },
+  { id: 'Fazenda / Agricultura', label: 'Fazenda / Vida Lenta' },
+  { id: 'Academia de Magia', label: 'Academia de Magia' },
+  { id: 'Trabalho / Adulto', label: 'Romance Adulto / Office' },
+  { id: 'Troca de Gênero', label: 'Troca de Gênero (Gender Bender)' },
+  { id: 'Delinquente / Gangue', label: 'Delinquentes / Gangues' },
+  { id: 'Monstros / Demônios', label: 'Monstros / Demônios' },
   { id: 'Domador de Monstros', label: 'Domador de Monstros' },
-  { id: 'Vingança', label: 'Vingança' },
+  { id: 'Caçada de Monstros', label: 'Caçada / Monstros' },
+  { id: 'Jogo da Morte', label: 'Jogo da Morte / Survival' },
+  { id: 'Mecha / Robôs', label: 'Mecha / Robôs' },
+  { id: 'Culinária / Gastronomia', label: 'Culinária / Gastronomia' },
+  { id: 'Militar / Guerra', label: 'Militar / Guerra' },
+  { id: 'Policial / Detetive', label: 'Policial / Detetive' },
+  { id: 'Isekai Reverso', label: 'Isekai Reverso' },
+  { id: 'Música / Artes', label: 'Música / Ídolos' },
+  { id: 'Yandere', label: 'Yandere' },
+  { id: 'Tomboy', label: 'Tomboy' },
   { id: 'Romance Colegial', label: 'Romance Colegial' },
   { id: 'Harem Invertido', label: 'Harem Invertido' },
   { id: 'Psicológico', label: 'Psicológico' },
@@ -89,18 +186,47 @@ export const CLASSIC_GENRES = [
 ];
 
 export function getMangaType(manga: Manga): 'manga' | 'manhwa' | 'manhua' | 'comic' {
-  const country = (manga.publicationInfo?.country || '').toLowerCase();
+  const country = (manga.publicationInfo?.country || '').toLowerCase().trim();
   const genres = (manga.genres || []).map(g => g.toLowerCase());
+  const title = manga.title || '';
+  const alts = (manga.altTitles || []).join(' ');
 
-  if (country === 'kr' || country === 'coreia' || country === 'korea' || country === 'south korea' || genres.includes('manhwa')) {
+  // Korean Hangul characters check
+  const hasHangul = /[\uac00-\ud7a3]/.test(title) || /[\uac00-\ud7a3]/.test(alts);
+
+  // Chinese Hanzi check (ensure no Japanese Hiragana/Katakana)
+  const hasKana = /[\u3040-\u30ff]/.test(title) || /[\u3040-\u30ff]/.test(alts);
+  const hasChinese = !hasKana && (/[\u4e00-\u9fff]/.test(title) || /[\u4e00-\u9fff]/.test(alts));
+
+  if (
+    country === 'kr' ||
+    country === 'ko' ||
+    country === 'coreia' ||
+    country === 'korea' ||
+    country === 'south korea' ||
+    genres.includes('manhwa') ||
+    genres.includes('webtoon') ||
+    hasHangul
+  ) {
     return 'manhwa';
   }
-  if (country === 'cn' || country === 'china' || country === 'zh' || country === 'taiwan' || genres.includes('manhua')) {
+
+  if (
+    country === 'cn' ||
+    country === 'zh' ||
+    country === 'china' ||
+    country === 'taiwan' ||
+    country === 'hong kong' ||
+    genres.includes('manhua') ||
+    hasChinese
+  ) {
     return 'manhua';
   }
-  if (country === 'us' || country === 'en' || country === 'estados unidos' || genres.includes('comic') || genres.includes('webtoon') || genres.includes('western')) {
+
+  if (country === 'us' || country === 'en' || country === 'estados unidos' || genres.includes('comic') || genres.includes('western')) {
     return 'comic';
   }
+
   return 'manga';
 }
 
@@ -137,21 +263,31 @@ export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGe
     titleLower = (mangaOrGenres.title || '').toLowerCase();
     const alts = (mangaOrGenres.altTitles || []).map(a => a.toLowerCase());
     titleLower += ' ' + alts.join(' ');
-    if (scanSynopsis) {
-      synopsisLower = (mangaOrGenres.synopsis || '').toLowerCase();
+    if (scanSynopsis && mangaOrGenres.synopsis) {
+      synopsisLower = mangaOrGenres.synopsis.toLowerCase();
     }
   }
 
   return synonyms.some(syn => {
     const s = syn.toLowerCase();
-    if (genresLower.some(g => g.includes(s) || s.includes(g))) return true;
+    // 1. Direct match in genre list
+    if (genresLower.some(g => g === s || g.includes(s) || s.includes(g))) return true;
+    // 2. Direct match in title or alternative titles
     if (titleLower && titleLower.includes(s)) return true;
-    if (synopsisLower && synopsisLower.includes(s)) return true;
+    // 3. Synopsis scan with word boundary for short words to prevent false positives
+    if (synopsisLower) {
+      if (s.length <= 4) {
+        const regex = new RegExp(`\\b${s}\\b`, 'i');
+        if (regex.test(synopsisLower)) return true;
+      } else if (synopsisLower.includes(s)) {
+        return true;
+      }
+    }
     return false;
   });
 }
 
-export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQuery = '' }) => {
+export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadChapter, initialQuery = '' }) => {
   const getUrlParam = (key: string, fallback: string = '') => {
     if (typeof window !== 'undefined') {
       const sp = new URLSearchParams(window.location.search);
@@ -173,6 +309,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
   const [selectedDemographic, setSelectedDemographic] = useState<string>(() => getUrlParam('demographic', 'all'));
   const [selectedType, setSelectedType] = useState<string>(() => getUrlParam('type', 'all'));
   const [selectedSource, setSelectedSource] = useState<string>(() => getUrlParam('source', 'all'));
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(() => getUrlParam('lang', '') || getPreferredLanguage());
   const [includedGenres, setIncludedGenres] = useState<string[]>(() => {
     const gs = getUrlParam('genres', '');
     const g = getUrlParam('genre', '');
@@ -199,14 +336,33 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     }
   });
 
-  // Live favorites synchronization
+  const [hideIgnored, setHideIgnored] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('mr_search_hide_ignored');
+      return stored === null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const [showIgnoredModal, setShowIgnoredModal] = useState(false);
+  const [ignoredSearch, setIgnoredSearch] = useState('');
+  const [confirmClearIgnored, setConfirmClearIgnored] = useState(false);
+  const [dismissToast, setDismissToast] = useState<{ mangaId: string; title: string } | null>(null);
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Live favorites & ignored synchronization
   const [favoritesList, setFavoritesList] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
+  const [ignoredList, setIgnoredList] = useState<IgnoredManga[]>(() => HistoryService.getIgnoredMangas());
 
   useEffect(() => {
     const unsub = HistoryService.subscribe(() => {
       setFavoritesList(HistoryService.getFavorites());
+      setIgnoredList(HistoryService.getIgnoredMangas());
     });
-    return unsub;
+    return () => {
+      unsub();
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    };
   }, []);
 
   const { savedIdsSet, savedTitlesSet } = useMemo(() => {
@@ -221,6 +377,19 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     });
     return { savedIdsSet: ids, savedTitlesSet: titles };
   }, [favoritesList]);
+
+  const { ignoredIdsSet, ignoredTitlesSet } = useMemo(() => {
+    const ids = new Set<string>();
+    const titles = new Set<string>();
+    ignoredList.forEach(item => {
+      if (item.mangaId) ids.add(item.mangaId);
+      if (item.title) {
+        const clean = item.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (clean) titles.add(clean);
+      }
+    });
+    return { ignoredIdsSet: ids, ignoredTitlesSet: titles };
+  }, [ignoredList]);
 
   const isMangaInLibrary = (m: Manga): boolean => {
     if (savedIdsSet.has(m.id)) return true;
@@ -242,16 +411,96 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     return false;
   };
 
+  const isMangaIgnored = (m: Manga): boolean => {
+    if (ignoredIdsSet.has(m.id)) return true;
+    if (m.title) {
+      const clean = m.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (clean && ignoredTitlesSet.has(clean)) return true;
+    }
+    if (m.altTitles && m.altTitles.length > 0) {
+      for (const alt of m.altTitles) {
+        const cleanAlt = alt.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (cleanAlt && ignoredTitlesSet.has(cleanAlt)) return true;
+      }
+    }
+    if (m.sources && m.sources.length > 0) {
+      for (const s of m.sources) {
+        if (s.externalId && ignoredIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
+      }
+    }
+    return false;
+  };
+
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
   const [showFilters, setShowFilters] = useState(false);
   const observerRef = useRef<HTMLDivElement | null>(null);
 
-  const displayedResults = useMemo(() => {
-    if (!hideLibrary) return results;
-    return results.filter(m => !isMangaInLibrary(m));
-  }, [results, hideLibrary, savedIdsSet, savedTitlesSet]);
+  type SortOption = 'relevance' | 'rating' | 'latest' | 'alphabetical' | 'chapters';
+  const [sortBy, setSortBy] = useState<SortOption>('relevance');
+  const [layoutMode, setLayoutMode] = useState<MangaCardLayoutMode>(() => {
+    try {
+      const stored = localStorage.getItem('mr_search_layout_mode');
+      if (stored === 'compact' || stored === 'list' || stored === 'grid') return stored;
+      return 'grid';
+    } catch {
+      return 'grid';
+    }
+  });
 
-  const hiddenFavoritesCount = results.length - displayedResults.length;
+  const handleSetLayoutMode = (mode: MangaCardLayoutMode) => {
+    setLayoutMode(mode);
+    try {
+      localStorage.setItem('mr_search_layout_mode', mode);
+    } catch {
+      // ignore
+    }
+  };
+
+  const { displayedResults, hiddenFavoritesCount, hiddenIgnoredCount } = useMemo(() => {
+    let favHidden = 0;
+    let igHidden = 0;
+
+    const filtered = results.filter(m => {
+      if (hideLibrary && isMangaInLibrary(m)) {
+        favHidden++;
+        return false;
+      }
+      if (hideIgnored && isMangaIgnored(m)) {
+        igHidden++;
+        return false;
+      }
+      return true;
+    });
+
+    const sorted = [...filtered];
+    switch (sortBy) {
+      case 'rating':
+        sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+        break;
+      case 'latest':
+        sorted.sort((a, b) => {
+          const yA = a.publicationInfo?.releaseYear || 0;
+          const yB = b.publicationInfo?.releaseYear || 0;
+          if (yB !== yA) return yB - yA;
+          return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+        });
+        break;
+      case 'alphabetical':
+        sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+        break;
+      case 'chapters':
+        sorted.sort((a, b) => (parseFloat(b.latestChapter || '0') || 0) - (parseFloat(a.latestChapter || '0') || 0));
+        break;
+      case 'relevance':
+      default:
+        break;
+    }
+    return {
+      displayedResults: sorted,
+      hiddenFavoritesCount: favHidden,
+      hiddenIgnoredCount: igHidden
+    };
+  }, [results, hideLibrary, hideIgnored, savedIdsSet, savedTitlesSet, ignoredIdsSet, ignoredTitlesSet, sortBy]);
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
@@ -259,6 +508,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     if (selectedDemographic !== 'all') count++;
     if (selectedType !== 'all') count++;
     if (selectedSource !== 'all') count++;
+    if (selectedLanguage !== 'pt-br,en') count++;
     if (!safeSearch) count++;
     if (!onlyAvailable) count++;
     if (!deepSynopsisSearch) count++;
@@ -266,7 +516,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     count += includedGenres.length;
     count += excludedGenres.length;
     return count;
-  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
+  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, selectedLanguage, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
 
   useEffect(() => {
     const startQ = getUrlParam('q', initialQuery);
@@ -274,6 +524,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     const startDemo = getUrlParam('demographic', 'all');
     const startType = getUrlParam('type', 'all');
     const startSrc = getUrlParam('source', 'all');
+    const startLang = getUrlParam('lang', '') || getPreferredLanguage();
     const startInc = getUrlParam('genres', '')
       ? getUrlParam('genres', '').split(',').filter(Boolean)
       : (getUrlParam('genre', '') && getUrlParam('genre', '') !== 'all' ? [getUrlParam('genre', '')] : []);
@@ -284,21 +535,32 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     const startAvail = getUrlParam('available', '1') !== '0';
     const startDeep = getUrlParam('deep', '1') !== '0';
 
-    executeSearch(startQ, startInc, startExc, startStatus, startDemo, startType, startSafe, startAvail, startSrc, startDeep);
+    executeSearch(startQ, startInc, startExc, startStatus, startDemo, startType, startSafe, startAvail, startSrc, startDeep, startLang);
   }, []);
+
+  // Subscribe to preferred language changes from Profile / other tabs
+  useEffect(() => {
+    return subscribePreferredLanguage((nextLang) => {
+      setSelectedLanguage(prev => {
+        if (prev === nextLang) return prev;
+        executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, nextLang);
+        return nextLang;
+      });
+    });
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch]);
 
   // Subscribe to extension toggles in modal to automatically refresh active sources
   useEffect(() => {
     const unsub = ExtensionService.subscribe(() => {
-      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage);
     });
     return unsub;
-  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch]);
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage]);
 
   useEffect(() => {
     if (initialQuery && initialQuery !== query) {
       setQuery(initialQuery);
-      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage);
     }
   }, [initialQuery]);
 
@@ -312,7 +574,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
     isSafe = safeSearch,
     availOnly = onlyAvailable,
     src = selectedSource,
-    deepSynopsis = deepSynopsisSearch
+    deepSynopsis = deepSynopsisSearch,
+    lang = selectedLanguage
   ) => {
     setLoading(true);
     setSearchPage(1);
@@ -325,6 +588,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       if (demo && demo !== 'all') sp.set('demographic', demo);
       if (typ && typ !== 'all') sp.set('type', typ);
       if (src && src !== 'all') sp.set('source', src);
+      if (lang && lang !== 'pt-br,en') sp.set('lang', lang);
       if (incGenres.length > 0) sp.set('genres', incGenres.join(','));
       if (excGenres.length > 0) sp.set('excluded_genres', excGenres.join(','));
       if (!isSafe) sp.set('safe', '0');
@@ -350,6 +614,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
         demographic: demo === 'all' ? undefined : demo,
         type: typ === 'all' ? undefined : typ,
         status: stat === 'all' ? undefined : stat,
+        language: lang && lang !== 'all' ? lang : undefined,
         limit: 36,
         page: 1,
         includeAdult: !isSafe,
@@ -413,6 +678,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
         demographic: selectedDemographic === 'all' ? undefined : selectedDemographic,
         type: selectedType === 'all' ? undefined : selectedType,
         status: selectedStatus === 'all' ? undefined : selectedStatus,
+        language: selectedLanguage && selectedLanguage !== 'all' ? selectedLanguage : undefined,
         limit: 24,
         page: nextPage,
         includeAdult: !safeSearch,
@@ -504,7 +770,13 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
   const handleSourceSelect = (src: string) => {
     const nextSrc = selectedSource === src ? 'all' : src;
     setSelectedSource(nextSrc);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc, deepSynopsisSearch, selectedLanguage);
+  };
+
+  const handleLanguageSelect = (lang: string) => {
+    setSelectedLanguage(lang);
+    setPreferredLanguage(lang);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, lang);
   };
 
   // 3-state cycle: 1st click = Include (+), 2nd click = Exclude (-), 3rd click = Reset
@@ -570,6 +842,34 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       const newUrl = sp.toString() ? `/search?${sp.toString()}` : '/search';
       window.history.replaceState({ ...window.history.state, view: 'search' }, '', newUrl);
     }
+  };
+
+  const toggleHideIgnored = () => {
+    const next = !hideIgnored;
+    setHideIgnored(next);
+    try {
+      localStorage.setItem('mr_search_hide_ignored', String(next));
+    } catch {}
+  };
+
+  const handleDismissManga = (m: Manga) => {
+    if (isMangaIgnored(m)) {
+      HistoryService.unignoreManga(m.id);
+      if (dismissToast?.mangaId === m.id) setDismissToast(null);
+      return;
+    }
+    HistoryService.ignoreManga({
+      mangaId: m.id,
+      title: m.title,
+      coverUrl: m.coverUrl,
+      sourceId: m.sources?.[0]?.sourceId,
+      sourceName: m.sources?.[0]?.sourceName
+    });
+    if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    setDismissToast({ mangaId: m.id, title: m.title });
+    dismissTimerRef.current = setTimeout(() => {
+      setDismissToast(null);
+    }, 5000);
   };
 
   const handleClearAllFilters = () => {
@@ -659,74 +959,75 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
       {/* Search Header Container */}
-      <div className="border-b border-zinc-800/80 bg-zinc-900/40 py-8">
-        <div className="mx-auto max-w-5xl px-4 sm:px-6">
-          <div className="text-center mb-6">
-            <h1 className="font-serif text-3xl font-bold tracking-tight text-white">
+      <div className="border-b border-zinc-800/80 bg-zinc-900/40 py-5 sm:py-8">
+        <div className="mx-auto max-w-5xl px-3 sm:px-6">
+          <div className="text-center mb-4 sm:mb-6">
+            <h1 className="font-serif text-2xl sm:text-3xl font-bold tracking-tight text-white">
               Pesquisar Mangás
             </h1>
-            <p className="text-xs text-zinc-400 mt-1">
+            <p className="text-xs text-zinc-400 mt-1 px-2">
               Catálogo completo com filtros por demografia, formato, status e subgêneros
             </p>
           </div>
 
           {/* Search Box */}
-          <div className="max-w-2xl mx-auto space-y-3">
+          <div className="max-w-2xl mx-auto space-y-2.5 sm:space-y-3">
             <form onSubmit={handleSearchSubmit} className="relative flex items-center">
-              <Search className="absolute left-4 h-5 w-5 text-zinc-400" />
+              <Search className="absolute left-3.5 sm:left-4 h-4 w-4 sm:h-5 sm:w-5 text-zinc-400 pointer-events-none" />
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Título, autor, ou palavra-chave (ex: overpowered, vilã, yandere)..."
-                className="w-full pl-12 pr-28 py-3.5 bg-zinc-900/90 border border-zinc-700/80 focus:border-rose-500 rounded-xl text-sm text-zinc-100 placeholder-zinc-500 shadow-inner focus:outline-none focus:ring-1 focus:ring-rose-500"
+                placeholder="Título, autor ou palavra-chave..."
+                className="w-full pl-10 sm:pl-12 pr-24 sm:pr-28 py-3 sm:py-3.5 bg-zinc-900/90 border border-zinc-700/80 focus:border-rose-500 rounded-xl text-sm text-zinc-100 placeholder-zinc-500 shadow-inner focus:outline-none focus:ring-1 focus:ring-rose-500"
               />
               {query && (
                 <button
                   type="button"
                   onClick={handleClear}
-                  className="absolute right-20 p-1 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
+                  className="absolute right-[4.6rem] sm:right-20 p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
                   title="Limpar busca"
+                  aria-label="Limpar busca"
                 >
                   <X className="h-4 w-4" />
                 </button>
               )}
               <button
                 type="submit"
-                className="absolute right-2 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-sm"
+                className="absolute right-1.5 sm:right-2 px-3.5 sm:px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-sm"
               >
                 Buscar
               </button>
             </form>
 
             {/* Filter Toggle & Quick Actions */}
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial">
                 <button
                   type="button"
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer font-medium ${
+                  className={`flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg border transition-all cursor-pointer font-medium flex-1 sm:flex-initial min-w-[138px] ${
                     showFilters || activeFiltersCount > 0
                       ? 'bg-rose-500/15 border-rose-500/40 text-rose-300 shadow-sm'
                       : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-zinc-800'
                   }`}
                   title="Configurar filtros específicos"
                 >
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                  <span>Filtros Específicos</span>
+                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Filtros</span>
                   {activeFiltersCount > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500/30 text-rose-200 text-[10px] font-mono">
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500/30 text-rose-200 text-[10px] font-mono shrink-0">
                       {activeFiltersCount}
                     </span>
                   )}
-                  {showFilters ? <ChevronUp className="h-3.5 w-3.5 ml-0.5 text-zinc-400" /> : <ChevronDown className="h-3.5 w-3.5 ml-0.5 text-zinc-400" />}
+                  {showFilters ? <ChevronUp className="h-3.5 w-3.5 ml-0.5 text-zinc-400 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 ml-0.5 text-zinc-400 shrink-0" />}
                 </button>
 
                 {/* Discovery Mode Toggle: Ocultar da Biblioteca */}
                 <button
                   type="button"
                   onClick={toggleHideLibrary}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all cursor-pointer font-medium ${
+                  className={`flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg border transition-all cursor-pointer font-medium flex-1 sm:flex-initial min-w-[138px] ${
                     hideLibrary
                       ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 shadow-sm ring-1 ring-emerald-500/30'
                       : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-zinc-800'
@@ -737,35 +1038,63 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                       : 'Modo Descoberta: Clique para ocultar mangás que você já tem na biblioteca e encontrar apenas títulos novos'
                   }
                 >
-                  <Sparkles className={`h-3.5 w-3.5 ${hideLibrary ? 'text-emerald-400' : 'text-zinc-400'}`} />
-                  <span>{hideLibrary ? 'Apenas Novos Mangás' : 'Ocultar da Biblioteca'}</span>
+                  <Sparkles className={`h-3.5 w-3.5 shrink-0 ${hideLibrary ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                  <span className="truncate">{hideLibrary ? 'Apenas Novos' : 'Ocultar Salvos'}</span>
                   {hideLibrary && hiddenFavoritesCount > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-200 text-[10px] font-mono font-bold">
+                    <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-200 text-[10px] font-mono font-bold shrink-0">
                       -{hiddenFavoritesCount}
                     </span>
                   )}
                 </button>
+              </div>
 
-                {activeFiltersCount > 0 && (
+              <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
+                {activeFiltersCount > 0 ? (
                   <button
                     type="button"
                     onClick={handleClearAllFilters}
-                    className="text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer text-xs"
+                    className="text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer text-xs px-1 py-1"
                   >
                     Limpar filtros
                   </button>
+                ) : (
+                  <span className="sm:hidden" />
                 )}
-              </div>
 
-              <button
-                type="button"
-                onClick={handleRandomManga}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 transition-all cursor-pointer shrink-0"
-                title="Sortear um mangá aleatório para ler agora"
-              >
-                <Dices className="h-3.5 w-3.5 text-rose-400" />
-                <span>Surpreenda-me</span>
-              </button>
+                <div className="flex items-center gap-2 ml-auto sm:ml-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmClearIgnored(false);
+                      setShowIgnoredModal(true);
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg border transition-all cursor-pointer shrink-0 ${
+                      ignoredList.length > 0 && hideIgnored
+                        ? 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 border-zinc-700/80'
+                        : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border-zinc-800'
+                    }`}
+                    title="Gerenciar obras marcadas como 'não vou ler' (ocultadas das buscas sem salvar nos favoritos)"
+                  >
+                    <EyeOff className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Dispensados</span>
+                    {ignoredList.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono tabular-nums">
+                        {ignoredList.length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRandomManga}
+                    className="flex items-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 transition-all cursor-pointer shrink-0"
+                    title="Sortear um mangá aleatório para ler agora"
+                  >
+                    <Dices className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Surpreenda-me</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Quick Keyword Pills */}
@@ -789,7 +1118,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
 
           {/* Expandable Filter Panel */}
           {showFilters && (
-            <div className="mt-6 max-w-3xl mx-auto p-5 sm:p-6 rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150 space-y-5">
+            <div className="mt-4 sm:mt-6 max-w-3xl mx-auto p-3.5 sm:p-6 rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150 space-y-4 sm:space-y-5">
               <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
                 <div className="flex items-center gap-2">
                   <Filter className="h-4 w-4 text-rose-400" />
@@ -952,6 +1281,34 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                       <span>{hideLibrary ? 'Ocultando Salvos: Ativo' : 'Ocultar Salvos'}</span>
                     </button>
                   </div>
+                </div>
+              </div>
+
+              {/* 2.5. Idioma Preferido (Escolha Individual por Usuário) */}
+              <div className="space-y-2 pt-3 border-t border-zinc-850">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 font-medium text-zinc-300">
+                    <Globe2 className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Idioma Preferido (Pesquisa, Leitor e Lançamentos):</span>
+                  </div>
+                  <span className="text-[11px] text-zinc-500">Salvo individualmente para você</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 text-xs">
+                  {LANGUAGE_OPTIONS.map((lo) => (
+                    <button
+                      key={lo.id}
+                      type="button"
+                      onClick={() => handleLanguageSelect(lo.id)}
+                      className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer border ${
+                        selectedLanguage === lo.id
+                          ? 'bg-rose-500/20 text-rose-300 font-semibold border-rose-500/40 shadow-sm'
+                          : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border-zinc-800'
+                      }`}
+                      title={lo.desc}
+                    >
+                      {lo.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -1167,6 +1524,18 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </span>
               )}
 
+              {selectedLanguage !== 'pt-br,en' && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-sky-300 border border-sky-500/30 text-[11px]">
+                  <Globe2 className="h-3 w-3 text-sky-400" />
+                  <span>
+                    Idioma: {LANGUAGE_OPTIONS.find(l => l.id === selectedLanguage)?.shortLabel || selectedLanguage.toUpperCase()}
+                  </span>
+                  <button type="button" onClick={() => handleLanguageSelect('pt-br,en')} className="hover:text-white cursor-pointer" title="Voltar para PT-BR + EN">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
+
               {!safeSearch && (
                 <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-950/40 text-rose-300 border border-rose-600/40 text-[11px]">
                   <span>+18 Ativo</span>
@@ -1237,56 +1606,122 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
       </div>
 
       {/* Main Results Container */}
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-8">
-        {/* Results Metadata */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-zinc-800/80 mb-6 gap-3 text-xs text-zinc-400">
-          <div>
+      <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 mt-5 sm:mt-8">
+        {/* Results Metadata & View Controls Bar */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between pb-3.5 sm:pb-4 border-b border-zinc-800/80 mb-4 sm:mb-6 gap-3 text-xs text-zinc-400">
+          <div className="flex flex-wrap items-center gap-2">
             {loading ? (
               <span className="flex items-center gap-2">
                 <RefreshCw className="h-3.5 w-3.5 animate-spin text-rose-400" />
                 <span>Consultando repositórios ativos...</span>
               </span>
             ) : (
-              <div className="flex flex-wrap items-center gap-2">
+              <>
                 <span>
                   <strong className="text-zinc-200 font-mono tabular-nums">{displayedResults.length}</strong>{' '}
                   {displayedResults.length === 1 ? 'resultado encontrado' : 'resultados encontrados'}
                   {query ? ` para "${query}"` : ''}
                 </span>
                 {hideLibrary && hiddenFavoritesCount > 0 && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px]">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] tabular-nums">
                     <Sparkles className="h-3 w-3 text-emerald-400 shrink-0" />
-                    <span>{hiddenFavoritesCount} já salvos na biblioteca foram ocultados</span>
+                    <span>{hiddenFavoritesCount} salvo(s) ocultado(s)</span>
                   </span>
                 )}
-              </div>
+                {hideIgnored && hiddenIgnoredCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmClearIgnored(false);
+                      setShowIgnoredModal(true);
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 text-[11px] tabular-nums transition-colors cursor-pointer"
+                    title="Ver ou restaurar obras dispensadas"
+                  >
+                    <EyeOff className="h-3 w-3 text-amber-400 shrink-0" />
+                    <span>{hiddenIgnoredCount} dispensado(s) ocultado(s)</span>
+                  </button>
+                )}
+              </>
             )}
           </div>
-          {sourcesQueried.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
-              <span className="hidden sm:inline">Fontes consultadas:</span>
-              <div className="flex flex-wrap items-center gap-1">
-                {sourcesQueried.map(s => (
-                  <span key={s} className="px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono text-[10px]">
-                    {s}
-                  </span>
+
+          <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 w-full md:w-auto">
+            {/* Quick Language Selector (per-user preference) */}
+            <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-300">
+              <Globe2 className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+              <select
+                value={selectedLanguage}
+                onChange={(e) => handleLanguageSelect(e.target.value)}
+                aria-label="Selecionar idioma preferido"
+                title="Escolher idioma preferido para buscas, capítulos, leitor e lançamentos"
+                className="bg-transparent text-zinc-200 text-xs font-medium focus:outline-none cursor-pointer"
+              >
+                {LANGUAGE_OPTIONS.map((lo) => (
+                  <option key={lo.id} value={lo.id} className="bg-zinc-900">
+                    {lo.shortLabel}
+                  </option>
                 ))}
-              </div>
+              </select>
+            </div>
+
+            {/* Sort Selector Dropdown */}
+            <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-300 flex-1 sm:flex-initial">
+              <ArrowUpDown className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+              <span className="text-zinc-500 hidden md:inline">Ordenar:</span>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                className="bg-transparent text-zinc-200 text-xs font-medium focus:outline-none cursor-pointer w-full sm:w-auto"
+              >
+                <option value="relevance" className="bg-zinc-900">Mais Populares</option>
+                <option value="rating" className="bg-zinc-900">Melhor Avaliados (★)</option>
+                <option value="latest" className="bg-zinc-900">Mais Recentes</option>
+                <option value="alphabetical" className="bg-zinc-900">Ordem A-Z</option>
+                <option value="chapters" className="bg-zinc-900">Mais Capítulos</option>
+              </select>
+            </div>
+
+            {/* Layout Mode Switcher */}
+            <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl p-1 gap-0.5 shrink-0">
               <button
                 type="button"
-                onClick={() => {
-                  if (typeof window !== 'undefined') {
-                    window.dispatchEvent(new CustomEvent('open-extensions-modal'));
-                  }
-                }}
-                className="text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1 cursor-pointer font-medium text-[11px] ml-1"
-                title="Abrir gerenciador de extensões"
+                onClick={() => handleSetLayoutMode('grid')}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  layoutMode === 'grid'
+                    ? 'bg-zinc-800 text-white shadow-sm'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+                title="Visualização em Grade Padrão"
               >
-                <Blocks className="h-3 w-3" />
-                <span>Gerenciar</span>
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSetLayoutMode('compact')}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  layoutMode === 'compact'
+                    ? 'bg-zinc-800 text-white shadow-sm'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+                title="Visualização em Grade Compacta (Mais itens)"
+              >
+                <Grid3x3 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSetLayoutMode('list')}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  layoutMode === 'list'
+                    ? 'bg-zinc-800 text-white shadow-sm'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+                title="Visualização em Lista Detalhada (com sinopse)"
+              >
+                <LayoutList className="h-3.5 w-3.5" />
               </button>
             </div>
-          )}
+          </div>
         </div>
 
         {/* Results Grid */}
@@ -1297,25 +1732,42 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
           </div>
         ) : displayedResults.length === 0 ? (
           <div className="text-center py-16 px-4 text-zinc-400 bg-zinc-900/30 rounded-2xl border border-zinc-800/60 max-w-xl mx-auto space-y-3">
-            {results.length > 0 && hideLibrary ? (
+            {results.length > 0 && (hideLibrary || hideIgnored) ? (
               <>
                 <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
                   <Sparkles className="h-6 w-6" />
                 </div>
                 <h3 className="text-base font-semibold text-zinc-200">
-                  Todas as obras encontradas já estão na sua biblioteca!
+                  Todas as obras encontradas já foram filtradas!
                 </h3>
                 <p className="text-xs text-zinc-400 max-w-md mx-auto">
-                  Foram localizados <strong>{results.length}</strong> mangá(s) para esta busca, mas todos já estão salvos nos seus favoritos.
+                  Foram localizados <strong className="tabular-nums">{results.length}</strong> mangá(s) para esta busca
+                  {hiddenFavoritesCount > 0 ? ` (${hiddenFavoritesCount} na biblioteca` : ''}
+                  {hiddenFavoritesCount > 0 && hiddenIgnoredCount > 0 ? ` e ${hiddenIgnoredCount} dispensados)` : hiddenFavoritesCount > 0 ? ')' : ''}
+                  {hiddenFavoritesCount === 0 && hiddenIgnoredCount > 0 ? ` (${hiddenIgnoredCount} dispensados)` : ''}.
                 </p>
-                <div className="pt-2">
-                  <button
-                    type="button"
-                    onClick={toggleHideLibrary}
-                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-950/40 transition-all cursor-pointer"
-                  >
-                    Exibir Obras da Biblioteca
-                  </button>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  {hiddenFavoritesCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={toggleHideLibrary}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-950/40 transition-all cursor-pointer"
+                    >
+                      Exibir Salvos da Biblioteca
+                    </button>
+                  )}
+                  {hiddenIgnoredCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmClearIgnored(false);
+                        setShowIgnoredModal(true);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-500/40 text-xs font-semibold transition-all cursor-pointer"
+                    >
+                      Ver Dispensados ({hiddenIgnoredCount})
+                    </button>
+                  )}
                 </div>
               </>
             ) : (
@@ -1330,12 +1782,22 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 sm:gap-6">
+            <div className={
+              layoutMode === 'list'
+                ? 'flex flex-col gap-2.5 sm:gap-3'
+                : layoutMode === 'compact'
+                ? 'manga-cover-grid-compact'
+                : 'manga-cover-grid'
+            }>
               {displayedResults.map((manga) => (
                 <MangaCard
                   key={manga.id}
                   manga={manga}
                   onSelect={onSelectManga}
+                  onQuickRead={(id) => onReadChapter?.(id, '')}
+                  layoutMode={layoutMode}
+                  allowDismiss={true}
+                  onDismiss={handleDismissManga}
                 />
               ))}
             </div>
@@ -1349,14 +1811,237 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, initialQu
                 </div>
               )}
               {!hasMore && displayedResults.length > 0 && (
-                <p className="text-xs text-zinc-600">
-                  Fim dos resultados da busca ({displayedResults.length} obras exibidas{hideLibrary && hiddenFavoritesCount > 0 ? `, ${hiddenFavoritesCount} salvas ocultadas` : ''})
+                <p className="text-xs text-zinc-600 tabular-nums">
+                  Fim dos resultados da busca ({displayedResults.length} obras exibidas
+                  {hideLibrary && hiddenFavoritesCount > 0 ? `, ${hiddenFavoritesCount} salvas ocultadas` : ''}
+                  {hideIgnored && hiddenIgnoredCount > 0 ? `, ${hiddenIgnoredCount} dispensadas ocultadas` : ''})
                 </p>
               )}
             </div>
           </>
         )}
       </div>
+
+      {/* Floating Undo Toast when a manga is dismissed */}
+      {dismissToast && (
+        <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-md bg-zinc-900/95 backdrop-blur-xl border border-zinc-700/80 rounded-2xl px-3.5 py-2.5 shadow-2xl flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-8 w-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center justify-center shrink-0">
+              <EyeOff className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-zinc-100 truncate">{dismissToast.title}</p>
+              <p className="text-[11px] text-zinc-400">Ocultado das buscas (sem favoritar)</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                HistoryService.unignoreManga(dismissToast.mangaId);
+                setDismissToast(null);
+              }}
+              className="px-3 py-1.5 min-h-[36px] rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs transition-colors cursor-pointer"
+            >
+              Desfazer
+            </button>
+            <button
+              type="button"
+              onClick={() => setDismissToast(null)}
+              className="p-1.5 min-h-[36px] min-w-[36px] flex items-center justify-center rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+              aria-label="Fechar aviso"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Obras Dispensadas (Sem Interesse) */}
+      {showIgnoredModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4"
+          onClick={() => setShowIgnoredModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-lg max-h-[85vh] flex flex-col bg-zinc-950 border border-zinc-800 rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden"
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 p-4 sm:p-5 border-b border-zinc-800">
+              <div className="flex items-start gap-3">
+                <div className="h-9 w-9 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center justify-center shrink-0">
+                  <EyeOff className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="font-serif text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                    <span>Obras Dispensadas</span>
+                    <span className="text-xs font-mono font-semibold text-amber-300 tabular-nums">
+                      ({ignoredList.length})
+                    </span>
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    Títulos marcados como "não vou ler" ficam ocultos na pesquisa sem entrar nos favoritos.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowIgnoredModal(false)}
+                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors cursor-pointer shrink-0"
+                aria-label="Fechar janela"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Hide toggle + Filter */}
+            <div className="p-3.5 sm:px-5 border-b border-zinc-800/80 space-y-2.5 bg-zinc-900/30">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-zinc-300 font-medium">Ocultar automaticamente nas buscas</span>
+                <button
+                  type="button"
+                  onClick={toggleHideIgnored}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                    hideIgnored
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {hideIgnored ? 'Ativo' : 'Pausado (Exibindo)'}
+                </button>
+              </div>
+
+              {ignoredList.length > 3 && (
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={ignoredSearch}
+                    onChange={(e) => setIgnoredSearch(e.target.value)}
+                    placeholder="Filtrar títulos dispensados..."
+                    className="w-full pl-8 pr-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/60"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-2">
+              {ignoredList.length === 0 ? (
+                <div className="py-10 text-center space-y-2">
+                  <EyeOff className="h-8 w-8 text-zinc-700 mx-auto" />
+                  <p className="text-sm font-medium text-zinc-300">Nenhuma obra dispensada ainda</p>
+                  <p className="text-xs text-zinc-500 max-w-xs mx-auto">
+                    Toque no ícone de olho cortado nos cards da pesquisa quando souber que não vai ler uma obra.
+                  </p>
+                </div>
+              ) : (
+                ignoredList
+                  .filter(item =>
+                    !ignoredSearch.trim() ||
+                    item.title.toLowerCase().includes(ignoredSearch.trim().toLowerCase())
+                  )
+                  .map(item => (
+                    <div
+                      key={item.mangaId}
+                      className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-zinc-900/70 border border-zinc-800/80"
+                    >
+                      <div
+                        onClick={() => {
+                          setShowIgnoredModal(false);
+                          onSelectManga(item.mangaId);
+                        }}
+                        className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer group"
+                      >
+                        <div className="h-12 w-9 rounded-lg overflow-hidden bg-zinc-950 border border-zinc-800 shrink-0">
+                          {item.coverUrl ? (
+                            <img
+                              src={item.coverUrl}
+                              alt={item.title}
+                              referrerPolicy="no-referrer"
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center text-zinc-600">
+                              <BookOpen className="h-4 w-4" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors truncate">
+                            {item.title}
+                          </p>
+                          <p className="text-[11px] text-zinc-500 truncate mt-0.5">
+                            {(item.sourceName || 'Catálogo').replace(/\s*\((LIVE|AO VIVO|API)[^)]*\)/gi, '')}
+                            {' · '}
+                            {new Date(item.dismissedAt).toLocaleDateString('pt-BR')}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => HistoryService.unignoreManga(item.mangaId)}
+                        className="px-3 py-1.5 min-h-[36px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white border border-zinc-700/80 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                        title="Voltar a exibir esta obra nas buscas"
+                      >
+                        <Eye className="h-3.5 w-3.5 text-emerald-400" />
+                        <span>Restaurar</span>
+                      </button>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between gap-2 p-3.5 sm:px-5 border-t border-zinc-800 bg-zinc-900/40">
+              {ignoredList.length > 0 ? (
+                confirmClearIgnored ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        HistoryService.clearIgnoredMangas();
+                        setConfirmClearIgnored(false);
+                      }}
+                      className="px-3 py-1.5 min-h-[36px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Confirmar Limpeza
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearIgnored(false)}
+                      className="px-2.5 py-1.5 min-h-[36px] rounded-xl text-zinc-400 hover:text-white text-xs cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearIgnored(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 min-h-[36px] rounded-xl text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs font-medium transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Limpar Lista</span>
+                  </button>
+                )
+              ) : (
+                <span />
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShowIgnoredModal(false)}
+                className="px-4 py-1.5 min-h-[36px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

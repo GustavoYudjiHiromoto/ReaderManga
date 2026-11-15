@@ -43,6 +43,14 @@ function areSameManga(m1: Manga, m2: Manga): boolean {
     }
   }
 
+  // Romaji particle tolerance (e.g. "Koi o Suru" vs "Koi wo Suru") for long titles
+  const romajiLoose = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
+  const all1 = [norm1, ...alts1].filter(s => s.length >= 12).map(romajiLoose);
+  const all2 = [norm2, ...alts2].filter(s => s.length >= 12).map(romajiLoose);
+  for (const r1 of all1) {
+    if (all2.includes(r1)) return true;
+  }
+
   return false;
 }
 
@@ -175,6 +183,10 @@ export class SourceRegistry {
       }
 
       for (const id of candidateIds) {
+        // Skip strictly English-only sources when user specifically filters for Portuguese-only
+        if (options?.language === 'pt-br' && (id === 'mangapill' || id === 'weebcentral')) {
+          continue;
+        }
         const src = this.sources.get(id);
         if (src && !sourcesToQuery.includes(src)) sourcesToQuery.push(src);
       }
@@ -276,6 +288,24 @@ export class SourceRegistry {
         else if (country === 'cn' || country === 'china' || country === 'zh' || gLowers.includes('manhua')) detected = 'manhua';
         else if (country === 'us' || country === 'en' || gLowers.includes('comic') || gLowers.includes('webtoon')) detected = 'comic';
         return detected === targetType;
+      });
+    }
+
+    // Filter by requested language when a work declares availableLanguages (e.g. MangaDex)
+    if (options?.language && options.language !== 'all') {
+      const requestedLangs = options.language.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+      const acceptsPt = requestedLangs.includes('pt-br') || requestedLangs.includes('pt');
+      const acceptsEn = requestedLangs.includes('en');
+      liveResults = liveResults.filter(m => {
+        if (!Array.isArray(m.availableLanguages) || m.availableLanguages.length === 0) {
+          return true;
+        }
+        return m.availableLanguages.some(avail => {
+          const a = avail.toLowerCase();
+          if (acceptsPt && (a === 'pt-br' || a === 'pt')) return true;
+          if (acceptsEn && a === 'en') return true;
+          return requestedLangs.includes(a);
+        });
       });
     }
 
@@ -532,8 +562,38 @@ export class SourceRegistry {
     return await source.getMangaDetails(parsed.externalId);
   }
 
+  private shouldFederateChapters(chapters: Chapter[], sourceId: string, language?: string): boolean {
+    if (chapters.length <= 2) return true;
+
+    const nums = chapters
+      .map(c => parseFloat(c.chapterNumber))
+      .filter(n => !isNaN(n) && n > 0);
+
+    if (nums.length > 0) {
+      const minNum = Math.min(...nums);
+      const maxNum = Math.max(...nums);
+      const uniqueInts = new Set(nums.map(n => Math.floor(n)));
+
+      // Missing early chapters (e.g., DMCA left only the latest chapter 115.5 or chapters 200+)
+      if (minNum > 2) return true;
+
+      // Severe density gap across the run (e.g., only a handful of chapters survived)
+      if (maxNum >= 10 && uniqueInts.size < Math.floor(maxNum * 0.65)) return true;
+    }
+
+    // Primary source (e.g. MangaDex) only has non-PT/EN chapters while user reads in PT-BR/EN
+    if (sourceId === 'mangadex' && (!language || ['pt-br', 'pt', 'en', 'pt-br,en'].includes(language.toLowerCase()))) {
+      const hasPreferredLang = chapters.some(c =>
+        ['pt-br', 'pt', 'en'].includes((c.language || '').toLowerCase())
+      );
+      if (!hasPreferredLang) return true;
+    }
+
+    return false;
+  }
+
   /**
-   * Get chapters for an internal manga ID with optional deduplication
+   * Get chapters for an internal manga ID with automatic cross-source federation and optional deduplication
    */
   public async getChapters(
     internalMangaId: string,
@@ -548,42 +608,67 @@ export class SourceRegistry {
 
     let chapters = await source.getChapters(parsed.externalId, language);
 
-    // If primary source returned 0 chapters, federate from alternative sources matching by title
-    if (chapters.length === 0) {
+    // If primary source returned 0 or an incomplete/DMCA-fragmented chapter list,
+    // federate missing chapters in parallel from reliable alternative sources
+    if (this.shouldFederateChapters(chapters, parsed.sourceId, language)) {
       try {
         const manga = await source.getMangaDetails(parsed.externalId).catch(() => null);
-        const searchTitle = manga?.title || parsed.externalId.replace(/[-_]/g, ' ');
-        if (searchTitle && searchTitle.length > 2) {
-          for (const [altSourceId, altSource] of this.sources.entries()) {
-            if (altSourceId === parsed.sourceId) continue;
-            try {
-              const searchResults = await altSource.search(searchTitle);
-              const list = Array.isArray(searchResults.mangaList) ? searchResults.mangaList : [];
-              const matched = list.find((m: Manga) => areSameManga(m, {
-                title: searchTitle,
-                id: '',
-                altTitles: manga?.altTitles || [],
-                coverUrl: '',
-                synopsis: '',
-                authors: [],
-                artists: [],
-                genres: [],
-                status: 'ongoing',
-                publicationInfo: {},
-                updatedAt: '',
-                sources: []
-              }));
-              if (matched) {
-                const altExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
-                const altChs = await altSource.getChapters(altExtId, language);
-                if (altChs && altChs.length > 0) {
-                  chapters = [...chapters, ...altChs];
-                  break;
+        const rawTitles = [
+          manga?.title || parsed.externalId.replace(/[-_]/g, ' '),
+          ...(manga?.altTitles || []).filter(t => /[a-zA-Z]{3}/.test(t))
+        ]
+          .map(t => t.trim())
+          .filter(t => t.length > 2);
+
+        const searchTitles = Array.from(new Set(rawTitles)).slice(0, 4);
+
+        if (searchTitles.length > 0) {
+          const targetRef: Manga = {
+            title: searchTitles[0],
+            id: internalMangaId,
+            altTitles: manga?.altTitles || [],
+            coverUrl: '',
+            synopsis: '',
+            authors: manga?.authors || [],
+            artists: [],
+            genres: [],
+            status: 'ongoing',
+            publicationInfo: {},
+            updatedAt: '',
+            sources: []
+          };
+
+          const preferredAltIds = ['comick', 'weebcentral', 'mangapill', 'mangadex'].filter(
+            id => id !== parsed.sourceId && this.sources.has(id)
+          );
+
+          const altFetches = await Promise.allSettled(
+            preferredAltIds.map(async (altSourceId) => {
+              const altSource = this.sources.get(altSourceId)!;
+              for (const titleQuery of searchTitles) {
+                const searchResults = await altSource.search(titleQuery, { includeAdult: true, limit: 8 }).catch(() => null);
+                const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
+                const matched = list.find((m: Manga) => areSameManga(m, targetRef));
+                if (matched) {
+                  const altExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
+                  const altChs = await altSource.getChapters(altExtId, language).catch(() => []);
+                  if (altChs && altChs.length > 0) {
+                    return altChs;
+                  }
                 }
               }
-            } catch {
-              // try next alternative source
-            }
+              return [] as Chapter[];
+            })
+          );
+
+          const candidateBuckets = altFetches
+            .filter((r): r is PromiseFulfilledResult<Chapter[]> => r.status === 'fulfilled' && r.value.length > 0)
+            .map(r => r.value)
+            .sort((a, b) => b.length - a.length);
+
+          // Merge the top 2 richest alternative sources alongside primary chapters
+          for (const bucket of candidateBuckets.slice(0, 2)) {
+            chapters = [...chapters, ...bucket];
           }
         }
       } catch (federateErr) {
@@ -694,30 +779,53 @@ export class SourceRegistry {
       }
 
       if (searchTitle && targetNum) {
-        for (const [altSourceId, altSource] of this.sources.entries()) {
-          if (altSourceId === parsed.sourceId) continue;
+        const failoverTitles = Array.from(
+          new Set(
+            [
+              searchTitle,
+              ...(manga?.altTitles || []).filter(t => /[a-zA-Z]{3}/.test(t))
+            ]
+              .map(t => t.trim())
+              .filter(t => t.length > 2)
+          )
+        ).slice(0, 4);
+
+        const targetRef: Manga = {
+          title: searchTitle,
+          id: '',
+          altTitles: manga?.altTitles || [],
+          coverUrl: '',
+          synopsis: '',
+          authors: [],
+          artists: [],
+          genres: [],
+          status: 'ongoing',
+          publicationInfo: {},
+          updatedAt: '',
+          sources: []
+        };
+
+        const failoverOrder = ['weebcentral', 'mangapill', 'mangadex', 'comick'].filter(
+          id => id !== parsed.sourceId && this.sources.has(id)
+        );
+
+        for (const altSourceId of failoverOrder) {
+          const altSource = this.sources.get(altSourceId)!;
           try {
-            const searchResults = await altSource.search(searchTitle);
-            const list = Array.isArray(searchResults.mangaList) ? searchResults.mangaList : [];
-            const matched = list.find((m: Manga) => areSameManga(m, {
-              title: searchTitle,
-              id: '',
-              altTitles: manga?.altTitles || [],
-              coverUrl: '',
-              synopsis: '',
-              authors: [],
-              artists: [],
-              genres: [],
-              status: 'ongoing',
-              publicationInfo: {},
-              updatedAt: '',
-              sources: []
-            }));
+            let matched: Manga | undefined;
+            for (const qTitle of failoverTitles) {
+              const searchResults = await altSource.search(qTitle, { includeAdult: true, limit: 8 }).catch(() => null);
+              const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
+              matched = list.find((m: Manga) => areSameManga(m, targetRef));
+              if (matched) break;
+            }
 
             if (matched) {
               const altMangaExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
               const altChapters = await altSource.getChapters(altMangaExtId);
-              const matchingChapter = altChapters.find(c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum!));
+              const matchingChapter = altChapters.find(
+                c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum!)
+              );
               if (matchingChapter) {
                 const altPages = await altSource.getChapterPages(matchingChapter.externalChapterId);
                 if (altPages && altPages.length > 0) {

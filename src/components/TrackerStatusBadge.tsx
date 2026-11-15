@@ -96,12 +96,18 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
     );
     statusText = 'Erro de Sync';
   } else if (overallStatus === 'unlinked') {
+    if (size === 'sm' && !hasTrackersConnected) {
+      return null;
+    }
     containerStyle =
       'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30';
     iconElement = <Unlink className={`${iconSizeClass} text-amber-400 shrink-0`} />;
     statusText = 'Não vinculado';
   } else {
     // Disconnected (no accounts connected)
+    if (size === 'sm') {
+      return null;
+    }
     containerStyle =
       'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800';
     iconElement = <Link2 className={`${iconSizeClass} text-zinc-500 shrink-0`} />;

@@ -1,4 +1,4 @@
-import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark, Chapter } from '../types/manga.js';
+import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark, Chapter, IgnoredManga } from '../types/manga.js';
 
 const STORAGE_KEY = 'manga_reader_history_v1';
 const BOOKMARKS_KEY = 'manga_reader_bookmarks_v1';
@@ -6,6 +6,7 @@ const STATS_KEY = 'manga_reader_reading_stats_v1';
 const READ_CHAPTERS_KEY = 'manga_reader_read_chapters_v1';
 const PAGE_BOOKMARKS_KEY = 'manga_reader_page_bookmarks_v1';
 const CUSTOM_COLLECTIONS_KEY = 'manga_reader_custom_collections_v1';
+const IGNORED_KEY = 'manga_reader_ignored_v1';
 
 type HistoryListener = () => void;
 const listeners = new Set<HistoryListener>();
@@ -55,7 +56,8 @@ if (typeof window !== 'undefined') {
       event.key === STATS_KEY ||
       event.key === READ_CHAPTERS_KEY ||
       event.key === PAGE_BOOKMARKS_KEY ||
-      event.key === CUSTOM_COLLECTIONS_KEY
+      event.key === CUSTOM_COLLECTIONS_KEY ||
+      event.key === IGNORED_KEY
     ) {
       notifyListeners();
     }
@@ -361,6 +363,9 @@ export const HistoryService = {
           userCategory: item.userCategory || 'reading',
           userScore: typeof item.userScore === 'number' ? item.userScore : undefined,
           userNotes: typeof item.userNotes === 'string' ? item.userNotes : undefined,
+          customCollections: Array.isArray(item.customCollections) ? item.customCollections : undefined,
+          synopsis: typeof item.synopsis === 'string' ? item.synopsis : undefined,
+          altTitles: Array.isArray(item.altTitles) ? item.altTitles : undefined,
           updatedAt: item.updatedAt || Date.now()
         };
       });
@@ -416,6 +421,8 @@ export const HistoryService = {
           userCategory: mangaOrId.userCategory || 'reading',
           userScore: mangaOrId.userScore,
           userNotes: mangaOrId.userNotes,
+          synopsis: mangaOrId.synopsis,
+          altTitles: mangaOrId.altTitles,
           updatedAt: Date.now()
         };
         createdFav = newFav;
@@ -699,6 +706,91 @@ export const HistoryService = {
   },
 
   /**
+   * Ignored / Dismissed Mangas (ocultos da busca sem salvar nos favoritos)
+   */
+  getIgnoredMangas(): IgnoredManga[] {
+    try {
+      const data = localStorage.getItem(IGNORED_KEY);
+      if (!data) return [];
+      const parsed = JSON.parse(data);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item: any) => item && typeof item.mangaId === 'string' && item.mangaId)
+        .map((item: any) => ({
+          mangaId: item.mangaId,
+          title: item.title || 'Obra Dispensada',
+          coverUrl: item.coverUrl || undefined,
+          sourceId: item.sourceId || undefined,
+          sourceName: item.sourceName || undefined,
+          dismissedAt: typeof item.dismissedAt === 'number' ? item.dismissedAt : Date.now()
+        }));
+    } catch {
+      return [];
+    }
+  },
+
+  isIgnored(mangaId: string): boolean {
+    if (!mangaId) return false;
+    return this.getIgnoredMangas().some(item => item.mangaId === mangaId);
+  },
+
+  ignoreManga(manga: Omit<IgnoredManga, 'dismissedAt'> & { dismissedAt?: number }): void {
+    if (!manga?.mangaId) return;
+    try {
+      const current = this.getIgnoredMangas().filter(item => item.mangaId !== manga.mangaId);
+      const entry: IgnoredManga = {
+        mangaId: manga.mangaId,
+        title: manga.title || 'Obra Dispensada',
+        coverUrl: manga.coverUrl,
+        sourceId: manga.sourceId,
+        sourceName: manga.sourceName,
+        dismissedAt: manga.dismissedAt || Date.now()
+      };
+      const updated = [entry, ...current].slice(0, 3000);
+      localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
+      notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to ignore manga', e);
+    }
+  },
+
+  unignoreManga(mangaId: string): void {
+    if (!mangaId) return;
+    try {
+      const current = this.getIgnoredMangas();
+      const updated = current.filter(item => item.mangaId !== mangaId);
+      if (updated.length !== current.length) {
+        localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
+        notifyListeners();
+        syncBridge?.onLibraryStateChanged?.();
+      }
+    } catch (e) {
+      console.warn('Failed to unignore manga', e);
+    }
+  },
+
+  toggleIgnoreManga(manga: Omit<IgnoredManga, 'dismissedAt'>): boolean {
+    if (!manga?.mangaId) return false;
+    if (this.isIgnored(manga.mangaId)) {
+      this.unignoreManga(manga.mangaId);
+      return false;
+    }
+    this.ignoreManga(manga);
+    return true;
+  },
+
+  clearIgnoredMangas(): void {
+    try {
+      localStorage.setItem(IGNORED_KEY, JSON.stringify([]));
+      notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to clear ignored mangas', e);
+    }
+  },
+
+  /**
    * Export all user data (favorites + reading history) as a structured backup object
    */
   createBackup(): LibraryBackup {
@@ -711,7 +803,8 @@ export const HistoryService = {
       stats: this.getReadingStats(),
       readChapters: this.getReadChapters(),
       pageBookmarks: this.getPageBookmarks(),
-      customCollections: this.getCustomCollections()
+      customCollections: this.getCustomCollections(),
+      ignoredMangas: this.getIgnoredMangas()
     };
   },
 
@@ -921,6 +1014,8 @@ export const HistoryService = {
           userCategory: f.userCategory || existing?.userCategory || 'reading',
           userScore: typeof f.userScore === 'number' ? f.userScore : existing?.userScore,
           userNotes: typeof f.userNotes === 'string' ? f.userNotes : existing?.userNotes,
+          synopsis: typeof f.synopsis === 'string' ? f.synopsis : existing?.synopsis,
+          altTitles: Array.isArray(f.altTitles) ? f.altTitles : existing?.altTitles,
           updatedAt: Math.max(f.updatedAt || 0, existing?.updatedAt || 0) || Date.now()
         });
       });
@@ -990,6 +1085,26 @@ export const HistoryService = {
           categoriesAdded += (set.size - currentCols.length);
         }
         localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(Array.from(set)));
+      }
+
+      // Merge Ignored / Dismissed Mangas if present
+      if (Array.isArray(data.ignoredMangas)) {
+        const currentIgnored = this.getIgnoredMangas();
+        const igMap = new Map<string, IgnoredManga>();
+        currentIgnored.forEach(item => igMap.set(item.mangaId, item));
+        data.ignoredMangas.forEach((item: IgnoredManga) => {
+          if (item && item.mangaId && !igMap.has(item.mangaId)) {
+            igMap.set(item.mangaId, {
+              mangaId: item.mangaId,
+              title: item.title || 'Obra Dispensada',
+              coverUrl: item.coverUrl,
+              sourceId: item.sourceId,
+              sourceName: item.sourceName,
+              dismissedAt: item.dismissedAt || Date.now()
+            });
+          }
+        });
+        localStorage.setItem(IGNORED_KEY, JSON.stringify(Array.from(igMap.values()).slice(0, 3000)));
       }
 
       notifyListeners();

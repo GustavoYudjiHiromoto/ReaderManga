@@ -9,6 +9,7 @@ interface HistoryDrawerProps {
   onClose: () => void;
   history: ReadingProgress[];
   onResume: (progress: ReadingProgress) => void;
+  onSelectManga?: (mangaId: string) => void;
   onRemove: (mangaId: string) => void;
 }
 
@@ -38,6 +39,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   onClose,
   history,
   onResume,
+  onSelectManga,
   onRemove
 }) => {
   const groupedHistory = useMemo(() => {
@@ -110,9 +112,21 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                         <div className="flex flex-1 flex-col justify-between overflow-hidden">
                           <div>
                             <div className="flex items-start justify-between gap-2">
-                              <h4 className="font-semibold text-sm text-zinc-200 line-clamp-1 group-hover:text-rose-300 transition-colors">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (onSelectManga) {
+                                    onSelectManga(item.mangaId);
+                                    onClose();
+                                  }
+                                }}
+                                className={`text-left font-semibold text-sm text-zinc-200 line-clamp-1 transition-colors ${
+                                  onSelectManga ? 'hover:text-rose-400 cursor-pointer' : ''
+                                }`}
+                                title={onSelectManga ? 'Abrir página da obra' : undefined}
+                              >
                                 {item.mangaTitle}
-                              </h4>
+                              </button>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -151,16 +165,31 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             </div>
                           </div>
 
-                          <button
-                            onClick={() => {
-                              onResume(item);
-                              onClose();
-                            }}
-                            className="mt-2.5 flex items-center justify-center gap-1.5 w-full py-1.5 bg-zinc-800/80 hover:bg-rose-600 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
-                          >
-                            <span>Continuar Lendo</span>
-                            <ArrowRight className="h-3 w-3" />
-                          </button>
+                          <div className="mt-2.5 flex items-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                onResume(item);
+                                onClose();
+                              }}
+                              className="flex items-center justify-center gap-1.5 flex-1 py-1.5 bg-zinc-800/80 hover:bg-rose-600 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                            >
+                              <span>Continuar</span>
+                              <ArrowRight className="h-3 w-3" />
+                            </button>
+                            {onSelectManga && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onSelectManga(item.mangaId);
+                                  onClose();
+                                }}
+                                className="py-1.5 px-2.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors cursor-pointer shrink-0"
+                                title="Ver página do mangá"
+                              >
+                                Obra
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );

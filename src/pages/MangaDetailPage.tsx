@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   BookOpen,
@@ -30,7 +30,9 @@ import {
   Folder,
   Globe,
   BookmarkX,
-  Compass
+  Compass,
+  Maximize2,
+  ZoomIn
 } from 'lucide-react';
 import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -38,12 +40,23 @@ import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { TrackerService, TrackerMediaMapping } from '../services/trackerService.js';
-import { RecommendationService, SimilarMangaMatch } from '../services/recommendationService.js';
+import {
+  RecommendationService,
+  SimilarMangaMatch,
+  SimilarityCategory,
+  DetectedTropeTag
+} from '../services/recommendationService.js';
 import { TrackersModal } from '../components/TrackersModal.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
 import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
 import { MangaCard } from '../components/MangaCard.js';
+import { RecommendationLoadingState } from '../components/RecommendationLoadingState.js';
+import {
+  getPreferredLanguage,
+  matchesLanguageFilter,
+  subscribePreferredLanguage
+} from '../utils/languagePreference.js';
 
 interface MangaDetailPageProps {
   mangaId: string;
@@ -63,6 +76,17 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [manga, setManga] = useState<Manga | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [similarMatches, setSimilarMatches] = useState<SimilarMangaMatch[]>([]);
+  const [similarMeta, setSimilarMeta] = useState<{
+    corePremise?: string;
+    microTropes: string[];
+    anilistTags: string[];
+    detectedTags: DetectedTropeTag[];
+    aiPowered: boolean;
+  }>({ microTropes: [], anilistTags: [], detectedTags: [], aiPowered: false });
+  const [selectedFocusTags, setSelectedFocusTags] = useState<string[]>([]);
+  const [customFocusInput, setCustomFocusInput] = useState('');
+  const [appliedFocusQuery, setAppliedFocusQuery] = useState('');
+  const [similarCategoryFilter, setSimilarCategoryFilter] = useState<'all' | SimilarityCategory>('all');
   const [hideSavedInSimilar, setHideSavedInSimilar] = useState(true);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -72,15 +96,16 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chapterOrder, setChapterOrder] = useState<'asc' | 'desc'>('asc');
   const [chapterSearch, setChapterSearch] = useState('');
   const [deduplicate, setDeduplicate] = useState(true);
-  const [selectedLang, setSelectedLang] = useState<string>(() => {
-    try {
-      return localStorage.getItem('mr_preferred_language') || 'pt-br,en';
-    } catch {
-      return 'pt-br,en';
-    }
-  });
+  const [selectedLang, setSelectedLang] = useState<string>(() => getPreferredLanguage());
+
+  useEffect(() => {
+    return subscribePreferredLanguage((lang) => {
+      setSelectedLang(lang);
+    });
+  }, []);
   const [expandedVariantsChapterId, setExpandedVariantsChapterId] = useState<string | null>(null);
   const [isBookmarked, setIsBookmarked] = useState(false);
+  const [isIgnored, setIsIgnored] = useState(false);
   const [favoriteData, setFavoriteData] = useState<FavoriteManga | null>(null);
   const [readChapters, setReadChapters] = useState<string[]>([]);
   const [readFilter, setReadFilter] = useState<'all' | 'unread' | 'read'>('all');
@@ -99,6 +124,13 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [showTrackersModal, setShowTrackersModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid'>('list');
+  const [expandAllChapters, setExpandAllChapters] = useState(false);
+  const [showCoverLightbox, setShowCoverLightbox] = useState(false);
+  const similarSectionRef = useRef<HTMLElement>(null);
+
+  const scrollToSimilar = () => {
+    similarSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   useEffect(() => {
     if (manga?.coverUrl) {
@@ -116,9 +148,16 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   };
 
   useEffect(() => {
+    setSelectedFocusTags([]);
+    setCustomFocusInput('');
+    setAppliedFocusQuery('');
+    setExpandAllChapters(false);
+    setSimilarMatches([]);
+    setSimilarMeta({ microTropes: [], anilistTags: [], detectedTags: [], aiPowered: false });
     loadMangaDetails();
     const fav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
     setIsBookmarked(Boolean(fav));
+    setIsIgnored(HistoryService.isIgnored(mangaId));
     setFavoriteData(fav);
     setReadChapters(HistoryService.getReadChapters());
     setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
@@ -128,6 +167,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     const unsubscribe = HistoryService.subscribe(() => {
       const updatedFav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
       setIsBookmarked(Boolean(updatedFav));
+      setIsIgnored(HistoryService.isIgnored(mangaId));
       setFavoriteData(updatedFav);
       setReadChapters(HistoryService.getReadChapters());
     });
@@ -182,11 +222,31 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     }
   };
 
-  const loadRecommendations = async (targetManga: Manga) => {
+  const loadRecommendations = async (
+    targetManga: Manga,
+    focusTags: string[] = [],
+    focusQuery: string = ''
+  ) => {
     setLoadingRecommendations(true);
+    setSimilarCategoryFilter('all');
     try {
-      const recs = await RecommendationService.getSimilarMangas(targetManga, { hideLibrary: false, limit: 12 });
-      setSimilarMatches(recs);
+      const detailed = await RecommendationService.getSimilarMangasDetailed(targetManga, {
+        hideLibrary: false,
+        limit: 18,
+        focusTags,
+        focusQuery
+      });
+      setSimilarMatches(detailed.matches);
+      setSimilarMeta(prev => ({
+        corePremise: detailed.corePremise,
+        microTropes: detailed.microTropes || [],
+        anilistTags: detailed.anilistTags || [],
+        detectedTags:
+          detailed.detectedTags && detailed.detectedTags.length > 0
+            ? detailed.detectedTags
+            : prev.detectedTags,
+        aiPowered: detailed.aiPowered
+      }));
     } catch (err) {
       console.warn('Failed to load similar manga matches:', err);
       setSimilarMatches([]);
@@ -195,12 +255,39 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     }
   };
 
+  const handleToggleFocusTag = (tag: string) => {
+    if (!manga || loadingRecommendations) return;
+    const exists = selectedFocusTags.some(t => t.toLowerCase() === tag.toLowerCase());
+    const nextTags = exists
+      ? selectedFocusTags.filter(t => t.toLowerCase() !== tag.toLowerCase())
+      : [...selectedFocusTags, tag].slice(0, 4);
+    setSelectedFocusTags(nextTags);
+    loadRecommendations(manga, nextTags, appliedFocusQuery);
+  };
+
+  const handleApplyCustomFocus = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manga || loadingRecommendations) return;
+    const trimmed = customFocusInput.trim();
+    setAppliedFocusQuery(trimmed);
+    loadRecommendations(manga, selectedFocusTags, trimmed);
+  };
+
+  const handleResetFocus = () => {
+    if (!manga || loadingRecommendations) return;
+    setSelectedFocusTags([]);
+    setCustomFocusInput('');
+    setAppliedFocusQuery('');
+    loadRecommendations(manga, [], '');
+  };
+
   const loadMangaDetails = async () => {
     setLoading(true);
     setError(null);
     try {
       const mangaData = await MangaApi.getMangaDetails(mangaId);
       setManga(mangaData);
+      RecommendationService.rememberMangaMetadata(mangaData);
       loadRecommendations(mangaData);
     } catch (err) {
       console.warn('Failed to load manga details online, checking offline cache:', err);
@@ -291,9 +378,27 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       rating: manga.rating,
       authors: manga.authors,
       genres: manga.genres,
-      status: manga.status
+      status: manga.status,
+      synopsis: manga.synopsis,
+      altTitles: manga.altTitles
     });
+    if (newState && isIgnored) {
+      HistoryService.unignoreManga(manga.id);
+      setIsIgnored(false);
+    }
     setIsBookmarked(newState);
+  };
+
+  const handleToggleIgnore = () => {
+    if (!manga) return;
+    const nextIgnored = HistoryService.toggleIgnoreManga({
+      mangaId: manga.id,
+      title: manga.title,
+      coverUrl: manga.coverUrl,
+      sourceId: manga.sources?.[0]?.sourceId,
+      sourceName: manga.sources?.[0]?.sourceName
+    });
+    setIsIgnored(nextIgnored);
   };
 
   const handleShare = () => {
@@ -345,18 +450,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const availableLanguages = Array.from(new Set(chapters.map(c => (c.language || 'en').toLowerCase()).filter(Boolean)));
 
   const matchesLanguage = (lang?: string, filter: string = 'all') => {
-    if (filter === 'all') return true;
-    const l = (lang || 'en').toLowerCase().trim();
-    if (filter === 'pt-br,en') {
-      return l === 'pt-br' || l === 'pt' || l === 'en' || l === 'default' || !l;
-    }
-    if (filter === 'pt-br' || filter === 'pt') {
-      return l === 'pt-br' || l === 'pt';
-    }
-    if (filter === 'en') {
-      return l === 'en';
-    }
-    return l === filter.toLowerCase();
+    return matchesLanguageFilter(lang, filter);
   };
 
   // Check if current filter produces zero chapters while chapters exist
@@ -406,12 +500,14 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   }
 
   const primarySource = manga.sources[0];
-  const firstChapter = chapters.length > 0 ? (chapterOrder === 'asc' ? chapters[0] : chapters[chapters.length - 1]) : null;
+  const langMatchedForStart = chapters.filter(c => matchesLanguage(c.language, effectiveLangFilter));
+  const startPool = langMatchedForStart.length > 0 ? langMatchedForStart : chapters;
+  const firstChapter = startPool.length > 0 ? (chapterOrder === 'asc' ? startPool[0] : startPool[startPool.length - 1]) : null;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-28">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24 md:pb-28">
       {/* Background Banner with dynamic blur */}
-      <div className="relative h-72 sm:h-96 w-full overflow-hidden border-b border-zinc-800/80">
+      <div className="relative h-56 sm:h-80 md:h-96 w-full overflow-hidden border-b border-zinc-800/80">
         <img
           src={coverSrc || manga.coverUrl}
           alt=""
@@ -422,10 +518,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
         <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/70 to-transparent" />
         
         {/* Navigation bar above backdrop */}
-        <div className="absolute top-6 left-4 sm:left-8 z-10">
+        <div className="absolute top-4 sm:top-6 left-3 sm:left-8 z-10">
           <button
             onClick={onBack}
-            className="flex items-center gap-2 px-3.5 py-2 bg-zinc-900/80 hover:bg-zinc-900 backdrop-blur-md border border-zinc-700/60 rounded-lg text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
+            className="flex items-center gap-2 px-3 sm:px-3.5 py-2 bg-zinc-900/80 hover:bg-zinc-900 backdrop-blur-md border border-zinc-700/60 rounded-lg text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Voltar</span>
@@ -433,24 +529,36 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
         </div>
       </div>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 -mt-40 sm:-mt-52 relative z-10">
+      <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 -mt-28 sm:-mt-44 md:-mt-52 relative z-10">
         {/* Header Block: Cover + Title + Metadata */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 sm:gap-8 items-start">
           
           {/* Left Column: Cover & Primary Action Controls */}
           <div className="md:col-span-4 lg:col-span-3 flex flex-col items-center md:items-start">
-            <div className="w-56 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0">
+            <div
+              onClick={() => (coverSrc || manga.coverUrl) && setShowCoverLightbox(true)}
+              className="group/cover relative w-44 xs:w-52 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0 cursor-pointer transition-transform duration-200 hover:scale-[1.02]"
+              title="Clique para expandir a capa em tela cheia"
+            >
               {!coverError && (coverSrc || manga.coverUrl) ? (
-                <img
-                  src={coverSrc || manga.coverUrl}
-                  alt={manga.title}
-                  referrerPolicy="no-referrer"
-                  onError={handleCoverError}
-                  className="h-full w-full object-cover"
-                />
+                <>
+                  <img
+                    src={coverSrc || manga.coverUrl}
+                    alt={manga.title}
+                    referrerPolicy="no-referrer"
+                    onError={handleCoverError}
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover/cover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/cover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                    <span className="px-3 py-1.5 rounded-xl bg-zinc-950/90 text-white text-xs font-semibold flex items-center gap-1.5 border border-zinc-700 shadow-xl backdrop-blur-md">
+                      <Maximize2 className="h-3.5 w-3.5 text-rose-400" />
+                      Expandir Capa
+                    </span>
+                  </div>
+                </>
               ) : (
-                <div className="relative h-full w-full flex flex-col justify-between p-5 overflow-hidden bg-gradient-to-br from-zinc-900 via-rose-950/20 to-zinc-950">
-                  <div className="absolute -right-3 -bottom-4 text-8xl font-serif font-black text-white/[0.04] select-none pointer-events-none">
+                <div className="relative h-full w-full flex flex-col justify-between p-4 sm:p-5 overflow-hidden bg-gradient-to-br from-zinc-900 via-rose-950/20 to-zinc-950">
+                  <div className="absolute -right-3 -bottom-4 text-7xl sm:text-8xl font-serif font-black text-white/[0.04] select-none pointer-events-none">
                     漫画
                   </div>
                   <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500 uppercase tracking-widest border-b border-zinc-800/60 pb-2">
@@ -458,8 +566,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                     <span>MANGA</span>
                   </div>
                   <div className="my-auto py-4 text-center">
-                    <div className="mx-auto w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mb-3 shadow-inner">
-                      <BookOpen className="h-6 w-6" />
+                    <div className="mx-auto w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mb-3 shadow-inner">
+                      <BookOpen className="h-5 w-5 sm:h-6 sm:w-6" />
                     </div>
                     <h3 className="font-serif font-bold text-sm text-zinc-100 line-clamp-3 leading-snug px-2">
                       {manga.title}
@@ -475,7 +583,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             </div>
 
             {/* Quick Action Buttons */}
-            <div className="w-56 sm:w-64 mt-4 space-y-2.5">
+            <div className="w-full max-w-[16rem] sm:w-64 mt-4 space-y-2.5">
               {updateInfo?.hasNew && (
                 <button
                   onClick={() => handleChapterClick(updateInfo.latestChapterId)}
@@ -515,14 +623,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               <div className="flex gap-2">
                 <button
                   onClick={handleBookmarkToggle}
-                  className={`flex-1 py-2 rounded-lg text-xs font-medium border flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-semibold border flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md active:scale-95 ${
                     isBookmarked
-                      ? 'bg-rose-500/10 border-rose-500/40 text-rose-300'
-                      : 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800'
+                      ? 'bg-rose-600 border-rose-500 text-white shadow-rose-950/60'
+                      : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-200 hover:text-white'
                   }`}
+                  title={isBookmarked ? 'Remover dos Favoritos' : 'Salvar na Biblioteca'}
                 >
-                  <Bookmark className={`h-3.5 w-3.5 ${isBookmarked ? 'fill-rose-400' : ''}`} />
-                  <span>{isBookmarked ? 'Salvo' : 'Favoritar'}</span>
+                  <Bookmark className={`h-4 w-4 ${isBookmarked ? 'fill-white' : ''}`} />
+                  <span>{isBookmarked ? 'Salvo na Biblioteca' : 'Salvar na Biblioteca'}</span>
                 </button>
 
                 <button
@@ -542,6 +651,23 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <Share2 className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {/* Botão Dispensar ("Não vou ler") — oculta das buscas sem salvar nos favoritos */}
+              {(!isBookmarked || isIgnored) && (
+                <button
+                  type="button"
+                  onClick={handleToggleIgnore}
+                  className={`w-full py-2 px-3 rounded-xl text-xs font-medium border flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                    isIgnored
+                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+                      : 'bg-zinc-900/70 hover:bg-zinc-800 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title={isIgnored ? 'Esta obra está oculta das buscas. Clique para restaurar.' : 'Marcar como "não vou ler" para ocultar das pesquisas sem favoritar'}
+                >
+                  {isIgnored ? <Eye className="h-3.5 w-3.5 text-emerald-400" /> : <EyeOff className="h-3.5 w-3.5" />}
+                  <span>{isIgnored ? 'Dispensado das Buscas (Restaurar)' : 'Não vou ler (Ocultar das buscas)'}</span>
+                </button>
+              )}
 
               {/* Badges de Categorias Personalizadas (Mihon) */}
               {isBookmarked && favoriteData?.customCollections && favoriteData.customCollections.length > 0 && (
@@ -663,8 +789,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               <span className="font-semibold text-rose-400">
                 {manga.status === 'ongoing' ? 'Em Lançamento' : manga.status === 'completed' ? 'Completo' : 'Em Hiato'}
               </span>
-              <span aria-hidden="true" className="text-zinc-600">·</span>
-              <span>{manga.publicationInfo.demographic || 'Demografia'}</span>
+              {manga.publicationInfo?.demographic && manga.publicationInfo.demographic.toLowerCase() !== 'demografia' && (
+                <>
+                  <span aria-hidden="true" className="text-zinc-600">·</span>
+                  <span className="capitalize">{manga.publicationInfo.demographic}</span>
+                </>
+              )}
               {manga.publicationInfo.releaseYear && (
                 <>
                   <span aria-hidden="true" className="text-zinc-600">·</span>
@@ -698,8 +828,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-3 mb-2">
-              <h1 className="font-serif text-3xl sm:text-4xl font-bold tracking-tight text-white text-balance">
+            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 mb-2">
+              <h1 className="font-serif text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-white text-balance">
                 {manga.title}
               </h1>
               <TrackerStatusBadge
@@ -720,7 +850,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
             )}
 
             {/* Creators & Publication Specs */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 mb-6 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl bg-zinc-900/60 border border-zinc-800/80 mb-5 sm:mb-6 text-xs">
               <div>
                 <span className="text-zinc-500 block mb-0.5">Autor</span>
                 <button
@@ -917,15 +1047,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               </div>
 
               {/* Filter and Sort controls */}
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative w-full sm:w-52">
                   <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
                   <input
                     type="text"
                     placeholder="Filtrar capítulo ou scan..."
                     value={chapterSearch}
                     onChange={(e) => setChapterSearch(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 w-44 sm:w-52"
+                    className="pl-8 pr-3 py-2 sm:py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500 w-full"
                   />
                 </div>
 
@@ -994,6 +1124,19 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                     <LayoutGrid className="h-3.5 w-3.5" />
                   </button>
                 </div>
+
+                {(loadingRecommendations || similarMatches.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={scrollToSimilar}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg text-xs font-medium text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
+                    title="Ir direto para as recomendações similares abaixo dos capítulos"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Similares</span>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1216,7 +1359,16 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </div>
               )}
             </div>
-          ) : chapterViewMode === 'grid' ? (
+          ) : (
+            <div className="space-y-3">
+              <div
+                className={
+                  filteredChapters.length > 24 && !expandAllChapters
+                    ? 'max-h-[540px] overflow-y-auto pr-1.5 rounded-2xl border border-zinc-800/70 bg-zinc-950/30 p-2.5 sm:p-3'
+                    : ''
+                }
+              >
+                {chapterViewMode === 'grid' ? (
             <div className="p-4 sm:p-5 rounded-2xl bg-zinc-900/40 border border-zinc-800/80">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 mb-4 border-b border-zinc-800/60 text-xs text-zinc-400">
                 <span className="font-sans">Selecione o número do capítulo para iniciar a leitura imediata</span>
@@ -1226,7 +1378,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-zinc-800 border border-zinc-700"></span> Não Lido</span>
                 </div>
               </div>
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2">
+              <div className="grid grid-cols-3 xs:grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5 sm:gap-2">
                 {filteredChapters.map((chapter) => {
                   const isRead = readChapters.includes(chapter.id);
                   const isCurrentRead = readingProgress?.chapterId === chapter.id;
@@ -1277,7 +1429,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 return (
                   <div
                     key={chapter.id}
-                    className={`group flex flex-col p-3.5 rounded-xl border transition-all ${
+                    className={`group flex flex-col p-3 sm:p-3.5 rounded-xl border transition-all ${
                       isCurrentRead
                         ? 'bg-rose-950/20 border-rose-800/60'
                         : isRead
@@ -1287,9 +1439,9 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   >
                     <div
                       onClick={() => handleChapterClick(chapter.id)}
-                      className="flex items-center justify-between cursor-pointer"
+                      className="flex items-center justify-between gap-2 cursor-pointer"
                     >
-                      <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 overflow-hidden">
                         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-mono font-medium tabular-nums transition-colors ${
                           isRead
                             ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
@@ -1298,22 +1450,22 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           {chapter.chapterNumber}
                         </div>
 
-                        <div className="overflow-hidden">
-                          <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
                             <span className="font-semibold text-xs text-zinc-200 line-clamp-1 group-hover:text-rose-400 transition-colors">
                               Capítulo {chapter.chapterNumber}
                               {chapter.title && ` - ${chapter.title}`}
                             </span>
 
                             {isRead && (
-                              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 font-medium">
+                              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 font-medium shrink-0">
                                 <Check className="h-2.5 w-2.5" />
                                 <span>Lido</span>
                               </span>
                             )}
 
                             {chapter.scanlationGroup && (
-                              <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono">
+                              <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono truncate max-w-[120px] sm:max-w-none">
                                 {chapter.scanlationGroup}
                               </span>
                             )}
@@ -1325,12 +1477,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                             )}
                           </div>
 
-                          <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-1">
+                          <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] text-zinc-400 mt-1 truncate">
                             {chapter.releaseDate && <span>{chapter.releaseDate}</span>}
                             {chapter.pagesCount && (
                               <>
                                 <span aria-hidden="true" className="text-zinc-600">·</span>
-                                <span className="font-mono tabular-nums">{chapter.pagesCount} páginas</span>
+                                <span className="font-mono tabular-nums">{chapter.pagesCount} págs</span>
                               </>
                             )}
                             <span aria-hidden="true" className="text-zinc-600">·</span>
@@ -1339,9 +1491,9 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                         {isCurrentRead && (
-                          <span className="text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
+                          <span className="hidden sm:inline-block text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
                             Em Leitura
                           </span>
                         )}
@@ -1364,10 +1516,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                         <button
                           type="button"
                           onClick={(e) => handleMarkUpTo(e, chapter.id)}
-                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-zinc-850 hover:bg-emerald-950/50 text-zinc-400 hover:text-emerald-300 border border-zinc-750 hover:border-emerald-500/40 transition-colors cursor-pointer"
+                          className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-medium bg-zinc-850 hover:bg-emerald-950/50 text-zinc-400 hover:text-emerald-300 border border-zinc-750 hover:border-emerald-500/40 transition-colors cursor-pointer"
                           title={`Marcar o Capítulo ${chapter.chapterNumber} e todos os anteriores como lidos`}
                         >
-                          <CheckCheck className="h-3 w-3 text-emerald-400" />
+                          <CheckCheck className="h-3.5 w-3.5 sm:h-3 sm:w-3 text-emerald-400" />
                           <span className="hidden sm:inline">Até aqui</span>
                         </button>
 
@@ -1378,7 +1530,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                               e.stopPropagation();
                               setExpandedVariantsChapterId(isExpanded ? null : chapter.id);
                             }}
-                            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 transition-colors cursor-pointer"
+                            className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 transition-colors cursor-pointer"
                             title="Alternar versões/scans deste capítulo"
                           >
                             <Layers className="h-3 w-3" />
@@ -1415,7 +1567,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
                           download
                           onClick={(e) => e.stopPropagation()}
-                          className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                          className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
                           title="Baixar capítulo em formato ComicBook (.cbz)"
                         >
                           CBZ
@@ -1426,7 +1578,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=pdf`}
                           download
                           onClick={(e) => e.stopPropagation()}
-                          className="px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                          className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
                           title="Baixar capítulo em documento PDF"
                         >
                           PDF
@@ -1434,7 +1586,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
                         <button
                           type="button"
-                          className="p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
+                          className="hidden sm:inline-flex p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
                           title="Ler agora"
                         >
                           <BookOpen className="h-4 w-4" />
@@ -1540,56 +1692,161 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               })}
             </div>
           )}
+              </div>
+
+              {filteredChapters.length > 24 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-zinc-900/50 border border-zinc-800/70 text-xs text-zinc-400">
+                  <span>
+                    {expandAllChapters
+                      ? `Exibindo todos os ${filteredChapters.length} capítulos expandidos`
+                      : `Lista compactada em painel rolável (${filteredChapters.length} capítulos) para facilitar a navegação`}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandAllChapters(prev => !prev)}
+                      className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/70 text-[11px] font-medium text-zinc-200 transition-colors cursor-pointer"
+                    >
+                      {expandAllChapters ? 'Recolher altura' : 'Expandir lista completa'}
+                    </button>
+                    {(loadingRecommendations || similarMatches.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={scrollToSimilar}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-[11px] font-medium text-amber-300 transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        <span>Ver Similares</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
-        {/* Similar & Recommended Manga Section (Idea 2) */}
-        {similarMatches.length > 0 && (
-          <section className="mt-14 pt-8 border-t border-zinc-800">
-            {(() => {
-              const displayed = hideSavedInSimilar
+        {/* Similar & Recommended Manga Section (Hybrid AI + MangaUpdates + AniList + Focus Steering) */}
+        {(loadingRecommendations || similarMatches.length > 0 || selectedFocusTags.length > 0 || Boolean(appliedFocusQuery)) && (
+          <section ref={similarSectionRef} className="mt-14 pt-8 border-t border-zinc-800 scroll-mt-20">
+            {loadingRecommendations && similarMatches.length === 0 ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-amber-400 shrink-0" />
+                  <h3 className="text-xl font-bold tracking-tight text-zinc-100">
+                    Se você curtiu este, leia também...
+                  </h3>
+                </div>
+                <RecommendationLoadingState
+                  title={
+                    selectedFocusTags.length > 0 || appliedFocusQuery
+                      ? 'Buscando obras pelo foco selecionado...'
+                      : 'Analisando sinopse, tropos e tags da comunidade...'
+                  }
+                  subtitle={
+                    selectedFocusTags.length > 0 || appliedFocusQuery
+                      ? `Foco: ${[...selectedFocusTags, appliedFocusQuery].filter(Boolean).join(', ')}`
+                      : 'Consultando MangaUpdates, AniList e fontes ao vivo'
+                  }
+                  accent="amber"
+                  cardCount={6}
+                />
+              </div>
+            ) : (() => {
+              const libraryFiltered = hideSavedInSimilar
                 ? similarMatches.filter(m => !m.isInLibrary)
                 : similarMatches;
-              const hiddenSavedCount = similarMatches.length - displayed.length;
+              const hiddenSavedCount = similarMatches.length - libraryFiltered.length;
+
+              const twinCount = libraryFiltered.filter(m => m.category === 'twin_premise').length;
+              const dynamicCount = libraryFiltered.filter(m => m.category === 'same_dynamic').length;
+              const vibeCount = libraryFiltered.filter(m => !m.category || m.category === 'same_vibe').length;
+
+              const displayed = similarCategoryFilter === 'all'
+                ? libraryFiltered
+                : libraryFiltered.filter(m => (m.category || 'same_vibe') === similarCategoryFilter);
+
+              const categoryTabs: Array<{ id: 'all' | SimilarityCategory; label: string; count: number; desc: string }> = [
+                { id: 'all', label: 'Todos', count: libraryFiltered.length, desc: 'Todas as obras semelhantes' },
+                { id: 'twin_premise', label: 'Premissa Gêmea', count: twinCount, desc: 'Mesma situação/gancho de enredo' },
+                { id: 'same_dynamic', label: 'Mesma Dinâmica', count: dynamicCount, desc: 'Relação ou arquétipo parecido' },
+                { id: 'same_vibe', label: 'Mesmo Clima', count: vibeCount, desc: 'Tom e gênero afim' }
+              ];
+
+              const CATEGORY_BADGE_MAP: Record<SimilarityCategory, { label: string; cls: string }> = {
+                twin_premise: { label: 'Premissa Gêmea', cls: 'text-rose-300 bg-rose-500/15 border-rose-500/30' },
+                same_dynamic: { label: 'Mesma Dinâmica', cls: 'text-amber-300 bg-amber-500/15 border-amber-500/30' },
+                same_vibe: { label: 'Mesmo Clima', cls: 'text-sky-300 bg-sky-500/15 border-sky-500/30' }
+              };
+
+              const focusChipOptions: DetectedTropeTag[] =
+                similarMeta.detectedTags.length > 0
+                  ? similarMeta.detectedTags
+                  : similarMeta.anilistTags.map(t => ({ tag: t, source: 'anilist' as const }));
+              const hasActiveFocus = selectedFocusTags.length > 0 || Boolean(appliedFocusQuery);
 
               return (
                 <>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2">
-                        <Sparkles className="h-5 w-5 text-amber-400" />
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
+                    <div className="min-w-0">
+                      <h3 className="text-xl font-bold tracking-tight text-zinc-100 flex items-center gap-2 flex-wrap">
+                        <Sparkles className="h-5 w-5 text-amber-400 shrink-0" />
                         <span>Se você curtiu este, leia também...</span>
+                        {similarMeta.aiPowered && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                            IA Semântica
+                          </span>
+                        )}
                       </h3>
-                      <p className="text-xs text-zinc-400 mt-0.5">
-                        Obras irmãs com afinidade temática, estilo narrativo e tropos compartilhados
+                      <p className="text-xs text-zinc-400 mt-1">
+                        {similarMeta.corePremise
+                          ? similarMeta.corePremise
+                          : 'Obras irmãs com afinidade temática, arquétipo de personagens e tropos compartilhados'}
                       </p>
+                      {similarMeta.microTropes.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {similarMeta.microTropes.slice(0, 4).map(trope => (
+                            <span
+                              key={trope}
+                              className="px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-300 font-medium"
+                            >
+                              # {trope}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       {/* Discovery Mode toggle */}
                       <button
                         type="button"
                         onClick={() => setHideSavedInSimilar(prev => !prev)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                        className={`px-3 py-1.5 min-h-[38px] rounded-xl text-xs font-medium border flex items-center gap-1.5 transition-colors cursor-pointer ${
                           hideSavedInSimilar
                             ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
-                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                            : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                         }`}
-                        title={hideSavedInSimilar ? 'Mostrando apenas obras que você não tem na biblioteca' : 'Clique para ocultar obras já salvas'}
+                        title={
+                          hideSavedInSimilar
+                            ? 'Ocultando obras da sua biblioteca. Clique para ver obras parecidas que você já leu ou salvou.'
+                            : 'Exibindo também obras parecidas da sua biblioteca'
+                        }
                       >
                         {hideSavedInSimilar ? (
                           <>
                             <BookmarkX className="h-3.5 w-3.5 text-rose-400" />
                             <span>Apenas Inéditos</span>
                             {hiddenSavedCount > 0 && (
-                              <span className="px-1.5 py-0.2 rounded-full bg-rose-500/30 text-rose-200 text-[10px] font-mono">
-                                -{hiddenSavedCount}
+                              <span className="px-1.5 py-0.5 rounded bg-rose-500/25 text-rose-200 text-[10px] font-mono tabular-nums">
+                                +{hiddenSavedCount} lidos
                               </span>
                             )}
                           </>
                         ) : (
                           <>
-                            <Bookmark className="h-3.5 w-3.5" />
-                            <span>Ocultar da Biblioteca</span>
+                            <Bookmark className="h-3.5 w-3.5 text-emerald-400" />
+                            <span>Incluindo Já Lidos ({similarMatches.filter(m => m.isInLibrary).length})</span>
                           </>
                         )}
                       </button>
@@ -1599,7 +1856,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                         <button
                           type="button"
                           onClick={() => onNavigateToSearch(undefined, manga.genres[0])}
-                          className="px-3 py-1.5 rounded-xl text-xs font-medium bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                          className="px-3 py-1.5 min-h-[38px] rounded-xl text-xs font-medium bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
                           title={`Ver mais obras de ${manga.genres[0]} na busca`}
                         >
                           <Compass className="h-3.5 w-3.5 text-rose-400" />
@@ -1610,78 +1867,205 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                     </div>
                   </div>
 
-                  {displayed.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                      {displayed.map((item) => (
-                        <div
-                          key={item.manga.id}
-                          onClick={() => {
-                            onSelectManga?.(item.manga.id);
-                            window.scrollTo({ top: 0, behavior: 'smooth' });
-                          }}
-                          className="group relative flex flex-col bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl"
+                  {/* Interactive Similarity Focus Steering Bar */}
+                  <div className="mb-4 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/80 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-300">
+                        <Sliders className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+                        <span>Direcionar foco desta obra</span>
+                        <span className="text-zinc-500 font-normal hidden sm:inline">
+                          — escolha o que você mais quer repetir (tipo de personagem, situação ou trope)
+                        </span>
+                      </div>
+                      {hasActiveFocus && (
+                        <button
+                          type="button"
+                          onClick={handleResetFocus}
+                          disabled={loadingRecommendations}
+                          className="text-[11px] text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
                         >
-                          <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
-                            {item.manga.coverUrl ? (
-                              <img
-                                src={item.manga.coverUrl}
-                                alt={item.manga.title}
-                                referrerPolicy="no-referrer"
-                                className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
-                                loading="lazy"
-                              />
-                            ) : (
-                              <div className="h-full w-full flex items-center justify-center p-3 text-center bg-zinc-900 text-zinc-400 text-xs">
-                                {item.manga.title}
-                              </div>
-                            )}
+                          <X className="h-3 w-3" />
+                          <span>Limpar foco</span>
+                        </button>
+                      )}
+                    </div>
 
-                            {/* Similarity Score Pill */}
-                            <div className="absolute top-2 left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
-                              <span className={item.similarityScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>
-                                ★ {item.similarityScore}%
-                              </span>
-                              <span className="text-[9px] text-zinc-400 font-normal">similar</span>
-                            </div>
+                    {focusChipOptions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {focusChipOptions.slice(0, 10).map(item => {
+                          const isSelected = selectedFocusTags.some(
+                            t => t.toLowerCase() === item.tag.toLowerCase()
+                          );
+                          return (
+                            <button
+                              key={`${item.source}-${item.tag}`}
+                              type="button"
+                              onClick={() => handleToggleFocusTag(item.tag)}
+                              disabled={loadingRecommendations}
+                              title={`Focar recomendações em "${item.tag}" (${item.source})`}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors cursor-pointer disabled:opacity-60 flex items-center gap-1.5 ${
+                                isSelected
+                                  ? 'bg-rose-500/15 border-rose-500/45 text-rose-200'
+                                  : 'bg-zinc-950/70 hover:bg-zinc-800 border-zinc-800 text-zinc-300 hover:text-white'
+                              }`}
+                            >
+                              <span>{item.tag}</span>
+                              {item.votes && item.source === 'mangaupdates' && (
+                                <span className="text-[9px] text-zinc-500 font-mono tabular-nums">
+                                  {item.votes}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
-                            {/* Saved badge if in library and filter is off */}
-                            {item.isInLibrary && (
-                              <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
-                                Salvo
-                              </div>
-                            )}
-                          </div>
+                    <form onSubmit={handleApplyCustomFocus} className="flex flex-col sm:flex-row gap-2">
+                      <div className="relative flex-1">
+                        <Search className="h-3.5 w-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={customFocusInput}
+                          onChange={(e) => setCustomFocusInput(e.target.value)}
+                          placeholder="Foco livre: ex. tall girl, muscle mommy, size difference, dívida..."
+                          className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-rose-500/50"
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={loadingRecommendations || (!customFocusInput.trim() && !appliedFocusQuery)}
+                        className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-medium text-zinc-100 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        Aplicar foco
+                      </button>
+                    </form>
+                  </div>
 
-                          <div className="p-3 flex flex-1 flex-col justify-between">
-                            <div>
-                              <h4 className="font-semibold text-xs text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
-                                {item.manga.title}
-                              </h4>
-                              <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
-                                {item.isSameAuthor ? (
-                                  <span className="text-indigo-400 font-medium">Do mesmo autor</span>
-                                ) : (
-                                  item.manga.authors?.[0] || item.manga.sources?.[0]?.sourceName || 'MangaReader'
-                                )}
-                              </p>
-                            </div>
+                  {loadingRecommendations && (
+                    <RecommendationLoadingState
+                      compact
+                      title="Recalculando obras pelo foco selecionado..."
+                      subtitle={
+                        hasActiveFocus
+                          ? `Buscando: ${[...selectedFocusTags, appliedFocusQuery].filter(Boolean).join(', ')}`
+                          : 'Atualizando recomendações'
+                      }
+                      accent="amber"
+                    />
+                  )}
 
-                            <div className="pt-2 border-t border-zinc-800/60 mt-2">
-                              {item.sharedGenres.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {item.sharedGenres.slice(0, 2).map(g => (
-                                    <span key={g} className="px-1.5 py-0.2 rounded bg-zinc-800/80 text-zinc-300 text-[9px]">
-                                      {g}
-                                    </span>
-                                  ))}
-                                </div>
+                  {/* Category Tabs */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-2 mb-5">
+                    {categoryTabs.map(tab => {
+                      const active = similarCategoryFilter === tab.id;
+                      if (tab.id !== 'all' && tab.count === 0) return null;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setSimilarCategoryFilter(tab.id)}
+                          title={tab.desc}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 border ${
+                            active
+                              ? 'bg-rose-500/15 border-rose-500/40 text-rose-300 shadow-sm'
+                              : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          <span className="px-1.5 py-0.2 rounded bg-zinc-950/70 text-[10px] font-mono tabular-nums text-zinc-300">
+                            {tab.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {displayed.length > 0 ? (
+                    <div className="manga-cover-grid">
+                      {displayed.map((item) => {
+                        const catBadge = CATEGORY_BADGE_MAP[item.category || 'same_vibe'];
+                        return (
+                          <div
+                            key={item.manga.id}
+                            onClick={() => {
+                              onSelectManga?.(item.manga.id);
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                            }}
+                            className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
+                          >
+                            <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
+                              {item.manga.coverUrl ? (
+                                <img
+                                  src={item.manga.coverUrl}
+                                  alt={item.manga.title}
+                                  referrerPolicy="no-referrer"
+                                  className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                  loading="lazy"
+                                />
                               ) : (
-                                <span className="text-[10px] text-zinc-400">Recomendação afim</span>
+                                <div className="h-full w-full flex items-center justify-center p-3 text-center bg-zinc-900 text-zinc-400 text-xs">
+                                  {item.manga.title}
+                                </div>
+                              )}
+
+                              {/* Similarity Score Badge */}
+                              <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md tabular-nums">
+                                <span className={item.similarityScore >= 82 ? 'text-emerald-400' : 'text-amber-400'}>
+                                  ★ {item.similarityScore}%
+                                </span>
+                                <span className="hidden xs:inline text-[9px] text-zinc-400 font-normal">similar</span>
+                              </div>
+
+                              {/* Saved badge if in library and filter is off */}
+                              {item.isInLibrary && (
+                                <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/85 backdrop-blur-md text-[9px] text-emerald-300 border border-emerald-500/35 font-medium">
+                                  Já lido
+                                </div>
                               )}
                             </div>
+
+                            <div className="p-2.5 sm:p-3 flex flex-1 flex-col justify-between min-w-0">
+                              <div className="min-w-0">
+                                <div className="mb-1 flex items-center gap-1 flex-wrap">
+                                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold ${catBadge.cls}`}>
+                                    {catBadge.label}
+                                  </span>
+                                </div>
+                                <h4 className="font-semibold text-xs sm:text-[13px] text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-2 leading-snug">
+                                  {item.manga.title}
+                                </h4>
+                                <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
+                                  {item.isSameAuthor ? (
+                                    <span className="text-indigo-400 font-medium">Do mesmo autor</span>
+                                  ) : (
+                                    item.manga.authors?.[0] || item.manga.sources?.[0]?.sourceName || 'MangaReader'
+                                  )}
+                                </p>
+                              </div>
+
+                              <div className="pt-1.5 sm:pt-2 border-t border-zinc-800/60 mt-1.5 sm:mt-2 space-y-1">
+                                {item.matchExplanation ? (
+                                  <p className="text-[10px] text-amber-300/90 font-medium line-clamp-2 leading-snug">
+                                    {item.matchExplanation}
+                                  </p>
+                                ) : null}
+                                {item.sharedGenres.length > 0 ? (
+                                  <div className="flex flex-wrap gap-1">
+                                    {item.sharedGenres.slice(0, 2).map(g => (
+                                      <span key={g} className="px-1.5 py-0.2 rounded bg-zinc-800/80 text-zinc-300 text-[9px] truncate max-w-[110px]">
+                                        {g}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : !item.matchExplanation ? (
+                                  <span className="text-[10px] text-zinc-400">Recomendação afim</span>
+                                ) : null}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="text-center py-12 px-4 rounded-xl bg-zinc-900/40 border border-dashed border-zinc-800">
@@ -1825,6 +2209,47 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           status: manga.status,
         } : null}
       />
+
+      {/* Full-screen Cover Image Lightbox Modal */}
+      {showCoverLightbox && (coverSrc || manga?.coverUrl) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in duration-200"
+          onClick={() => setShowCoverLightbox(false)}
+        >
+          <div
+            className="relative max-w-xl w-full flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setShowCoverLightbox(false)}
+              className="absolute -top-12 right-0 p-2 text-zinc-400 hover:text-white rounded-full bg-zinc-900 hover:bg-zinc-800 transition-colors cursor-pointer border border-zinc-700"
+              title="Fechar (Esc)"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <img
+              src={coverSrc || manga?.coverUrl}
+              alt={manga?.title || 'Capa do mangá'}
+              referrerPolicy="no-referrer"
+              className="max-h-[82vh] w-auto object-contain rounded-2xl shadow-2xl border border-zinc-800 bg-zinc-950"
+            />
+
+            <div className="mt-3 flex items-center justify-between w-full px-2 text-xs text-zinc-300">
+              <span className="font-semibold line-clamp-1">{manga?.title}</span>
+              <a
+                href={coverSrc || manga?.coverUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-rose-400 hover:text-rose-300 flex items-center gap-1 underline"
+              >
+                Abrir em resolução original <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

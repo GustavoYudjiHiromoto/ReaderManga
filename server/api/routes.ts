@@ -6,6 +6,10 @@ import zlib from 'zlib';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
 import { HttpError } from '../errors/HttpError.js';
 import { globalCache } from '../cache/CacheService.js';
+import {
+  findHybridSimilarMangas,
+  findHybridPersonalizedRecommendations
+} from '../services/aiSimilarityService.js';
 
 export const apiRouter = Router();
 
@@ -164,6 +168,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const demographic = req.query.demographic as string;
     const mangaType = (req.query.type as string) || (req.query.format as string);
     const status = req.query.status as string;
+    const language = (req.query.language as string) || (req.query.lang as string);
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 24;
     const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
     const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
@@ -171,7 +176,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const includeAdult = req.query.includeAdult === 'true';
     const onlyAvailable = req.query.onlyAvailable !== 'false';
 
-    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
+    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
@@ -186,6 +191,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       demographic,
       type: mangaType,
       status,
+      language,
       limit,
       offset,
       page,
@@ -254,6 +260,58 @@ apiRouter.get('/recommendation-feed', async (req: Request, res: Response) => {
     res.json(payload);
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message });
+  }
+});
+
+// 4.1 Hybrid AI + AniList + Live Source Similarity Matcher
+apiRouter.post('/similarity/match', async (req: Request, res: Response) => {
+  try {
+    const { targetManga, language, localCandidates, ignoredIds, ignoredTitles, focusTags, focusQuery, limit } = req.body || {};
+    if (!targetManga || !targetManga.id || !targetManga.title) {
+      return res.status(400).json({
+        success: false,
+        error: 'targetManga (com id e title) é obrigatório para cálculo de similaridade.'
+      });
+    }
+
+    const result = await findHybridSimilarMangas({
+      targetManga,
+      language,
+      localCandidates: Array.isArray(localCandidates) ? localCandidates.slice(0, 60) : [],
+      ignoredIds: Array.isArray(ignoredIds) ? ignoredIds : [],
+      ignoredTitles: Array.isArray(ignoredTitles) ? ignoredTitles : [],
+      focusTags: Array.isArray(focusTags) ? focusTags.filter((t: unknown) => typeof t === 'string' && t.trim().length > 0).slice(0, 6) : [],
+      focusQuery: typeof focusQuery === 'string' ? focusQuery.trim().slice(0, 120) : '',
+      limit: typeof limit === 'number' ? limit : 18
+    });
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// 4.2 Hybrid Personalized Recommendations ("Para Você")
+apiRouter.post('/recommendations/personalized', async (req: Request, res: Response) => {
+  try {
+    const { favorites, ignored, language, hideLibrary, limit } = req.body || {};
+    const result = await findHybridPersonalizedRecommendations({
+      favorites: Array.isArray(favorites) ? favorites : [],
+      ignored: Array.isArray(ignored) ? ignored : [],
+      language,
+      hideLibrary: hideLibrary !== false,
+      limit: typeof limit === 'number' ? limit : 12
+    });
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    sendApiError(res, err);
   }
 });
 

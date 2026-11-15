@@ -10,6 +10,7 @@ import { MangaDetailPage } from './pages/MangaDetailPage.js';
 import { ReaderPage } from './pages/ReaderPage.js';
 import { ApiDocPage } from './pages/ApiDocPage.js';
 import { FavoritesPage } from './pages/FavoritesPage.js';
+import { UpdatesPage } from './pages/UpdatesPage.js';
 import { ProfilePage } from './pages/ProfilePage.js';
 import { HistoryService } from './services/history.js';
 import { OfflineCacheService } from './services/offlineCache.js';
@@ -21,8 +22,8 @@ import { ExtensionsModal } from './components/ExtensionsModal.js';
 import { ExtensionService } from './services/extensionService.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
 
-type TabType = 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
-type OriginType = 'search' | 'catalog' | 'favorites' | 'home' | 'profile';
+type TabType = 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
+type OriginType = 'search' | 'catalog' | 'updates' | 'favorites' | 'home' | 'profile';
 
 interface ParsedRoute {
   tab: TabType;
@@ -67,6 +68,10 @@ function parseLocation(): ParsedRoute {
 
   if (pathname === '/favorites' || pathname === '/library') {
     return { tab: 'favorites' };
+  }
+
+  if (pathname === '/updates' || pathname === '/lancamentos') {
+    return { tab: 'updates' };
   }
 
   if (pathname === '/profile') {
@@ -276,6 +281,8 @@ export default function App() {
       handleNavigate('search');
     } else if (mangaDetailOrigin === 'catalog') {
       handleNavigate('catalog');
+    } else if (mangaDetailOrigin === 'updates') {
+      handleNavigate('updates');
     } else if (mangaDetailOrigin === 'favorites') {
       handleNavigate('favorites');
     } else {
@@ -297,7 +304,7 @@ export default function App() {
     }
   };
 
-  const handleNavigate = (tab: 'home' | 'catalog' | 'search' | 'favorites' | 'api' | 'profile') => {
+  const handleNavigate = (tab: 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'profile') => {
     const nextDepth = inAppHistoryDepth + 1;
     setInAppHistoryDepth(nextDepth);
 
@@ -319,6 +326,13 @@ export default function App() {
       setCurrentTab('search');
       const searchUrl = searchInitialQuery ? `/search?q=${encodeURIComponent(searchInitialQuery)}` : '/search';
       window.history.pushState({ tab: 'search', depth: nextDepth }, '', searchUrl);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    if (tab === 'updates') {
+      setCurrentTab('updates');
+      window.history.pushState({ tab: 'updates', depth: nextDepth }, '', '/updates');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -376,7 +390,7 @@ export default function App() {
       )}
 
       {/* Main Content Areas */}
-      <main className="flex-1">
+      <main className={`flex-1 min-w-0 ${currentTab !== 'reader' ? 'pb-16 md:pb-0' : ''}`}>
         {/* Home & Catalog: Preserved in DOM to retain scroll & state */}
         <div className={currentTab === 'home' || currentTab === 'catalog' ? 'block' : 'hidden'}>
           <HomePage
@@ -399,6 +413,16 @@ export default function App() {
             onReadChapter={handleReadChapter}
           />
         </div>
+
+        {/* Updates / Lançamentos View */}
+        {currentTab === 'updates' && (
+          <UpdatesPage
+            onSelectManga={(mangaId) => handleSelectManga(mangaId, 'updates')}
+            onReadChapter={handleReadChapter}
+            onNavigateToSearch={() => handleNavigate('search')}
+            onNavigateToFavorites={() => handleNavigate('favorites')}
+          />
+        )}
 
         {/* Favorites View: Preserved in DOM to retain scroll & fast view */}
         <div className={currentTab === 'favorites' ? 'block' : 'hidden'}>
@@ -440,6 +464,7 @@ export default function App() {
             mangaId={selectedMangaId}
             chapterId={selectedChapterId}
             onBackToManga={handleBackFromReader}
+            onOpenMangaDetail={() => handleSelectManga(selectedMangaId, mangaDetailOrigin)}
             onChangeChapter={(newChapterId) => {
               setSelectedChapterId(newChapterId);
               const newUrl = `/read/${encodeURIComponent(selectedMangaId)}/${encodeURIComponent(newChapterId)}`;
@@ -493,6 +518,7 @@ export default function App() {
         onClose={() => setIsHistoryOpen(false)}
         history={history}
         onResume={handleResumeProgress}
+        onSelectManga={(mangaId) => handleSelectManga(mangaId, 'home')}
         onRemove={handleRemoveHistory}
       />
 

@@ -182,9 +182,15 @@ export class MangaDexProvider implements IMangaSource {
       contentRating,
       isAdult,
       hasAvailableChapters,
-      availabilityStatus
+      availabilityStatus,
+      availableLanguages: Array.isArray(attrs.availableTranslatedLanguages)
+        ? attrs.availableTranslatedLanguages.map((l: string) => String(l).toLowerCase())
+        : undefined
     };
   }
+
+  private static dynamicTagMap: Record<string, string> | null = null;
+  private static dynamicTagFetchPromise: Promise<Record<string, string>> | null = null;
 
   private static readonly GENRE_MAP: Record<string, string> = {
     // Tropes & Subgêneros (Temas Oficiais MangaDex)
@@ -231,6 +237,17 @@ export class MangaDexProvider implements IMangaSource {
     'demons': '39730448-9a5f-48a2-85b0-a70db87b1233',
     'zombies': '631ef465-9aba-4afb-b0fc-ea10efe274a8',
     'delinquents': 'da2d50ca-3018-4cc0-ac7a-6b7d472a29ea',
+    'office workers': '92d6d951-ca5e-429c-ac78-451071cbf064',
+    'workplace': '92d6d951-ca5e-429c-ac78-451071cbf064',
+    'gyaru': 'fad12b5e-68ba-460e-b933-9ae8318f5b65',
+    'cooking': 'ea2bc92d-1c26-4930-9b7c-d5c0dc1b6869',
+    'medical': 'c8cbe35b-1b2b-4a3f-9c37-db84c4514856',
+    'music': 'f42fbf9e-188a-447b-9fdc-f19dc1e4d685',
+    'crossdressing': '9ab53f92-3eed-4e9b-903a-917c86035ee3',
+    'genderswap': '2bd2e8d0-f146-434a-9b51-fc9ff2c5fe6a',
+    'mafia': '85daba54-a71c-4554-8a28-9901a8b0afad',
+    'military': 'ac72833b-c4e9-4878-b9db-6c8a4a99444a',
+    'police': 'df33b754-73a3-4c54-80e6-1a74a8058539',
 
     // Gêneros Tradicionais
     'ação': '391b0423-d847-456f-aff0-8b0cfc03066b',
@@ -276,13 +293,47 @@ export class MangaDexProvider implements IMangaSource {
     'vingança': 'revenge'
   };
 
+  private async ensureDynamicTagsLoaded(): Promise<Record<string, string>> {
+    if (MangaDexProvider.dynamicTagMap) return MangaDexProvider.dynamicTagMap;
+    if (!MangaDexProvider.dynamicTagFetchPromise) {
+      MangaDexProvider.dynamicTagFetchPromise = (async () => {
+        const merged: Record<string, string> = { ...MangaDexProvider.GENRE_MAP };
+        try {
+          const res = await this.fetchWithTimeout(`${this.baseUrl}/manga/tag`, 4000);
+          if (Array.isArray(res?.data)) {
+            for (const t of res.data) {
+              const name = t?.attributes?.name?.en;
+              if (name && t?.id) {
+                merged[String(name).toLowerCase()] = String(t.id);
+              }
+            }
+          }
+        } catch {
+          // fallback cleanly to static GENRE_MAP
+        }
+        MangaDexProvider.dynamicTagMap = merged;
+        return merged;
+      })();
+    }
+    return MangaDexProvider.dynamicTagFetchPromise;
+  }
+
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
       const limit = Math.min(options?.limit || 24, 60);
       const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
       const orderParam = query.trim() ? 'order[relevance]=desc' : 'order[followedCount]=desc';
+
+      const requestedTagList = [
+        ...(options?.genre && options.genre !== 'all' ? [options.genre] : []),
+        ...(Array.isArray(options?.genres) ? options.genres : [])
+      ];
+      const wantsSuggestiveOnly = requestedTagList.some(g => g.toLowerCase() === 'ecchi');
+
       const ratingsQuery = options?.includeAdult
         ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
+        : wantsSuggestiveOnly
+        ? 'contentRating[]=suggestive'
         : 'contentRating[]=safe&contentRating[]=suggestive';
       const availableParam = options?.onlyAvailable !== false ? '&hasAvailableChapters=true' : '';
       let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&${orderParam}${availableParam}`;
@@ -302,19 +353,21 @@ export class MangaDexProvider implements IMangaSource {
         url += `&title=${encodeURIComponent(effectiveQuery)}`;
       }
 
+      const tagMap = await this.ensureDynamicTagsLoaded();
       const tagsToInclude = new Set<string>();
-      if (options?.genre && options.genre !== 'all') {
-        const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
+      for (const rawTag of requestedTagList) {
+        const lower = rawTag.toLowerCase().trim();
+        if (!lower || lower === 'ecchi') continue;
+        const tagId = tagMap[lower];
         if (tagId) tagsToInclude.add(tagId);
       }
-      if (Array.isArray(options?.genres)) {
-        for (const g of options.genres) {
-          const tagId = MangaDexProvider.GENRE_MAP[g.toLowerCase()];
-          if (tagId) tagsToInclude.add(tagId);
+      if (tagsToInclude.size > 0) {
+        for (const tagId of tagsToInclude) {
+          url += `&includedTags[]=${encodeURIComponent(tagId)}`;
         }
-      }
-      for (const tagId of tagsToInclude) {
-        url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+        if (tagsToInclude.size > 1) {
+          url += '&includedTagsMode=AND';
+        }
       }
 
       if (options?.demographic && options.demographic !== 'all') {
@@ -337,6 +390,22 @@ export class MangaDexProvider implements IMangaSource {
         else if (t === 'manhwa') url += '&originalLanguage[]=ko';
         else if (t === 'manhua') url += '&originalLanguage[]=zh&originalLanguage[]=zh-hk';
         else if (t === 'comic') url += '&originalLanguage[]=en';
+      }
+
+      if (options?.language && options.language !== 'all') {
+        const langParts = options.language.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+        const mdLangs = new Set<string>();
+        for (const lp of langParts) {
+          if (lp === 'pt-br' || lp === 'pt') {
+            mdLangs.add('pt-br');
+            mdLangs.add('pt');
+          } else {
+            mdLangs.add(lp);
+          }
+        }
+        for (const ml of mdLangs) {
+          url += `&availableTranslatedLanguage[]=${encodeURIComponent(ml)}`;
+        }
       }
 
       const res = await this.fetchWithTimeout(url);
@@ -416,8 +485,34 @@ export class MangaDexProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     try {
+      const PAGE_LIMIT = 500;
+      const MAX_TOTAL = 4000;
       const buildUrl = (langQuery: string, offset = 0) =>
-        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=100&offset=${offset}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&includes[]=scanlation_group${langQuery}`;
+        `${this.baseUrl}/manga/${externalMangaId}/feed?order[chapter]=desc&limit=${PAGE_LIMIT}&offset=${offset}&contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&includes[]=scanlation_group${langQuery}`;
+
+      const fetchAllOffsets = async (langQuery: string): Promise<any[]> => {
+        const res = await this.fetchWithTimeout(buildUrl(langQuery, 0));
+        let collected = Array.isArray(res.data) ? [...res.data] : [];
+        if (res.total > PAGE_LIMIT && collected.length === PAGE_LIMIT) {
+          const totalToFetch = Math.min(res.total, MAX_TOTAL);
+          const offsets: number[] = [];
+          for (let o = PAGE_LIMIT; o < totalToFetch; o += PAGE_LIMIT) {
+            offsets.push(o);
+          }
+          for (let i = 0; i < offsets.length; i += 4) {
+            const batch = offsets.slice(i, i + 4);
+            const extraPages = await Promise.all(
+              batch.map(o => this.fetchWithTimeout(buildUrl(langQuery, o)).catch(() => ({ data: [] })))
+            );
+            for (const p of extraPages) {
+              if (Array.isArray(p.data)) {
+                collected = [...collected, ...p.data];
+              }
+            }
+          }
+        }
+        return collected;
+      };
 
       let langQuery = '';
       if (language) {
@@ -426,48 +521,12 @@ export class MangaDexProvider implements IMangaSource {
         langQuery = '&translatedLanguage[]=pt-br&translatedLanguage[]=en';
       }
 
-      let res = await this.fetchWithTimeout(buildUrl(langQuery, 0));
-      let list = Array.isArray(res.data) ? res.data : [];
-
-      // If more chapters exist (> 100), fetch up to 500 chapters across offsets in parallel
-      if (res.total > 100 && list.length === 100) {
-        const totalToFetch = Math.min(res.total, 500);
-        const offsets: number[] = [];
-        for (let o = 100; o < totalToFetch; o += 100) {
-          offsets.push(o);
-        }
-        const extraPages = await Promise.all(
-          offsets.map(o => this.fetchWithTimeout(buildUrl(langQuery, o)).catch(() => ({ data: [] })))
-        );
-        for (const p of extraPages) {
-          if (Array.isArray(p.data)) {
-            list = [...list, ...p.data];
-          }
-        }
-      }
+      let list = await fetchAllOffsets(langQuery);
 
       // Fallback: If no language was explicitly requested and preferred languages (pt-br, en) returned no chapters,
       // fetch chapters without language restriction so available translations are displayed instead of empty list
       if (!language && list.length === 0) {
-        const fallbackRes = await this.fetchWithTimeout(buildUrl('', 0));
-        if (Array.isArray(fallbackRes.data) && fallbackRes.data.length > 0) {
-          list = fallbackRes.data;
-          if (fallbackRes.total > 100 && list.length === 100) {
-            const totalToFetch = Math.min(fallbackRes.total, 500);
-            const offsets: number[] = [];
-            for (let o = 100; o < totalToFetch; o += 100) {
-              offsets.push(o);
-            }
-            const extraPages = await Promise.all(
-              offsets.map(o => this.fetchWithTimeout(buildUrl('', o)).catch(() => ({ data: [] })))
-            );
-            for (const p of extraPages) {
-              if (Array.isArray(p.data)) {
-                list = [...list, ...p.data];
-              }
-            }
-          }
-        }
+        list = await fetchAllOffsets('');
       }
 
       // Filter out chapters hosted on external third-party sites (e.g. MangaPlus, Webnovel)

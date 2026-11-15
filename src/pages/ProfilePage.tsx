@@ -46,6 +46,12 @@ import { TrackersModal } from '../components/TrackersModal.js';
 import { parseTachibk } from '../services/tachibkService.js';
 import { PWAInstallButton } from '../components/PWAInstallButton.js';
 import { BackupProgressModal, BackupProgressState } from '../components/BackupProgressModal.js';
+import {
+  LANGUAGE_OPTIONS,
+  getPreferredLanguage,
+  setPreferredLanguage as saveGlobalPreferredLanguage,
+  subscribePreferredLanguage
+} from '../utils/languagePreference.js';
 
 type ReaderMode = 'webtoon' | 'single' | 'double';
 type PageFit = 'width' | 'height' | 'original';
@@ -145,13 +151,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     }
   });
 
-  const [preferredLanguage, setPreferredLanguage] = useState<string>(() => {
-    try {
-      return localStorage.getItem('mr_preferred_language') || 'pt-br,en';
-    } catch {
-      return 'pt-br,en';
-    }
-  });
+  const [preferredLanguage, setPreferredLanguage] = useState<string>(() => getPreferredLanguage());
 
   const [volumeNav, setVolumeNav] = useState<boolean>(() => {
     try {
@@ -194,12 +194,17 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       setEnabledSources(ExtensionService.getEnabledSourceIds());
     });
 
+    const unsubLang = subscribePreferredLanguage((lang) => {
+      setPreferredLanguage(lang);
+    });
+
     return () => {
       unsubHistory();
       unsubTrackers();
       unsubBgTrackers();
       unsubOffline();
       unsubExtensions();
+      unsubLang();
     };
   }, []);
 
@@ -207,7 +212,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   const handleUpdatePreference = <T,>(key: string, value: T, setter: (val: T) => void, label: string) => {
     setter(value);
     try {
-      localStorage.setItem(key, String(value));
+      if (key === 'mr_preferred_language') {
+        saveGlobalPreferredLanguage(String(value));
+      } else {
+        localStorage.setItem(key, String(value));
+      }
       triggerToast(`Preferência atualizada: ${label}`);
     } catch (e) {
       console.warn('Failed to save preference to localStorage', e);
@@ -412,29 +421,29 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24 font-sans">
       {/* Toast Notification */}
       {saveToast && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-emerald-500/40 text-emerald-300 text-xs shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-200">
-          <Check className="h-4 w-4 text-emerald-400" />
+        <div className="fixed bottom-20 md:bottom-6 left-3 right-3 sm:left-auto sm:right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-emerald-500/40 text-emerald-300 text-xs shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <Check className="h-4 w-4 text-emerald-400 shrink-0" />
           <span>{saveToast}</span>
         </div>
       )}
 
       {/* Hero Profile Banner */}
-      <div className="border-b border-zinc-800/80 bg-gradient-to-b from-zinc-900/60 via-zinc-950 to-zinc-950 pt-10 pb-8">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+      <div className="border-b border-zinc-800/80 bg-gradient-to-b from-zinc-900/60 via-zinc-950 to-zinc-950 pt-6 sm:pt-10 pb-6 sm:pb-8">
+        <div className="mx-auto max-w-6xl px-3 sm:px-6 lg:px-8">
           
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 sm:gap-6">
             {/* User Identity info */}
-            <div className="flex items-center gap-4 sm:gap-5">
-              <div className="relative">
+            <div className="flex items-center gap-3.5 sm:gap-5">
+              <div className="relative shrink-0">
                 {user?.photoURL ? (
                   <img
                     src={user.photoURL}
                     alt={user.displayName || 'Avatar'}
-                    className="h-20 w-20 rounded-2xl object-cover border-2 border-zinc-700/80 shadow-xl shadow-black/50"
+                    className="h-16 w-16 sm:h-20 sm:w-20 rounded-2xl object-cover border-2 border-zinc-700/80 shadow-xl shadow-black/50"
                   />
                 ) : (
-                  <div className="h-20 w-20 rounded-2xl bg-gradient-to-tr from-rose-600 to-rose-400 text-white border-2 border-rose-400/40 flex items-center justify-center font-serif text-2xl font-bold shadow-xl shadow-rose-950/40">
-                    {user?.displayName ? user.displayName.slice(0, 1).toUpperCase() : user?.email?.slice(0, 1).toUpperCase() || <User className="h-9 w-9" />}
+                  <div className="h-16 w-16 sm:h-20 sm:w-20 rounded-2xl bg-gradient-to-tr from-rose-600 to-rose-400 text-white border-2 border-rose-400/40 flex items-center justify-center font-serif text-xl sm:text-2xl font-bold shadow-xl shadow-rose-950/40">
+                    {user?.displayName ? user.displayName.slice(0, 1).toUpperCase() : user?.email?.slice(0, 1).toUpperCase() || <User className="h-8 w-8 sm:h-9 sm:w-9" />}
                   </div>
                 )}
 
@@ -450,9 +459,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                 </span>
               </div>
 
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <h1 className="font-serif text-2xl sm:text-3xl font-bold tracking-tight text-white">
+              <div className="space-y-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="font-serif text-xl sm:text-3xl font-bold tracking-tight text-white truncate">
                     {user?.displayName || 'Leitor MangaReader'}
                   </h1>
                   {user && (
@@ -651,11 +660,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       </div>
 
       {/* Main Content Sections Container */}
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 mt-8">
+      <div className="mx-auto max-w-6xl px-3 sm:px-6 lg:px-8 mt-6 sm:mt-8">
 
         {/* TAB 1: OVERVIEW & READING ANALYTICS */}
         {activeTab === 'overview' && (
-          <div className="space-y-8 animate-in fade-in duration-150">
+          <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-150">
             {/* Complete Reading Stats Summary & Analytics Dashboard */}
             <ReadingStatsSummary
               favoritesCount={favorites.length}
@@ -665,7 +674,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
             {/* Recently Read Mangas Shelf */}
             {history.length > 0 && (
-              <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-4">
+              <div className="p-4 sm:p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-zinc-850">
                   <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-rose-400" />
@@ -919,7 +928,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
         {/* TAB 3: READING & SEARCH PREFERENCES */}
         {activeTab === 'preferences' && (
-          <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-6 animate-in fade-in duration-150">
+          <div className="p-4 sm:p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-6 animate-in fade-in duration-150">
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Settings className="h-5 w-5 text-rose-400" />
@@ -959,11 +968,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             </div>
 
             {/* 2. Direção de Leitura & Ajuste de Imagem */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-4 border-t border-zinc-850">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 sm:gap-6 pt-4 border-t border-zinc-850">
               {/* Direção */}
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-zinc-200 block">Direção Padrão de Virada de Página:</label>
-                <div className="flex items-center gap-2 text-xs">
+                <div className="grid grid-cols-1 xs:grid-cols-2 gap-2 text-xs">
                   {[
                     { id: 'rtl', label: 'Direita para Esquerda (Mangá)' },
                     { id: 'ltr', label: 'Esquerda para Direita (Ocidental)' }
@@ -971,7 +980,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                     <button
                       key={d.id}
                       onClick={() => handleUpdatePreference('mr_reader_direction', d.id as ReadingDirection, setDefaultReadingDirection, d.label)}
-                      className={`flex-1 p-2.5 rounded-xl border transition-all text-center cursor-pointer ${
+                      className={`p-2.5 rounded-xl border transition-all text-center cursor-pointer ${
                         defaultReadingDirection === d.id
                           ? 'bg-rose-500/15 border-rose-500/50 text-rose-300 font-semibold'
                           : 'bg-zinc-950/70 border-zinc-800 text-zinc-400 hover:text-zinc-200'
@@ -986,16 +995,16 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               {/* Ajuste de Imagem */}
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-zinc-200 block">Ajuste de Imagem:</label>
-                <div className="flex items-center gap-2 text-xs">
+                <div className="grid grid-cols-3 gap-2 text-xs">
                   {[
-                    { id: 'width', label: 'Ajustar Largura' },
-                    { id: 'height', label: 'Ajustar Altura' },
+                    { id: 'width', label: 'Largura' },
+                    { id: 'height', label: 'Altura' },
                     { id: 'original', label: 'Original' }
                   ].map((f) => (
                     <button
                       key={f.id}
                       onClick={() => handleUpdatePreference('mr_reader_page_fit', f.id as PageFit, setDefaultPageFit, f.label)}
-                      className={`flex-1 p-2.5 rounded-xl border transition-all text-center cursor-pointer ${
+                      className={`p-2.5 rounded-xl border transition-all text-center cursor-pointer ${
                         defaultPageFit === f.id
                           ? 'bg-rose-500/15 border-rose-500/50 text-rose-300 font-semibold'
                           : 'bg-zinc-950/70 border-zinc-800 text-zinc-400 hover:text-zinc-200'
@@ -1015,15 +1024,10 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
                 <span>Idioma Preferido dos Capítulos:</span>
               </label>
               <p className="text-[11px] text-zinc-400">
-                Filtra automaticamente as listas de capítulos nos detalhes das obras e no leitor. Se uma obra não possuir capítulos no seu idioma preferido, todas as línguas serão exibidas como fallback.
+                Configuração individual salva para você: filtra automaticamente as buscas, detalhes das obras, leitor e lançamentos no idioma escolhido (cada pessoa decide o seu). Se uma obra não tiver capítulos no idioma escolhido, o app exibe outros idiomas disponíveis como fallback.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs pt-1">
-                {[
-                  { id: 'pt-br,en', label: 'PT-BR + Inglês', tag: 'Recomendado', desc: 'Prioriza português e mantém scans em inglês disponíveis' },
-                  { id: 'pt-br', label: 'Apenas Português', tag: 'PT-BR', desc: 'Filtra exclusivamente traduções em português brasileiro' },
-                  { id: 'en', label: 'Apenas Inglês', tag: 'EN', desc: 'Filtra apenas capítulos e scans em inglês' },
-                  { id: 'all', label: 'Todos os Idiomas', tag: 'Global', desc: 'Exibe capítulos em qualquer idioma disponível' }
-                ].map((l) => (
+                {LANGUAGE_OPTIONS.map((l) => (
                   <button
                     key={l.id}
                     onClick={() => handleUpdatePreference('mr_preferred_language', l.id, setPreferredLanguage, l.label)}
@@ -1203,7 +1207,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             )}
 
             {/* Backups & Portability Card */}
-            <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-6">
+            <div className="p-4 sm:p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-6">
               <div>
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <FolderDown className="h-5 w-5 text-rose-400" />
@@ -1266,7 +1270,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             </div>
 
             {/* Offline Storage Card */}
-            <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-4">
+            <div className="p-4 sm:p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-850">
                 <div className="space-y-1">
                   <h3 className="text-base font-bold text-white flex items-center gap-2">

@@ -88,18 +88,39 @@ export class ComickProvider implements IMangaSource {
     const hid: string = item.hid || item.slug || String(item.id);
     const title: string = item.title || item.slug || 'Sem Título';
 
-    // Alternative titles
-    const altTitles: string[] = [];
+    // Alternative titles (prioritize Latin/Romaji titles first for readable UI and cross-source matching)
+    const rawAltTitles: Array<{ title: string; isLatin: boolean; lang?: string }> = [];
+    const seenAlts = new Set<string>([title.toLowerCase()]);
+    const pushAlt = (raw: string, lang?: string) => {
+      const cleaned = raw?.trim();
+      if (!cleaned || seenAlts.has(cleaned.toLowerCase())) return;
+      seenAlts.add(cleaned.toLowerCase());
+      const isLatin = /^[a-zA-Z0-9\s\-:.,!?'"()&/]+$/.test(cleaned) || /[a-zA-Z]{4,}/.test(cleaned);
+      rawAltTitles.push({ title: cleaned, isLatin, lang });
+    };
     const titlesList = item.md_titles || details?.comic?.md_titles || [];
     if (Array.isArray(titlesList)) {
       for (const t of titlesList) {
-        if (typeof t === 'string' && !altTitles.includes(t)) {
-          altTitles.push(t);
-        } else if (t && typeof t.title === 'string' && !altTitles.includes(t.title)) {
-          altTitles.push(t.title);
+        if (typeof t === 'string') {
+          pushAlt(t);
+        } else if (t && typeof t.title === 'string') {
+          pushAlt(t.title, t.lang);
         }
       }
     }
+    if (typeof item.slug === 'string' && item.slug.includes('-')) {
+      const humanizedSlug = item.slug
+        .replace(/^\d+-/, '')
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, (c: string) => c.toUpperCase());
+      pushAlt(humanizedSlug, 'slug');
+    }
+    rawAltTitles.sort((a, b) => {
+      const aPri = a.lang === 'en' || a.lang === 'ja-ro' || a.lang === 'pt-br' ? 2 : a.isLatin ? 1 : 0;
+      const bPri = b.lang === 'en' || b.lang === 'ja-ro' || b.lang === 'pt-br' ? 2 : b.isLatin ? 1 : 0;
+      return bPri - aPri;
+    });
+    const altTitles: string[] = rawAltTitles.map(a => a.title);
 
     // Cover image
     let coverUrl = 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80';
@@ -328,6 +349,23 @@ export class ComickProvider implements IMangaSource {
     'vingança': 'revenge'
   };
 
+  private static readonly KNOWN_COMICK_TAG_SLUGS: Set<string> = new Set(
+    Object.values(ComickProvider.GENRE_ID_MAP).map(name =>
+      name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    )
+  );
+
+  private static resolveGenreSlug(rawGenre: string): string | undefined {
+    const lower = rawGenre.trim().toLowerCase();
+    if (!lower || lower === 'all' || lower === 'manga') return undefined;
+    if (ComickProvider.GENRE_MAP[lower]) return ComickProvider.GENRE_MAP[lower];
+    const slugified = lower.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (ComickProvider.KNOWN_COMICK_TAG_SLUGS.has(slugified)) {
+      return slugified;
+    }
+    return undefined;
+  }
+
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
       const limit = Math.min(options?.limit || 24, 60);
@@ -351,12 +389,12 @@ export class ComickProvider implements IMangaSource {
 
       const slugs = new Set<string>();
       if (options?.genre && options.genre !== 'all') {
-        const slug = ComickProvider.GENRE_MAP[options.genre.toLowerCase()];
+        const slug = ComickProvider.resolveGenreSlug(options.genre);
         if (slug) slugs.add(slug);
       }
       if (Array.isArray(options?.genres)) {
         for (const g of options.genres) {
-          const slug = ComickProvider.GENRE_MAP[g.toLowerCase()];
+          const slug = ComickProvider.resolveGenreSlug(g);
           if (slug) slugs.add(slug);
         }
       }
@@ -458,48 +496,77 @@ export class ComickProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     try {
-      const buildUrl = (lang: string, pageNum = 1) =>
-        `${this.baseUrl}/comic/${externalMangaId}/chapters?lang=${encodeURIComponent(lang)}&limit=100&page=${pageNum}&tachiyomi=true`;
+      const PAGE_LIMIT = 100;
+      const MAX_PAGES = 35; // up to 3,500 chapter entries per language
+
+      const buildUrl = (lang: string | undefined, pageNum = 1) =>
+        lang
+          ? `${this.baseUrl}/comic/${externalMangaId}/chapters?lang=${encodeURIComponent(lang)}&limit=${PAGE_LIMIT}&page=${pageNum}&tachiyomi=true`
+          : `${this.baseUrl}/comic/${externalMangaId}/chapters?limit=${PAGE_LIMIT}&page=${pageNum}&tachiyomi=true`;
+
+      const fetchAllPages = async (lang?: string): Promise<any[]> => {
+        const firstRes = await this.fetchWithTimeout(buildUrl(lang, 1));
+        const collected: any[] = Array.isArray(firstRes?.chapters) ? [...firstRes.chapters] : [];
+        const total = Number(firstRes?.total || 0);
+
+        if (collected.length < PAGE_LIMIT) {
+          return collected;
+        }
+
+        if (total > PAGE_LIMIT) {
+          const totalPages = Math.min(Math.ceil(total / PAGE_LIMIT), MAX_PAGES);
+          const remainingPages: number[] = [];
+          for (let p = 2; p <= totalPages; p++) {
+            remainingPages.push(p);
+          }
+
+          // Fetch in polite parallel batches of 5 pages to avoid rate-limiting
+          for (let i = 0; i < remainingPages.length; i += 5) {
+            const batch = remainingPages.slice(i, i + 5);
+            const results = await Promise.all(
+              batch.map(p => this.fetchWithTimeout(buildUrl(lang, p)).catch(() => ({ chapters: [] })))
+            );
+            let reachedEnd = false;
+            for (const r of results) {
+              if (Array.isArray(r?.chapters) && r.chapters.length > 0) {
+                collected.push(...r.chapters);
+                if (r.chapters.length < PAGE_LIMIT) reachedEnd = true;
+              } else {
+                reachedEnd = true;
+              }
+            }
+            if (reachedEnd) break;
+          }
+        } else {
+          // If total wasn't returned, walk forward until a short/empty page
+          for (let p = 2; p <= 15; p++) {
+            const nextRes = await this.fetchWithTimeout(buildUrl(lang, p)).catch(() => ({ chapters: [] }));
+            const nextBatch = Array.isArray(nextRes?.chapters) ? nextRes.chapters : [];
+            if (nextBatch.length === 0) break;
+            collected.push(...nextBatch);
+            if (nextBatch.length < PAGE_LIMIT) break;
+          }
+        }
+
+        return collected;
+      };
 
       let list: any[] = [];
 
       if (language) {
-        const res = await this.fetchWithTimeout(buildUrl(language, 1));
-        list = Array.isArray(res.chapters) ? res.chapters : [];
-        // Fetch next page if total > 100 to provide more chapters
-        if (res.total > 100 && list.length === 100) {
-          const resPage2 = await this.fetchWithTimeout(buildUrl(language, 2)).catch(() => ({ chapters: [] }));
-          if (Array.isArray(resPage2.chapters)) {
-            list.push(...resPage2.chapters);
-          }
-        }
+        list = await fetchAllPages(language);
       } else {
-        // Default: query pt-br and en preferred translations
-        const [resPt, resEn] = await Promise.all([
-          this.fetchWithTimeout(buildUrl('pt-br', 1)).catch(() => ({ chapters: [], total: 0 })),
-          this.fetchWithTimeout(buildUrl('en', 1)).catch(() => ({ chapters: [], total: 0 }))
+        // Default: query pt-br and en preferred translations with full pagination
+        const [ptList, enList] = await Promise.all([
+          fetchAllPages('pt-br').catch(() => []),
+          fetchAllPages('en').catch(() => [])
         ]);
 
-        const ptList = Array.isArray(resPt.chapters) ? resPt.chapters : [];
-        const enList = Array.isArray(resEn.chapters) ? resEn.chapters : [];
         list = [...ptList, ...enList];
-
-        // If English has more chapters (> 100), fetch page 2 to expand chapter coverage
-        if (resEn.total > 100 && enList.length === 100) {
-          const resEn2 = await this.fetchWithTimeout(buildUrl('en', 2)).catch(() => ({ chapters: [] }));
-          if (Array.isArray(resEn2.chapters)) {
-            list.push(...resEn2.chapters);
-          }
-        }
 
         // Fallback: if both are empty, query without language parameter to fetch any available language
         if (list.length === 0) {
-          const fallbackRes = await this.fetchWithTimeout(
-            `${this.baseUrl}/comic/${externalMangaId}/chapters?limit=100&page=1&tachiyomi=true`
-          ).catch(() => ({ chapters: [] }));
-          if (Array.isArray(fallbackRes.chapters) && fallbackRes.chapters.length > 0) {
-            list = fallbackRes.chapters;
-          }
+          list = await fetchAllPages(undefined).catch(() => []);
         }
       }
 
