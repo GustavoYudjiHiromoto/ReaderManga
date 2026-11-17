@@ -1,4 +1,17 @@
-import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../types/manga.js';
+import {
+  Manga,
+  Chapter,
+  MangaPage,
+  MangaSourceInfo,
+  DynamicExtensionManifest,
+  ExtensionRepo,
+  RelayMode,
+  RelayStatus,
+  CustomHtmlSelectors,
+  SiteDetectionResult,
+  RepoSyncSummary,
+  MirrorProbeCandidate
+} from '../types/manga.js';
 
 export interface SearchResponse {
   success: boolean;
@@ -87,6 +100,150 @@ export const MangaApi = {
     return json.data || [];
   },
 
+  async getSourceCatalog(
+    sourceId: string,
+    options?: {
+      mode?: 'popular' | 'latest';
+      page?: number;
+      limit?: number;
+      includeAdult?: boolean;
+      onlyAvailable?: boolean;
+      genre?: string;
+    }
+  ): Promise<{
+    sourceId: string;
+    mode: 'popular' | 'latest';
+    page: number;
+    total: number;
+    hasMore: boolean;
+    data: Manga[];
+  }> {
+    const params = new URLSearchParams();
+    params.set('mode', options?.mode === 'latest' ? 'latest' : 'popular');
+    if (options?.page) params.set('page', String(options.page));
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.includeAdult) params.set('includeAdult', 'true');
+    if (options?.onlyAvailable === false) params.set('onlyAvailable', 'false');
+    if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
+
+    const res = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/catalog?${params.toString()}`);
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => null);
+      throw new Error(errJson?.error || `Falha ao explorar catálogo de ${sourceId}`);
+    }
+    return await res.json();
+  },
+
+  async getExtensionRepos(): Promise<ExtensionRepo[]> {
+    const res = await fetch('/api/extensions/repos');
+    if (!res.ok) throw new Error('Falha ao carregar repositórios de extensões');
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async addExtensionRepo(url: string): Promise<ExtensionRepo> {
+    const res = await fetch('/api/extensions/repos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao adicionar repositório (${res.status})`);
+    }
+    return json.data;
+  },
+
+  async removeExtensionRepo(url: string): Promise<void> {
+    const res = await fetch(`/api/extensions/repos?url=${encodeURIComponent(url)}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Falha ao remover repositório');
+  },
+
+  async getInstalledExtensions(): Promise<DynamicExtensionManifest[]> {
+    const res = await fetch('/api/extensions/installed');
+    if (!res.ok) throw new Error('Falha ao listar extensões instaladas');
+    const json = await res.json();
+    return json.data || [];
+  },
+
+  async installExtension(manifest: Partial<DynamicExtensionManifest>): Promise<DynamicExtensionManifest> {
+    const res = await fetch('/api/extensions/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manifest })
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao instalar extensão (${res.status})`);
+    }
+    return json.data;
+  },
+
+  async updateExtensionMirror(id: string, baseUrl: string | null): Promise<DynamicExtensionManifest> {
+    const res = await fetch(`/api/extensions/${encodeURIComponent(id)}/mirror`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl })
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao atualizar espelho (${res.status})`);
+    }
+    return json.data;
+  },
+
+  async uninstallExtension(id: string): Promise<void> {
+    const res = await fetch(`/api/extensions/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao desinstalar extensão (${res.status})`);
+    }
+  },
+
+  async detectExtensionSite(payload: {
+    url: string;
+    query?: string;
+    template?: 'madara' | 'themesia' | 'custom_html';
+    selectors?: CustomHtmlSelectors;
+  }): Promise<SiteDetectionResult> {
+    const res = await fetch('/api/extensions/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao analisar site (${res.status})`);
+    }
+    return json.data;
+  },
+
+  async syncAllExtensionRepos(): Promise<RepoSyncSummary> {
+    const res = await fetch('/api/extensions/repos/sync-all', { method: 'POST' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao sincronizar repositórios (${res.status})`);
+    }
+    return json.data;
+  },
+
+  async probeExtensionMirrors(id: string, baseUrl?: string): Promise<MirrorProbeCandidate[]> {
+    const res = await fetch(`/api/extensions/${encodeURIComponent(id)}/probe-mirrors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl })
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || `Falha ao testar espelhos (${res.status})`);
+    }
+    return json.data || [];
+  },
+
   async getFeatured(options?: { sources?: string[] }): Promise<Manga[]> {
     const params = new URLSearchParams();
     if (options?.sources && options.sources.length > 0) {
@@ -148,11 +305,26 @@ export const MangaApi = {
     return json.data;
   },
 
-  async getChapters(internalMangaId: string, options?: { lang?: string; order?: 'asc' | 'desc'; deduplicate?: boolean }): Promise<Chapter[]> {
+  async getChapters(
+    internalMangaId: string,
+    options?: {
+      lang?: string;
+      order?: 'asc' | 'desc';
+      deduplicate?: boolean;
+      title?: string;
+      altTitles?: string[];
+      forceFederate?: boolean;
+    }
+  ): Promise<Chapter[]> {
     const params = new URLSearchParams();
     if (options?.lang) params.set('lang', options.lang);
     if (options?.order) params.set('order', options.order);
     if (options?.deduplicate !== undefined) params.set('deduplicate', String(options.deduplicate));
+    if (options?.title) params.set('title', options.title);
+    if (options?.altTitles && options.altTitles.length > 0) {
+      params.set('altTitles', options.altTitles.slice(0, 6).join('||'));
+    }
+    if (options?.forceFederate) params.set('forceFederate', 'true');
 
     const res = await fetch(`/api/manga/${encodeURIComponent(internalMangaId)}/chapters?${params.toString()}`);
     if (!res.ok) {
@@ -243,6 +415,76 @@ export const MangaApi = {
     });
     if (!res.ok) throw new Error('Falha ao gerar recomendações personalizadas');
     const json = await res.json();
+    return json.data;
+  },
+
+  async resolveLibraryTitles(
+    items: Array<{ mangaId: string; title: string }>
+  ): Promise<Record<string, { altTitles: string[]; authors?: string[] }>> {
+    if (!items || items.length === 0) return {};
+    const res = await fetch('/api/library/resolve-titles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    if (!res.ok) throw new Error('Falha ao resolver títulos alternativos da biblioteca');
+    const json = await res.json();
+    return json.data || {};
+  },
+
+  async getRelayStatus(): Promise<RelayStatus> {
+    const res = await fetch('/api/relay/status');
+    if (!res.ok) throw new Error('Falha ao consultar status da Ponte Residencial');
+    const json = await res.json();
+    return json.data;
+  },
+
+  async updateRelayConfig(patch: {
+    mode?: RelayMode;
+    customProxyUrl?: string | null;
+  }): Promise<RelayStatus> {
+    const res = await fetch('/api/relay/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || 'Falha ao atualizar configuração da Ponte Residencial');
+    }
+    return json.data;
+  },
+
+  async rotateRelayToken(): Promise<RelayStatus> {
+    const res = await fetch('/api/relay/token/rotate', { method: 'POST' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || 'Falha ao rotacionar token');
+    }
+    return json.data;
+  },
+
+  async disconnectRelay(): Promise<RelayStatus> {
+    const res = await fetch('/api/relay/disconnect', { method: 'POST' });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || 'Falha ao desconectar ponte');
+    }
+    return json.data;
+  },
+
+  async testRelay(
+    url?: string
+  ): Promise<{ ok: boolean; status: number; latencyMs: number; bytes: number }> {
+    const res = await fetch('/api/relay/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || 'Falha no teste da Ponte Residencial');
+    }
     return json.data;
   }
 };

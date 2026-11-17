@@ -31,11 +31,13 @@ import {
   MoreHorizontal,
   ChevronDown,
   CheckSquare,
-  Square
+  Square,
+  ArrowRightLeft,
+  Layers
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { TrackersModal } from '../components/TrackersModal.js';
-import { FavoriteManga, Manga, ReadingProgress, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
+import { FavoriteManga, Manga, ReadingProgress, LibraryCategory, MangaUpdateInfo, MangaSourceInfo } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { MangaApi } from '../services/api.js';
@@ -46,6 +48,13 @@ import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
 import { parseTachibk } from '../services/tachibkService.js';
 import { BackupProgressModal, BackupProgressState } from '../components/BackupProgressModal.js';
+import { BatchMigrationModal, extractFavoriteSourceId } from '../components/BatchMigrationModal.js';
+import {
+  DuplicateFavoritesModal,
+  detectDuplicateFavoriteGroups,
+  findSuspectedCandidateIds
+} from '../components/DuplicateFavoritesModal.js';
+import { ExtensionService, FALLBACK_SOURCES_META } from '../services/extensionService.js';
 
 interface FavoritesPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -110,6 +119,10 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const [showBatchCollectionModal, setShowBatchCollectionModal] = useState(false);
   const [batchCollectionTarget, setBatchCollectionTarget] = useState('');
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
+  const [showBatchMigrationModal, setShowBatchMigrationModal] = useState(false);
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
+  const [batchMigrationInitialIds, setBatchMigrationInitialIds] = useState<string[] | undefined>(undefined);
+  const [sourcesList, setSourcesList] = useState<MangaSourceInfo[]>(FALLBACK_SOURCES_META);
 
   // Score & Notes Modal state
   const [editingScoreManga, setEditingScoreManga] = useState<FavoriteManga | null>(null);
@@ -187,12 +200,59 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
     });
 
+    let active = true;
+    ExtensionService.getSourcesMeta().then(list => {
+      if (active && Array.isArray(list) && list.length > 0) {
+        setSourcesList(list);
+      }
+    });
+    const unsubscribeExtensions = ExtensionService.subscribe(() => {
+      ExtensionService.getSourcesMeta().then(list => {
+        if (active && Array.isArray(list) && list.length > 0) {
+          setSourcesList(list);
+        }
+      });
+    });
+
     return () => {
+      active = false;
       unsubscribeHistory();
       unsubscribeUpdates();
       unsubscribeOffline();
+      unsubscribeExtensions();
     };
   }, []);
+
+  // Quietly resolve missing altTitles once per mangaId in session so cross-language duplicates
+  // (including zero-shared-word EN/JP pairs and Firestore-synced items) are surfaced automatically.
+  const attemptedResolveIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (favorites.length < 2) return;
+    const missing = favorites.filter(
+      f => (!f.altTitles || f.altTitles.length === 0) && !attemptedResolveIdsRef.current.has(f.mangaId)
+    );
+    if (missing.length === 0) return;
+
+    const batch = missing.slice(0, 30);
+    batch.forEach(f => attemptedResolveIdsRef.current.add(f.mangaId));
+
+    let cancelled = false;
+    MangaApi.resolveLibraryTitles(batch.map(f => ({ mangaId: f.mangaId, title: f.title })))
+      .then(resolved => {
+        if (cancelled) return;
+        const changed = HistoryService.enrichFavoritesMetadata(resolved);
+        if (changed) {
+          setFavorites(HistoryService.getFavorites());
+        }
+      })
+      .catch(() => {
+        // Non-critical background enrichment
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favorites]);
 
   const handleExport = () => {
     HistoryService.downloadBackupFile();
@@ -542,10 +602,12 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
   // Convert FavoriteManga to lightweight Manga for MangaCard rendering without API calls
   const mapFavoriteToManga = (fav: FavoriteManga): Manga => {
+    const inferredSourceId = extractFavoriteSourceId(fav);
+    const matchedSource = sourcesList.find(s => s.id === inferredSourceId);
     return {
       id: fav.mangaId,
       title: fav.title,
-      altTitles: [],
+      altTitles: fav.altTitles || [],
       coverUrl: fav.coverUrl,
       synopsis: '',
       authors: fav.authors && fav.authors.length > 0 ? fav.authors : ['Coleção'],
@@ -555,19 +617,9 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       publicationInfo: {},
       sources: [
         {
-          sourceId: fav.sourceId || (
-            fav.mangaId.includes('mangadex') ? 'mangadex' :
-            fav.mangaId.includes('comick') ? 'comick' :
-            fav.mangaId.includes('weebcentral') ? 'weebcentral' :
-            fav.mangaId.includes('mangapill') ? 'mangapill' : 'unknown'
-          ),
+          sourceId: inferredSourceId,
           externalId: '',
-          sourceName: fav.sourceName || (
-            fav.mangaId.includes('mangadex') ? 'MangaDex' :
-            fav.mangaId.includes('comick') ? 'Comick' :
-            fav.mangaId.includes('weebcentral') ? 'WeebCentral' :
-            fav.mangaId.includes('mangapill') ? 'MangaPill' : 'Manga'
-          )
+          sourceName: fav.sourceName || matchedSource?.name || (inferredSourceId !== 'unknown' ? inferredSourceId : 'Manga')
         }
       ],
       rating: fav.rating,
@@ -606,12 +658,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       }
       // Source filter
       if (selectedSource !== 'all') {
-        const source = fav.sourceId || (
-          fav.mangaId.includes('mangadex') ? 'mangadex' :
-          fav.mangaId.includes('comick') ? 'comick' :
-          fav.mangaId.includes('weebcentral') ? 'weebcentral' :
-          fav.mangaId.includes('mangapill') ? 'mangapill' : ''
-        );
+        const source = extractFavoriteSourceId(fav);
         if (source !== selectedSource) return false;
       }
       // Unread only filter
@@ -634,6 +681,19 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     });
 
   const unreadCount = Object.values(updatesMap).filter(u => u.hasNew).length;
+
+  const { duplicateGroupsCount, hasSuspectedDuplicates } = React.useMemo(() => {
+    if (favorites.length < 2) {
+      return { duplicateGroupsCount: 0, hasSuspectedDuplicates: false };
+    }
+    const confirmed = detectDuplicateFavoriteGroups(favorites);
+    const groupedIds = new Set(confirmed.flatMap(g => g.items.map(i => i.mangaId)));
+    const suspects = findSuspectedCandidateIds(favorites, groupedIds);
+    return {
+      duplicateGroupsCount: confirmed.length,
+      hasSuspectedDuplicates: confirmed.length > 0 || suspects.length >= 2
+    };
+  }, [favorites]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
@@ -690,6 +750,27 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                 {offlineChaptersCount > 0 && (
                   <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono tabular-nums">
                     {offlineChaptersCount}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {/* 2b. Quick Duplicate Check / Merge Button */}
+            {favorites.length >= 2 && (
+              <button
+                onClick={() => setShowDuplicatesModal(true)}
+                title="Detectar e unificar obras duplicadas salvas em fontes diferentes"
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-medium transition-colors cursor-pointer ${
+                  hasSuspectedDuplicates
+                    ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/40 text-amber-200'
+                    : 'bg-zinc-900/90 hover:bg-zinc-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Duplicatas</span>
+                {duplicateGroupsCount > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-amber-500/30 text-amber-200 text-[10px] font-mono tabular-nums">
+                    {duplicateGroupsCount}
                   </span>
                 )}
               </button>
@@ -838,6 +919,46 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                           <div className="text-[10px] text-zinc-500">Mihon (.tachibk) ou MangaReader (.json)</div>
                         </div>
                       </div>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        setBatchMigrationInitialIds(undefined);
+                        setShowBatchMigrationModal(true);
+                      }}
+                      disabled={favorites.length === 0}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-rose-300 transition-colors cursor-pointer text-left disabled:opacity-40"
+                    >
+                      <div className="flex items-center gap-2">
+                        <ArrowRightLeft className="h-3.5 w-3.5 text-rose-400" />
+                        <div>
+                          <div className="font-medium text-zinc-200">Migração em Lote</div>
+                          <div className="text-[10px] text-zinc-500">Trocar fonte de várias obras</div>
+                        </div>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowLibraryMenu(false);
+                        setShowDuplicatesModal(true);
+                      }}
+                      disabled={favorites.length < 2}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-amber-300 transition-colors cursor-pointer text-left disabled:opacity-40"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Layers className="h-3.5 w-3.5 text-amber-400" />
+                        <div>
+                          <div className="font-medium text-zinc-200">Mesclar Duplicatas</div>
+                          <div className="text-[10px] text-zinc-500">Unificar mesma obra entre fontes</div>
+                        </div>
+                      </div>
+                      {duplicateGroupsCount > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono">
+                          {duplicateGroupsCount}
+                        </span>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -989,6 +1110,27 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             )}
           </div>
         </div>
+
+        {/* Actionable Duplicate Detection Notice (only when local duplicates/suspects exist) */}
+        {hasSuspectedDuplicates && (
+          <div className="mb-5 p-3.5 rounded-xl bg-amber-950/25 border border-amber-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 text-amber-200">
+              <Layers className="h-4 w-4 text-amber-400 shrink-0" />
+              <span>
+                {duplicateGroupsCount > 0
+                  ? `${duplicateGroupsCount} ${duplicateGroupsCount === 1 ? 'obra duplicada encontrada' : 'obras duplicadas encontradas'} em fontes diferentes na sua biblioteca.`
+                  : 'Possíveis obras duplicadas em fontes diferentes detectadas na sua biblioteca.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowDuplicatesModal(true)}
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-semibold transition-colors cursor-pointer shrink-0 self-end sm:self-auto"
+            >
+              Revisar e Mesclar
+            </button>
+          </div>
+        )}
 
         {/* Category Navigation Tabs (AniList / MAL Style) */}
         {favorites.length > 0 && (
@@ -1217,25 +1359,35 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-zinc-800/60 text-xs">
               <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0 sm:flex-wrap">
                 <span className="text-[11px] text-zinc-500 font-medium mr-1 shrink-0">Fonte:</span>
-                {[
-                  { id: 'all', label: 'Todas' },
-                  { id: 'mangadex', label: 'MangaDex' },
-                  { id: 'comick', label: 'Comick' },
-                  { id: 'weebcentral', label: 'WeebCentral' },
-                  { id: 'mangapill', label: 'MangaPill' }
-                ].map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => setSelectedSource(s.id)}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
-                      selectedSource === s.id
-                        ? 'bg-rose-600 text-white'
-                        : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
+                {(() => {
+                  const sourceOptionsMap = new Map<string, string>();
+                  sourcesList.forEach(s => {
+                    sourceOptionsMap.set(s.id, s.name.replace(/\s*\(Ao Vivo\)/i, ''));
+                  });
+                  favorites.forEach(fav => {
+                    const sid = extractFavoriteSourceId(fav);
+                    if (sid !== 'unknown' && !sourceOptionsMap.has(sid)) {
+                      sourceOptionsMap.set(sid, fav.sourceName || sid);
+                    }
+                  });
+                  const dynamicSources = [
+                    { id: 'all', label: 'Todas' },
+                    ...Array.from(sourceOptionsMap.entries()).map(([id, label]) => ({ id, label }))
+                  ];
+                  return dynamicSources.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setSelectedSource(s.id)}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                        selectedSource === s.id
+                          ? 'bg-rose-600 text-white'
+                          : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ));
+                })()}
               </div>
 
               {/* Unread toggle pill */}
@@ -1860,18 +2012,32 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               <button
                 type="button"
                 onClick={() => setShowBatchCollectionModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white transition-colors cursor-pointer whitespace-nowrap shrink-0"
                 title="Adicionar obras selecionadas a uma pasta/coleção personalizada"
               >
                 <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
                 <span>Adicionar a Pasta</span>
               </button>
 
+              {/* Batch Source Migration */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBatchMigrationInitialIds(selectedMangaIds);
+                  setShowBatchMigrationModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                title="Migrar obras selecionadas para outra fonte preservando capítulos lidos"
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5 text-amber-400" />
+                <span>Migrar Fonte</span>
+              </button>
+
               {/* Batch Delete from Favorites */}
               <button
                 type="button"
                 onClick={() => setShowBatchDeleteConfirm(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-xs font-semibold text-rose-300 hover:text-white transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-xs font-semibold text-rose-300 hover:text-white transition-colors cursor-pointer whitespace-nowrap shrink-0"
                 title="Remover obras selecionadas da biblioteca de favoritos"
               >
                 <Trash2 className="h-3.5 w-3.5 text-rose-400" />
@@ -2072,6 +2238,38 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         <BackupProgressModal
           progress={backupProgress}
           onClose={() => setBackupProgress(prev => ({ ...prev, isOpen: false }))}
+        />
+
+        {/* Modal: Batch Source Migration */}
+        <BatchMigrationModal
+          isOpen={showBatchMigrationModal}
+          onClose={() => setShowBatchMigrationModal(false)}
+          allFavorites={favorites}
+          initialSelectedIds={batchMigrationInitialIds}
+          onCompleted={({ migratedCount }) => {
+            setFavorites(HistoryService.getFavorites());
+            setSelectedMangaIds([]);
+            setNotification({
+              type: 'success',
+              message: `${migratedCount} ${migratedCount === 1 ? 'obra migrada' : 'obras migradas'} para a nova fonte preservando seu progresso!`
+            });
+            setTimeout(() => setNotification(null), 5000);
+          }}
+        />
+
+        {/* Modal: Detect & Merge Cross-Source Duplicate Favorites */}
+        <DuplicateFavoritesModal
+          isOpen={showDuplicatesModal}
+          onClose={() => setShowDuplicatesModal(false)}
+          favorites={favorites}
+          onMerged={({ mergedGroups, removedEntries }) => {
+            setFavorites(HistoryService.getFavorites());
+            setNotification({
+              type: 'success',
+              message: `${mergedGroups} ${mergedGroups === 1 ? 'obra duplicada unificada' : 'obras duplicadas unificadas'} (${removedEntries} ${removedEntries === 1 ? 'entrada removida' : 'entradas removidas'} preservando progresso)!`
+            });
+            setTimeout(() => setNotification(null), 5000);
+          }}
         />
       </div>
     </div>

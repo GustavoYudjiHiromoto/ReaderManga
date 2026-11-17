@@ -38,7 +38,7 @@ async function runDeterministicTests() {
       const { apiRouter } = await import('../api/routes.js');
       const { trackerRouter } = await import('../trackers/TrackerRouter.js');
       const app = express();
-      app.use(express.json());
+      app.use(express.json({ limit: '16mb' }));
       app.use('/api/trackers', trackerRouter);
       app.use('/api', apiRouter);
       await new Promise((resolve) => {
@@ -750,6 +750,1141 @@ async function runDeterministicTests() {
     const simMatchJson = await simMatchRes.json();
     assert(simMatchJson.success === true && Array.isArray(simMatchJson.data?.matches), 'Resposta de similaridade com foco possui matches válidos');
     assert(Array.isArray(simMatchJson.data?.detectedTags), 'Resposta inclui detectedTags para renderizar chips clicáveis na interface');
+
+    // -------------------------------------------------------------------------
+    // 13. MOTOR DE EXTENSÕES DINÂMICAS, REPOSITÓRIOS JSON & ESPELHOS (MIHON FASE 1)
+    // -------------------------------------------------------------------------
+    console.log('\n[13/13] Testando Extensões Dinâmicas (Madara / Themesia / Custom HTML), Repos e Espelhos...');
+
+    const {
+      encodeDynamicId,
+      decodeDynamicId,
+      isCloudflareBlocked,
+      parseMadaraSearchHtml,
+      parseMadaraDetailsHtml,
+      parseMadaraChaptersHtml,
+      parseMadaraPagesHtml,
+      parseThemesiaSearchHtml,
+      parseThemesiaChaptersHtml,
+      parseThemesiaPagesHtml,
+      parseCustomSearchHtml,
+      parseCustomPagesHtml
+    } = await import('../sources/DynamicTemplateProvider.js');
+    const {
+      parseRepositoryPayload,
+      sanitizeExtensionId
+    } = await import('../sources/ExtensionRepositoryService.js');
+
+    // 13.1 Round-trip lossless de IDs com barras, underscores e query params
+    const rawSlugWithSpecials = '/manga/solo_leveling_br/cap_01/?style=list&v=2';
+    const encodedToken = encodeDynamicId(rawSlugWithSpecials);
+    assert(!encodedToken.includes('_'), 'encodeDynamicId gera token livre de underscores para parser canônico');
+    assert(decodeDynamicId(encodedToken) === rawSlugWithSpecials, 'decodeDynamicId restaura slug original com 100% de fidelidade');
+
+    const dynParsedManga = registry.parseInternalMangaId(`mr_ext-teste_${encodedToken}`);
+    assert(dynParsedManga.sourceId === 'ext-teste', 'parseInternalMangaId extrai sourceId dinâmico corretamente');
+    assert(decodeDynamicId(dynParsedManga.externalId) === rawSlugWithSpecials, 'parseInternalMangaId preserva token dinâmico completo');
+
+    const chToken = encodeDynamicId('/manga/solo_leveling/cap_10/');
+    const dynParsedChapter = registry.parseInternalChapterId(`ch_ext-teste_${encodedToken}_${chToken}`);
+    assert(dynParsedChapter.sourceId === 'ext-teste', 'parseInternalChapterId extrai sourceId dinâmico');
+    assert(decodeDynamicId(dynParsedChapter.externalMangaId) === rawSlugWithSpecials, 'parseInternalChapterId extrai externalMangaId dinâmico');
+    assert(decodeDynamicId(dynParsedChapter.externalChapterId) === '/manga/solo_leveling/cap_10/', 'parseInternalChapterId extrai externalChapterId dinâmico');
+
+    // 13.2 Parser WP-Madara
+    const madaraCtx = { sourceId: 'ext-madara', sourceName: 'Madara Test', baseUrl: 'https://scan.example.com', lang: 'pt-br' };
+    const madaraSearchHtml = `
+      <div class="c-tabs-item__content">
+        <div class="tab-thumb"><a href="https://scan.example.com/manga/obra_teste/"><img data-src="https://cdn.example.com/cover.jpg" /></a></div>
+        <div class="post-title"><h3><a href="https://scan.example.com/manga/obra_teste/">Obra Madara Teste</a></h3></div>
+        <div class="latest-chap"><span class="chapter"><a href="#">Capítulo 42</a></span></div>
+      </div>
+    `;
+    const madaraResults = parseMadaraSearchHtml(madaraSearchHtml, madaraCtx);
+    assert(madaraResults.length === 1 && madaraResults[0].title === 'Obra Madara Teste', 'parseMadaraSearchHtml extrai obra e título');
+    assert(madaraResults[0].coverUrl.includes('/api/proxy/image?url=') && madaraResults[0].coverUrl.includes('referer='), 'parseMadaraSearchHtml aplica proxy de imagem com referer dinâmico');
+    assert(madaraResults[0].latestChapter === '42', 'parseMadaraSearchHtml extrai número do último capítulo');
+
+    const madaraDetailHtml = `
+      <div class="post-title"><h1>Obra Madara Teste</h1></div>
+      <div class="summary_image"><img src="/wp-content/uploads/capa.jpg" /></div>
+      <div class="summary__content"><p>Sinopse completa da obra.</p></div>
+      <div class="genres-content"><a>Ação</a><a>Fantasia</a></div>
+      <div class="author-content"><a>Autor X</a></div>
+      <div class="post-status"><div class="summary-content">Concluído</div></div>
+    `;
+    const madaraDetails = parseMadaraDetailsHtml(madaraDetailHtml, 'https://scan.example.com/manga/obra_teste/', encodeDynamicId('/manga/obra_teste/'), madaraCtx);
+    assert(madaraDetails?.status === 'completed', 'parseMadaraDetailsHtml normaliza status Concluído para completed');
+    assert(madaraDetails?.genres.includes('Ação') && madaraDetails?.authors.includes('Autor X'), 'parseMadaraDetailsHtml extrai gêneros e autores');
+
+    const madaraChaptersHtml = `<ul><li class="wp-manga-chapter"><a href="/manga/obra_teste/cap-12-5/">Capítulo 12.5</a><span class="chapter-release-date">Hoje</span></li></ul>`;
+    const madaraChs = parseMadaraChaptersHtml(madaraChaptersHtml, encodeDynamicId('/manga/obra_teste/'), madaraCtx);
+    assert(madaraChs.length === 1 && madaraChs[0].chapterNumber === '12.5', 'parseMadaraChaptersHtml extrai capítulo decimal 12.5');
+
+    const madaraPagesHtml = `<div class="reading-content"><img data-lazy-src="/imgs/p1.webp" /><img data-src="https://cdn.example.com/imgs/p2.jpg" /></div>`;
+    const madaraPages = parseMadaraPagesHtml(madaraPagesHtml, madaraCtx, 'https://scan.example.com/manga/obra_teste/cap-12-5/');
+    assert(madaraPages.length === 2 && madaraPages[0].pageNumber === 1, 'parseMadaraPagesHtml extrai páginas com lazy-loading (data-lazy-src / data-src)');
+
+    // 13.3 Parser MangaThemesia (inclui ts_reader.run JSON e HTML fallback)
+    const themesiaCtx = { sourceId: 'ext-themesia', sourceName: 'Themesia Test', baseUrl: 'https://themesia.example.com', lang: 'en' };
+    const themesiaSearchHtml = `<div class="listupd"><div class="bs"><div class="bsx"><a href="/manga/knight-king/" title="Knight King"><div class="tt">Knight King</div><img src="/thumb.jpg" /></a></div></div></div>`;
+    const themesiaRes = parseThemesiaSearchHtml(themesiaSearchHtml, themesiaCtx);
+    assert(themesiaRes.length === 1 && themesiaRes[0].title === 'Knight King', 'parseThemesiaSearchHtml extrai obra do layout Themesia');
+
+    const themesiaChHtml = `<div id="chapterlist"><ul><li><a href="/knight-king-chapter-7/"><span class="chapternum">Chapter 7</span><span class="chapterdate">2025</span></a></li></ul></div>`;
+    const themesiaChs = parseThemesiaChaptersHtml(themesiaChHtml, encodeDynamicId('/manga/knight-king/'), themesiaCtx);
+    assert(themesiaChs.length === 1 && themesiaChs[0].chapterNumber === '7', 'parseThemesiaChaptersHtml extrai capítulo');
+
+    const themesiaTsScriptHtml = `<script>ts_reader.run({"post_id":10,"sources":[{"source":"CDN","images":["https://img.example.com/1.jpg","https://img.example.com/2.jpg"]}]});</script>`;
+    const themesiaPages = parseThemesiaPagesHtml(themesiaTsScriptHtml, themesiaCtx, 'https://themesia.example.com/knight-king-chapter-7/');
+    assert(themesiaPages.length === 2 && decodeURIComponent(themesiaPages[1].imageUrl).includes('https://img.example.com/2.jpg'), 'parseThemesiaPagesHtml extrai array images de ts_reader.run(...)');
+
+    // 13.4 Parser Custom HTML
+    const customCtx = { sourceId: 'ext-custom', sourceName: 'Custom Test', baseUrl: 'https://custom.example.com', lang: 'pt-br' };
+    const customSelectors = { searchItem: '.card', title: '.name', link: 'a.go', cover: 'img', chapterItem: '.ch a', pageImg: '.pages img' };
+    const customSearch = parseCustomSearchHtml(`<div class="card"><a class="go" href="/obra/1"><span class="name">Custom Manga</span><img src="/c.jpg"/></a></div>`, customSelectors, customCtx);
+    const customPages = parseCustomPagesHtml(`<div class="pages"><img data-src="/p1.png" /></div>`, customSelectors, customCtx, 'https://custom.example.com/ch/1');
+    assert(customSearch.length === 1 && customPages.length === 1, 'Parser custom_html extrai busca e páginas via seletores CSS declarativos');
+
+    // 13.5 Detecção de Cloudflare e Parsing de Repositório JSON
+    assert(isCloudflareBlocked(403, '<html><title>Just a moment...</title></html>') === true, 'Detecta desafio Cloudflare em resposta 403');
+    assert(isCloudflareBlocked(200, '<html><body>Normal page</body></html>') === false, 'Não marca resposta normal HTTP 200 como Cloudflare');
+    assert(!sanitizeExtensionId('minha_ext_br').includes('_'), 'sanitizeExtensionId remove underscores do ID de extensão');
+
+    const parsedRepo = parseRepositoryPayload({
+      name: 'Repo Comunidade',
+      extensions: [
+        { id: 'scan-alpha', name: 'Scan Alpha', baseUrl: 'https://alpha.example.com/', template: 'madara', lang: 'pt-br', version: '1.2.0' }
+      ]
+    }, 'https://repo.example.com/repo.json');
+    assert(parsedRepo.name === 'Repo Comunidade' && parsedRepo.extensions.length === 1, 'parseRepositoryPayload normaliza repositório JSON válido');
+
+    let apkRepoRejected = false;
+    try {
+      parseRepositoryPayload([{ name: 'Tachiyomi: Scan', pkg: 'eu.kanade.tachiyomi.extension.pt.scan', apk: 'tachiyomi-pt.scan-v1.4.apk', sources: [{ name: 'Scan', lang: 'pt-BR', id: '123', baseUrl: 'https://scan.com' }] }], 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json');
+    } catch (e) {
+      apkRepoRejected = e.message.includes('APK');
+    }
+    assert(apkRepoRejected, 'parseRepositoryPayload diagnostica claramente repositórios APK Android incompatíveis');
+
+    // 13.6 Ciclo HTTP Completo: Instalar -> Invalidar Cache -> Editar Espelho -> Proteção Nativa -> Desinstalar
+    const installRes = await fetch(`${BASE_URL}/api/extensions/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifest: {
+          id: 'ext-ci-demo',
+          name: 'CI Demo Scan',
+          baseUrl: 'https://demo1.example.com',
+          template: 'madara',
+          lang: 'pt-br',
+          version: '1.0.0'
+        }
+      })
+    });
+    assert(installRes.status === 200, 'POST /api/extensions/install instala extensão dinâmica (HTTP 200)');
+
+    const afterInstallSources = await (await fetch(`${BASE_URL}/api/sources`)).json();
+    const installedSourceInfo = afterInstallSources.data.find(s => s.id === 'ext-ci-demo');
+    assert(afterInstallSources.data.length === 7 && !!installedSourceInfo, 'GET /api/sources invalida cache e reflete nova extensão dinâmica imediatamente');
+    assert(installedSourceInfo?.supportsMirrorEdit === true && installedSourceInfo?.baseUrl === 'https://demo1.example.com', 'Extensão instalada expõe baseUrl e suporte a edição de espelho');
+
+    const mirrorRes = await fetch(`${BASE_URL}/api/extensions/ext-ci-demo/mirror`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl: 'https://demo2.example.org/' })
+    });
+    assert(mirrorRes.status === 200, 'PATCH /api/extensions/:id/mirror atualiza espelho (HTTP 200)');
+    const mirrorJson = await mirrorRes.json();
+    assert(mirrorJson.data?.baseUrl === 'https://demo2.example.org', 'Espelho atualizado e normalizado sem barra final');
+
+    const afterMirrorSources = await (await fetch(`${BASE_URL}/api/sources`)).json();
+    assert(afterMirrorSources.data.find(s => s.id === 'ext-ci-demo')?.baseUrl === 'https://demo2.example.org', 'GET /api/sources reflete novo espelho após PATCH');
+
+    const protectNativeRes = await fetch(`${BASE_URL}/api/extensions/mangadex`, { method: 'DELETE' });
+    assert(protectNativeRes.status === 400, 'DELETE /api/extensions/mangadex impede desinstalação de provedor nativo');
+
+    const uninstallRes = await fetch(`${BASE_URL}/api/extensions/ext-ci-demo`, { method: 'DELETE' });
+    assert(uninstallRes.status === 200, 'DELETE /api/extensions/:id desinstala extensão dinâmica (HTTP 200)');
+
+    const afterUninstallSources = await (await fetch(`${BASE_URL}/api/sources`)).json();
+    assert(afterUninstallSources.data.length === 6 && !afterUninstallSources.data.some(s => s.id === 'ext-ci-demo'), 'GET /api/sources retorna às 6 fontes nativas após desinstalação');
+
+    // -------------------------------------------------------------------------
+    // 14. BROWSE SOURCE (CATÁLOGO POR FONTE) & FAILOVER DINÂMICO (MIHON FASE 2)
+    // -------------------------------------------------------------------------
+    console.log('\n[14/14] Testando Browse Source (/catalog) e Inclusão Dinâmica no Failover...');
+
+    const { DynamicTemplateProvider } = await import('../sources/DynamicTemplateProvider.js');
+
+    // 14.1 Failover order inclui extensões dinâmicas após APIs nativas rápidas e exclui origem
+    const failoverDynamic = new DynamicTemplateProvider({
+      id: 'ext-ci-failover',
+      name: 'CI Failover Scan',
+      baseUrl: 'https://failover.invalid.example',
+      template: 'madara',
+      lang: 'pt-br',
+      version: '1.0.0'
+    });
+    registry.registerSource(failoverDynamic);
+
+    const chFailoverOrder = registry.getFailoverOrder('mangadex', 'chapters');
+    const pgFailoverOrder = registry.getFailoverOrder('mangadex', 'pages');
+    assert(!chFailoverOrder.includes('mangadex'), 'getFailoverOrder(chapters) exclui a fonte primária com falha');
+    assert(chFailoverOrder.includes('ext-ci-failover'), 'getFailoverOrder(chapters) inclui extensão dinâmica instalada');
+    assert(
+      chFailoverOrder.indexOf('comick') < chFailoverOrder.indexOf('ext-ci-failover'),
+      'getFailoverOrder(chapters) prioriza APIs nativas rápidas antes de scrapers dinâmicos'
+    );
+    assert(pgFailoverOrder.includes('ext-ci-failover') && !pgFailoverOrder.includes('mangadex'), 'getFailoverOrder(pages) inclui extensão dinâmica instalada');
+    registry.unregisterSource('ext-ci-failover');
+    assert(!registry.getFailoverOrder('mangadex', 'chapters').includes('ext-ci-failover'), 'unregisterSource remove extensão dinâmica do failover');
+
+    // 14.2 Endpoint HTTP GET /api/sources/:id/catalog (popular, latest e 404)
+    const catPopRes = await fetch(`${BASE_URL}/api/sources/comick/catalog?mode=popular&limit=5`);
+    assert(catPopRes.status === 200, 'GET /api/sources/comick/catalog?mode=popular retorna HTTP 200');
+    const catPopJson = await catPopRes.json();
+    assert(
+      catPopJson.success === true && catPopJson.sourceId === 'comick' && catPopJson.mode === 'popular' && Array.isArray(catPopJson.data),
+      'Catálogo popular retorna contrato esperado (success, sourceId, mode, data[])'
+    );
+
+    const catLatestRes = await fetch(`${BASE_URL}/api/sources/comick/catalog?mode=latest&limit=5`);
+    assert(catLatestRes.status === 200, 'GET /api/sources/comick/catalog?mode=latest retorna HTTP 200');
+    const catLatestJson = await catLatestRes.json();
+    assert(
+      catLatestJson.success === true && catLatestJson.sourceId === 'comick' && catLatestJson.mode === 'latest' && Array.isArray(catLatestJson.data),
+      'Catálogo latest retorna contrato esperado (success, sourceId, mode, data[])'
+    );
+
+    const catUnknownRes = await fetch(`${BASE_URL}/api/sources/inexistente-ci/catalog?mode=popular`);
+    assert(catUnknownRes.status === 404, 'GET /api/sources/:id/catalog retorna HTTP 404 para fonte inexistente');
+
+    // 14.3 Catálogo resiliente para extensão dinâmica instalada via HTTP + teardown limpo
+    const installFailoverHttp = await fetch(`${BASE_URL}/api/extensions/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifest: {
+          id: 'ext-ci-failover-http',
+          name: 'CI Failover HTTP',
+          baseUrl: 'https://unreachable.invalid.example',
+          template: 'themesia',
+          lang: 'en',
+          version: '1.0.0'
+        }
+      })
+    });
+    assert(installFailoverHttp.status === 200, 'Instala extensão dinâmica para teste de catálogo HTTP');
+
+    const dynCatRes = await fetch(`${BASE_URL}/api/sources/ext-ci-failover-http/catalog?mode=latest&page=1`);
+    assert(dynCatRes.status === 200, 'GET /api/sources/:dynId/catalog?mode=latest responde HTTP 200 com degradação graciosa');
+    const dynCatJson = await dynCatRes.json();
+    assert(dynCatJson.success === true && Array.isArray(dynCatJson.data), 'Catálogo dinâmico retorna array válido mesmo quando upstream está offline');
+
+    const cleanupRes = await fetch(`${BASE_URL}/api/extensions/ext-ci-failover-http`, { method: 'DELETE' });
+    assert(cleanupRes.status === 200, 'Limpeza da extensão temporária de teste concluída (HTTP 200)');
+
+    // -------------------------------------------------------------------------
+    // 15. POPULAÇÃO DE POPULARES, MANGADEX ALTTITLES & DEDUPLICAÇÃO CROSS-SOURCE
+    // -------------------------------------------------------------------------
+    console.log('\n[15/15] Testando Populares sem Vazamento Alfabético, AltTitles EN Prioritários e Deduplicação Cross-Source...');
+
+    const { prioritizeMangaDexAltTitles } = await import('../sources/MangaDexProvider.js');
+    const { MangaPillProvider } = await import('../sources/MangaPillProvider.js');
+    const { deduplicateMangaList } = await import('../sources/SourceRegistry.js');
+
+    // 15.1 MangaDex altTitles prioriza 'en' e 'ja-ro' mesmo quando há >10 títulos não-latinos antes
+    const rawKomisanAlts = [
+      { ja: '古見さんは、コミュ症です。' },
+      { ko: '코미 양은 커뮤증입니다' },
+      { zh: '古見同學有交流障礙症' },
+      { 'zh-hk': '古見同學有交流障礙症' },
+      { ru: 'У Коми-сан проблемы с общением' },
+      { th: 'โฉมงามพูดไม่เก่งกับผองเพื่อนไม่เต็มเต็ง' },
+      { uk: 'У Комі-сан проблеми зі спілкуванням' },
+      { ar: 'كومي سان لا تستطيع التواصل' },
+      { hi: 'कोमी कैन नॉट कम्यूनिकेट' },
+      { bn: 'কোমি-সান কথা বলতে পারে না' },
+      { 'pt-br': 'Komi não consegue se comunicar' },
+      { en: "Komi Can't Communicate" },
+      { 'ja-ro': 'Komi-san wa, Komyushou desu.' }
+    ];
+    const prioritizedAlts = prioritizeMangaDexAltTitles('Komi-san wa Komyushou Desu.', null, rawKomisanAlts, 12);
+    assert(
+      prioritizedAlts[0] === "Komi Can't Communicate",
+      'prioritizeMangaDexAltTitles coloca título inglês (en) em 1º lugar mesmo após 10+ altTitles não-latinos'
+    );
+    assert(
+      prioritizedAlts.includes('Komi não consegue se comunicar') && prioritizedAlts.length <= 12,
+      'prioritizeMangaDexAltTitles mantém PT-BR dentro do limite de 12 títulos'
+    );
+
+    // 15.2 Deduplicação cross-source funde Komi (WeebCentral sem altTitles) + Komi-san (MangaDex com altTitles EN)
+    const weebKomi = {
+      id: 'mr_weebcentral_01J_KOMI',
+      title: 'Komi Can’t Communicate',
+      altTitles: [],
+      coverUrl: 'https://weeb.example/komi.jpg',
+      synopsis: 'Sinopse',
+      authors: ['ODA Tomohito'],
+      artists: ['ODA Tomohito'],
+      genres: ['Comedy'],
+      status: 'completed',
+      publicationInfo: { country: 'JP' },
+      sources: [{ sourceId: 'weebcentral', sourceName: 'WeebCentral', externalId: '01J_KOMI' }],
+      updatedAt: new Date().toISOString(),
+      hasAvailableChapters: true
+    };
+    const dexKomi = {
+      id: 'mr_mangadex_komi-uuid',
+      title: 'Komi-san wa Komyushou Desu.',
+      altTitles: prioritizedAlts,
+      coverUrl: 'https://dex.example/komi.jpg',
+      synopsis: 'Sinopse longa do MangaDex sobre Shouko Komi no colégio Itan.',
+      authors: ['Oda Tomohito'],
+      artists: ['Oda Tomohito'],
+      genres: ['Romance', 'Slice of Life'],
+      status: 'completed',
+      publicationInfo: { country: 'JP' },
+      sources: [{ sourceId: 'mangadex', sourceName: 'MangaDex', externalId: 'komi-uuid' }],
+      updatedAt: new Date().toISOString(),
+      hasAvailableChapters: true
+    };
+    const mergedKomiList = deduplicateMangaList([weebKomi, dexKomi]);
+    assert(
+      mergedKomiList.length === 1 && mergedKomiList[0].sources.length === 2,
+      'deduplicateMangaList unifica Komi Can\'t Communicate (WeebCentral) + Komi-san wa Komyushou Desu. (MangaDex)'
+    );
+
+    // 15.3 MangaPill remove cauda ASCII/numérica (μ & I, 009, 5 Centimeters Per Second, 6000, 666 Satan)
+    const samplePillList = [
+      'Berserk', 'One Piece', 'Naruto', 'Bleach', 'Hunter x Hunter', 'Vagabond',
+      'μ & I', '009', '5 Centimeters Per Second', '6000', '666 Satan'
+    ].map((t, i) => ({
+      id: `mr_mangapill_${i}`,
+      title: t,
+      altTitles: [],
+      coverUrl: '',
+      synopsis: '',
+      authors: [],
+      artists: [],
+      genres: ['Manga'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [{ sourceId: 'mangapill', sourceName: 'MangaPill', externalId: String(i) }],
+      updatedAt: new Date().toISOString(),
+      hasAvailableChapters: true
+    }));
+    const slicedPill = MangaPillProvider.sliceCuratedPopular(samplePillList);
+    assert(
+      slicedPill.length === 6 && !slicedPill.some(m => m.title.includes('666') || m.title.includes('5 Centimeters')),
+      'sliceCuratedPopular mantém clássicos curados e corta catálogo alfabético/numérico'
+    );
+
+    const pillProvider = new MangaPillProvider();
+    const pillPage2 = await pillProvider.search('', { page: 2 });
+    assert(
+      pillPage2.mangaList.length === 0 && pillPage2.hasMore === false,
+      'MangaPill search("") página 2 retorna vazio (impede vazamento alfabético no scroll Mais Populares)'
+    );
+
+    const pillRomanceSample = [
+      { id: 'mr_mangapill_10-grand-blue', title: 'Grand Blue', externalId: '10-grand-blue' },
+      { id: 'mr_mangapill_22-1-love-9', title: '1 Love 9', externalId: '22-1-love-9' },
+      { id: 'mr_mangapill_158-akame-ga-kill', title: 'Akame ga Kill!', externalId: '158-akame-ga-kill' }
+    ].map(x => ({
+      id: x.id,
+      title: x.title,
+      altTitles: [],
+      coverUrl: '',
+      synopsis: '',
+      authors: [],
+      artists: [],
+      genres: ['Romance'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [{ sourceId: 'mangapill', sourceName: 'MangaPill', externalId: x.externalId }],
+      updatedAt: new Date().toISOString(),
+      hasAvailableChapters: true
+    }));
+    const slicedRomance = MangaPillProvider.sliceCuratedPopular(pillRomanceSample);
+    assert(
+      slicedRomance.length === 1 && slicedRomance[0].title === 'Grand Blue',
+      'sliceCuratedPopular corta cauda alfabética com ID >= 13 mesmo quando há menos de 5 curados (ex: Romance)'
+    );
+
+    const pillZeroCurated = MangaPillProvider.sliceCuratedPopular(pillRomanceSample.slice(1));
+    assert(
+      pillZeroCurated.length === 0,
+      'sliceCuratedPopular retorna vazio quando não há nenhum clássico curado antes do dump alfabético'
+    );
+
+    const pillGenrePage2 = await pillProvider.search('', { genre: 'Romance', page: 2 });
+    const pillPopularGenrePage2 = await pillProvider.getPopular({ genre: 'Action', page: 2 });
+    assert(
+      pillGenrePage2.mangaList.length === 0 && pillPopularGenrePage2.length === 0,
+      'MangaPill search e getPopular com gênero na página 2 retornam vazio (sem dump A-Z)'
+    );
+
+    // 15.4 Round-robin interleaving no SourceRegistry para catálogo popular (query vazia)
+    const makeStubManga = (srcId, title) => ({
+      id: `mr_${srcId}_${title}`,
+      title,
+      altTitles: [],
+      coverUrl: '',
+      synopsis: '',
+      authors: ['Autor'],
+      artists: ['Autor'],
+      genres: ['Action'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [{ sourceId: srcId, sourceName: srcId, externalId: title }],
+      updatedAt: new Date().toISOString(),
+      hasAvailableChapters: true
+    });
+
+    registry.registerSource({
+      getInfo: () => ({ id: 'stub-pop-a', name: 'Stub A', isAvailable: true }),
+      search: async () => ({
+        mangaList: [makeStubManga('stub-pop-a', 'Alpha One'), makeStubManga('stub-pop-a', 'Alpha Two')],
+        total: 2,
+        hasMore: false
+      }),
+      getPopular: async () => [],
+      getMangaDetails: async () => null,
+      getChapters: async () => [],
+      getChapterPages: async () => []
+    });
+    registry.registerSource({
+      getInfo: () => ({ id: 'stub-pop-b', name: 'Stub B', isAvailable: true }),
+      search: async () => ({
+        mangaList: [makeStubManga('stub-pop-b', 'Beta One'), makeStubManga('stub-pop-b', 'Beta Two')],
+        total: 2,
+        hasMore: false
+      }),
+      getPopular: async () => [],
+      getMangaDetails: async () => null,
+      getChapters: async () => [],
+      getChapterPages: async () => []
+    });
+
+    try {
+      const interleavedRes = await registry.search('', {
+        enabledSources: ['stub-pop-a', 'stub-pop-b'],
+        onlyAvailable: false
+      });
+      const titlesOrder = interleavedRes.results.map(r => r.title);
+      assert(
+        titlesOrder[0] === 'Alpha One' &&
+        titlesOrder[1] === 'Beta One' &&
+        titlesOrder[2] === 'Alpha Two' &&
+        titlesOrder[3] === 'Beta Two',
+        `SourceRegistry intercala resultados populares em round-robin (recebeu ${titlesOrder.join(', ')})`
+      );
+    } finally {
+      registry.unregisterSource('stub-pop-a');
+      registry.unregisterSource('stub-pop-b');
+    }
+
+    // 15.5 WeebCentral parser extrai Associated Name(s) corretamente para cruzar favoritos
+    const { parseWeebCentralAssociatedNames } = await import('../sources/WeebCentralProvider.js');
+    const weebAssocHtml = `
+      <li>
+        <strong>Associated Name(s)</strong>
+        <ul class="list-disc list-inside">
+          <li>Komi-san wa Komyushou Desu</li>
+          <li>古見さんは、コミュ症です。</li>
+        </ul>
+      </li>
+    `;
+    const parsedAssoc = parseWeebCentralAssociatedNames(weebAssocHtml);
+    assert(
+      parsedAssoc.length === 2 && parsedAssoc[0] === 'Komi-san wa Komyushou Desu',
+      'parseWeebCentralAssociatedNames extrai nomes associados de série do WeebCentral'
+    );
+
+    // 15.6 Deduplicação ignora sufixos de edição como (Official) ou (Colored)
+    const editionDedup = deduplicateMangaList([
+      makeStubManga('stub-ed-1', 'Solo Leveling'),
+      makeStubManga('stub-ed-2', 'Solo Leveling (Official)')
+    ]);
+    assert(
+      editionDedup.length === 1 && editionDedup[0].sources.length === 2,
+      'deduplicateMangaList unifica obras com sufixo (Official) / (Colored)'
+    );
+
+    // 15.7 Contrato HTTP POST /api/library/resolve-titles
+    const resolveEmptyRes = await fetch(`${BASE_URL}/api/library/resolve-titles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [] })
+    });
+    assert(resolveEmptyRes.status === 200, 'POST /api/library/resolve-titles retorna HTTP 200');
+    const resolveEmptyJson = await resolveEmptyRes.json();
+    assert(
+      resolveEmptyJson.success === true && typeof resolveEmptyJson.data === 'object',
+      'POST /api/library/resolve-titles retorna contrato válido { success, data }'
+    );
+
+    // -------------------------------------------------------------------------
+    // 16. PONTE RESIDENCIAL OPCIONAL (OPT-IN RESIDENTIAL IP RELAY)
+    // -------------------------------------------------------------------------
+    console.log('\n[16/16] Testando Ponte Residencial Opcional & Proteções SSRF/Auth...');
+
+    const relayStatusRes = await fetch(`${BASE_URL}/api/relay/status`);
+    assert(relayStatusRes.status === 200, 'GET /api/relay/status retorna HTTP 200');
+    const relayStatusJson = await relayStatusRes.json();
+    const initialMode = relayStatusJson?.data?.mode || 'fallback';
+    const initialProxy = relayStatusJson?.data?.customProxyUrl ?? null;
+    const activeToken = relayStatusJson?.data?.token;
+    assert(
+      relayStatusJson.success === true && typeof activeToken === 'string' && activeToken.length >= 16,
+      'GET /api/relay/status retorna token criptográfico e estado da ponte'
+    );
+
+    // 16.1 Rejeição de modo inválido e URL inválida em PATCH /api/relay/config
+    const badModeRes = await fetch(`${BASE_URL}/api/relay/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'invalid_mode' })
+    });
+    assert(badModeRes.status === 400, 'PATCH /api/relay/config rejeita modo inválido com HTTP 400');
+
+    const badProxyRes = await fetch(`${BASE_URL}/api/relay/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customProxyUrl: 'ftp://invalid-scheme' })
+    });
+    assert(badProxyRes.status === 400, 'PATCH /api/relay/config rejeita protocolo não-HTTP(S) com HTTP 400');
+
+    // 16.2 Rejeição de token inválido em /poll e /respond
+    const badPollRes = await fetch(`${BASE_URL}/api/relay/poll?token=wrong_token_123`);
+    assert(badPollRes.status === 401, 'GET /api/relay/poll bloqueia token inválido (HTTP 401)');
+
+    const badRespRes = await fetch(`${BASE_URL}/api/relay/respond?token=wrong_token_123`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId: 'job_x', status: 200 })
+    });
+    assert(badRespRes.status === 401, 'POST /api/relay/respond bloqueia token inválido (HTTP 401)');
+
+    // 16.3 Download do script standalone Node 18+
+    const scriptRes = await fetch(`${BASE_URL}/api/relay/script`);
+    assert(scriptRes.status === 200, 'GET /api/relay/script retorna HTTP 200');
+    const scriptBody = await scriptRes.text();
+    assert(
+      scriptBody.includes(activeToken) &&
+      scriptBody.includes('/api/relay/poll') &&
+      scriptBody.includes('/api/relay/respond'),
+      'Script mangareader-bridge.mjs contém token ativo e endpoints outbound de polling'
+    );
+
+    // 16.4 Proteção SSRF contra IPs privados/metadata
+    const { isSafeExternalRelayUrl, residentialRelayService } = await import(
+      '../services/ResidentialRelayService.js'
+    );
+    assert(isSafeExternalRelayUrl('http://127.0.0.1:3000/secret') === false, 'SSRF guard bloqueia 127.0.0.1');
+    assert(isSafeExternalRelayUrl('http://169.254.169.254/latest') === false, 'SSRF guard bloqueia link-local/metadata');
+    assert(isSafeExternalRelayUrl('http://localhost:8080') === false, 'SSRF guard bloqueia localhost');
+    assert(isSafeExternalRelayUrl('http://192.168.1.50') === false, 'SSRF guard bloqueia rede privada RFC1918');
+    assert(isSafeExternalRelayUrl('https://mangafire.to/read/test') === true, 'SSRF guard libera domínio público HTTPS');
+
+    // 16.5 Round-trip completo de Long-Polling HTTP (/poll -> /test -> /respond)
+    try {
+      await fetch(`${BASE_URL}/api/relay/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'fallback' })
+      });
+
+      const bridgeAbort = new AbortController();
+      const pollPromise = (async () => {
+        // Loop rápido de bridge simulada até responder 1 job ou abortar
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (bridgeAbort.signal.aborted) break;
+          const pRes = await fetch(
+            `${BASE_URL}/api/relay/poll?token=${encodeURIComponent(activeToken)}&label=BridgeTestCI`,
+            { signal: bridgeAbort.signal }
+          );
+          const pJson = await pRes.json();
+          if (pJson?.job) {
+            await fetch(`${BASE_URL}/api/relay/respond?token=${encodeURIComponent(activeToken)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jobId: pJson.job.id,
+                ok: true,
+                status: 200,
+                headers: { 'content-type': 'text/html; charset=utf-8' },
+                bodyText: '<html><body>MangaFire Ok via Residential IP</body></html>'
+              })
+            });
+            return pJson.job;
+          }
+        }
+        return null;
+      })();
+
+      // Aguarda brevemente o long-poll registrar presença online
+      await new Promise(r => setTimeout(r, 120));
+      const onlineStatus = await (await fetch(`${BASE_URL}/api/relay/status`)).json();
+      assert(
+        onlineStatus?.data?.bridgeOnline === true && onlineStatus?.data?.clientLabel === 'BridgeTestCI',
+        'Presença da ponte residencial marca bridgeOnline=true durante long-poll ativo'
+      );
+
+      const relayTestRes = await fetch(`${BASE_URL}/api/relay/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://blocked-scan.example/manga/teste' })
+      });
+      const relayTestJson = await relayTestRes.json();
+      const handledJob = await Promise.race([
+        pollPromise,
+        new Promise(resolve => setTimeout(() => resolve(null), 1500))
+      ]);
+      bridgeAbort.abort();
+
+      assert(
+        relayTestRes.status === 200 &&
+        relayTestJson?.data?.ok === true &&
+        relayTestJson?.data?.status === 200 &&
+        relayTestJson?.data?.bytes > 20 &&
+        handledJob?.url === 'https://blocked-scan.example/manga/teste',
+        'Round-trip POST /api/relay/test despacha para ponte via /poll e recebe resposta via /respond'
+      );
+
+      // 16.6 Resgate automático de Cloudflare 403 no DynamicTemplateProvider (in-process)
+      const { DynamicTemplateProvider } = await import('../sources/DynamicTemplateProvider.js');
+      const originalFetch = globalThis.fetch;
+      const savedRelayMode = residentialRelayService.getMode();
+      try {
+        residentialRelayService.updateConfig({ mode: 'fallback' });
+
+        // Stub de upstream retornando HTTP 403 Cloudflare no fetch direto
+        globalThis.fetch = async () =>
+          new Response('<html><title>Just a moment...</title></html>', { status: 403 });
+
+        const cfProvider = new DynamicTemplateProvider({
+          id: 'ext-cf-test',
+          name: 'CF Protected Scan',
+          baseUrl: 'https://cf-protected.example',
+          template: 'madara',
+          lang: 'pt-br',
+          version: '1.0.0'
+        });
+
+        // Sem ponte conectada, falha graciosamente com 403 Cloudflare (zero degradação no fluxo padrão)
+        let threwWithoutBridge = false;
+        try {
+          await cfProvider.search('solo');
+        } catch (err) {
+          threwWithoutBridge = Boolean(err);
+        }
+        assert(
+          threwWithoutBridge === true,
+          'Sem ponte conectada, DynamicTemplateProvider falha normalmente em 403 Cloudflare sem travar'
+        );
+
+        // Com ponte ativa simulada via handlePoll/handleRespond in-process, resgata o HTML Madara
+        const fakeRes = {
+          headersSent: false,
+          jsonPayload: null,
+          on: () => {},
+          json(payload) {
+            this.headersSent = true;
+            this.jsonPayload = payload;
+            if (payload?.job) {
+              setImmediate(() => {
+                residentialRelayService.handleRespond({
+                  jobId: payload.job.id,
+                  ok: true,
+                  status: 200,
+                  headers: { 'content-type': 'text/html' },
+                  bodyText: `
+                    <div class="c-tabs-item__content">
+                      <div class="post-title"><h3><a href="https://cf-protected.example/manga/solo-cf/">Solo CF Rescue</a></h3></div>
+                    </div>
+                  `
+                });
+              });
+            }
+          }
+        };
+        residentialRelayService.handlePoll('InProcessBridge', fakeRes);
+
+        const rescued = await cfProvider.search('solo');
+        assert(
+          rescued.mangaList.length === 1 && rescued.mangaList[0].title === 'Solo CF Rescue',
+          'DynamicTemplateProvider resgata busca bloqueada por Cloudflare 403 quando Ponte Residencial está ativa'
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+        residentialRelayService.disconnectBridge();
+        residentialRelayService.updateConfig({ mode: savedRelayMode });
+      }
+
+      // 16.7 Rotação de token e desconexão limpa
+      const rotateRes = await fetch(`${BASE_URL}/api/relay/token/rotate`, { method: 'POST' });
+      const rotateJson = await rotateRes.json();
+      assert(
+        rotateRes.status === 200 &&
+        rotateJson?.data?.token &&
+        rotateJson.data.token !== activeToken &&
+        rotateJson.data.bridgeOnline === false,
+        'POST /api/relay/token/rotate gera novo token e desconecta ponte anterior'
+      );
+    } finally {
+      await fetch(`${BASE_URL}/api/relay/disconnect`, { method: 'POST' }).catch(() => {});
+      await fetch(`${BASE_URL}/api/relay/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: initialMode, customProxyUrl: initialProxy })
+      }).catch(() => {});
+    }
+
+    // -------------------------------------------------------------------------
+    // 17. PASSO 4: AUTO-DETECÇÃO DE SITE, FAILOVER DE CAPÍTULOS & AUTO-SYNC
+    // -------------------------------------------------------------------------
+    console.log('\n[17/17] Testando Passo 4 (Auto-Detecção, Failover de Capítulos & Saúde/Sync)...');
+
+    const { analyzeSiteHtml, buildMirrorCandidateUrls } = await import(
+      '../sources/SiteAutoDetector.js'
+    );
+
+    const madaraSampleHtml = `
+      <html lang="pt-BR">
+        <head><title>Scan BR Teste - Ler Mangás Online</title></head>
+        <body>
+          <link rel="stylesheet" href="/wp-content/themes/madara/style.css" />
+          <div class="c-tabs-item__content"><h3><a href="/manga/solo/">Solo</a></h3></div>
+        </body>
+      </html>
+    `;
+    const madaraDet = analyzeSiteHtml(madaraSampleHtml, 'https://scanbr.example');
+    assert(
+      madaraDet.template === 'madara' &&
+      madaraDet.confidence === 'high' &&
+      madaraDet.lang === 'pt-br' &&
+      madaraDet.suggestedName === 'Scan BR Teste',
+      'analyzeSiteHtml identifica WP-Madara, idioma pt-br e nome do site'
+    );
+
+    const themesiaSampleHtml = `
+      <html lang="en">
+        <head><meta property="og:site_name" content="Themesia Scans" /></head>
+        <body>
+          <div class="listupd"><div class="bsx"><a href="/manga/test/">Test</a></div></div>
+          <script>ts_reader.run({"sources":[]});</script>
+        </body>
+      </html>
+    `;
+    const themesiaDet = analyzeSiteHtml(themesiaSampleHtml, 'https://themesiascans.example');
+    assert(
+      themesiaDet.template === 'themesia' &&
+      themesiaDet.confidence === 'high' &&
+      themesiaDet.lang === 'en' &&
+      themesiaDet.suggestedName === 'Themesia Scans',
+      'analyzeSiteHtml identifica MangaThemesia e metadados'
+    );
+
+    const customSampleHtml = `
+      <html lang="es">
+        <head><title>Custom Scan ES</title></head>
+        <body>
+          <div class="manga-card"><a href="/series/1">Obra</a></div>
+          <div class="chapter-list"><a href="/cap-1">Cap 1</a></div>
+        </body>
+      </html>
+    `;
+    const customDet = analyzeSiteHtml(customSampleHtml, 'https://customes.example');
+    assert(
+      customDet.template === 'custom_html' &&
+      customDet.selectors?.searchItem === '.manga-card' &&
+      customDet.selectors?.chapterItem === '.chapter-list a',
+      'analyzeSiteHtml sugere seletores Custom HTML quando layout é personalizado'
+    );
+
+    const mirrorList = buildMirrorCandidateUrls('https://scan-teste.com');
+    assert(
+      mirrorList.length >= 4 &&
+      !mirrorList.includes('https://scan-teste.com') &&
+      mirrorList.includes('https://scan-teste.net'),
+      'buildMirrorCandidateUrls gera espelhos públicos candidatos excluindo o domínio atual'
+    );
+
+    // 17.2 Guardas SSRF & validação em POST /api/extensions/detect
+    const detectSsrfRes = await fetch(`${BASE_URL}/api/extensions/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'http://127.0.0.1:3000' })
+    });
+    assert(detectSsrfRes.status === 400, 'POST /api/extensions/detect bloqueia URL privada/localhost (HTTP 400)');
+
+    // 17.3 Failover inteligente de capítulos no SourceRegistry mesmo quando a fonte primária cai ou foi removida
+    registry.registerSource({
+      getInfo: () => ({ id: 'stub-cf-fail', name: 'Stub CF Fail', isAvailable: true }),
+      search: async () => ({ mangaList: [], total: 0, hasMore: false }),
+      getPopular: async () => [],
+      getMangaDetails: async () => {
+        throw new Error('403 Cloudflare challenge');
+      },
+      getChapters: async () => {
+        throw new Error('403 Cloudflare challenge');
+      },
+      getChapterPages: async () => []
+    });
+
+    registry.registerSource({
+      getInfo: () => ({ id: 'stub-healthy-ch', name: 'Stub Healthy', isAvailable: true }),
+      search: async (q) => ({
+        mangaList: q.toLowerCase().includes('alpha failover')
+          ? [makeStubManga('stub-healthy-ch', 'Alpha Failover')]
+          : [],
+        total: 1,
+        hasMore: false
+      }),
+      getPopular: async () => [],
+      getMangaDetails: async () => makeStubManga('stub-healthy-ch', 'Alpha Failover'),
+      getChapters: async () => [
+        {
+          id: 'ch_stub-healthy-ch_Alpha Failover_42',
+          mangaId: 'mr_stub-healthy-ch_Alpha Failover',
+          chapterNumber: '42',
+          title: 'Resgate Automático',
+          language: 'en',
+          sourceId: 'stub-healthy-ch',
+          externalChapterId: '42'
+        }
+      ],
+      getChapterPages: async () => []
+    });
+
+    try {
+      const rescuedChapters = await registry.getChapters('mr_stub-cf-fail_alpha-slug', 'en', {
+        titleHint: 'Alpha Failover'
+      });
+      assert(
+        rescuedChapters.length >= 1 &&
+        rescuedChapters.some(c => c.chapterNumber === '42' && c.sourceId === 'stub-healthy-ch'),
+        'SourceRegistry.getChapters resgata capítulos em fonte saudável quando primária falha em 403/offline'
+      );
+
+      const missingSourceRescued = await registry.getChapters('mr_ext-removed-src_alpha-slug', 'en', {
+        titleHint: 'Alpha Failover'
+      });
+      assert(
+        missingSourceRescued.length >= 1 && missingSourceRescued[0].chapterNumber === '42',
+        'SourceRegistry.getChapters resgata capítulos usando titleHint mesmo se extensão original foi removida'
+      );
+    } finally {
+      registry.unregisterSource('stub-cf-fail');
+      registry.unregisterSource('stub-healthy-ch');
+    }
+
+    // 17.4 Auto-atualização de extensões por repositório preservando espelho customizado
+    const fsMod = await import('fs');
+    const osMod = await import('os');
+    const pathMod = await import('path');
+    const tempExtFile = pathMod.join(osMod.tmpdir(), `mr-ext-test-${Date.now()}.json`);
+    try {
+      const { ExtensionRepositoryService } = await import('../sources/ExtensionRepositoryService.js');
+      const isolatedRepoSvc = new ExtensionRepositoryService(tempExtFile);
+      isolatedRepoSvc.installExtension({
+        id: 'ext-sync-demo',
+        name: 'Sync Demo',
+        baseUrl: 'https://orig.example',
+        template: 'madara',
+        lang: 'pt-br',
+        version: '1.0.0',
+        repoUrl: 'https://repo.example/repo.json'
+      });
+      isolatedRepoSvc.updateMirror('ext-sync-demo', 'https://custom-user-mirror.example');
+
+      const updates = isolatedRepoSvc.applyRepoUpdates({
+        url: 'https://repo.example/repo.json',
+        name: 'Repo Teste',
+        lastSyncedAt: Date.now(),
+        extensions: [
+          {
+            id: 'ext-sync-demo',
+            name: 'Sync Demo',
+            baseUrl: 'https://new-origin.example',
+            defaultBaseUrl: 'https://new-origin.example',
+            template: 'madara',
+            lang: 'pt-br',
+            version: '1.2.0'
+          }
+        ]
+      });
+
+      const upgradedExt = isolatedRepoSvc.getInstalledExtensions().find(e => e.id === 'ext-sync-demo');
+      assert(
+        updates.length === 1 &&
+        updates[0].fromVersion === '1.0.0' &&
+        updates[0].toVersion === '1.2.0' &&
+        upgradedExt?.version === '1.2.0' &&
+        upgradedExt?.baseUrl === 'https://custom-user-mirror.example' &&
+        upgradedExt?.defaultBaseUrl === 'https://new-origin.example',
+        'applyRepoUpdates atualiza versão da extensão preservando espelho customizado do usuário'
+      );
+    } finally {
+      if (fsMod.existsSync(tempExtFile)) {
+        fsMod.unlinkSync(tempExtFile);
+      }
+    }
+
+    // 17.5 Contratos HTTP export-repo e repos/sync-all
+    const exportRepoRes = await fetch(`${BASE_URL}/api/extensions/export-repo`);
+    assert(exportRepoRes.status === 200, 'GET /api/extensions/export-repo retorna HTTP 200');
+    const exportRepoJson = await exportRepoRes.json();
+    assert(
+      typeof exportRepoJson.name === 'string' && Array.isArray(exportRepoJson.extensions),
+      'GET /api/extensions/export-repo exporta estrutura JSON válida de repositório'
+    );
+
+    const syncAllRes = await fetch(`${BASE_URL}/api/extensions/repos/sync-all`, { method: 'POST' });
+    assert(syncAllRes.status === 200, 'POST /api/extensions/repos/sync-all retorna HTTP 200');
+    const syncAllJson = await syncAllRes.json();
+    assert(
+      syncAllJson.success === true && typeof syncAllJson?.data?.reposChecked === 'number',
+      'POST /api/extensions/repos/sync-all retorna resumo estruturado de sincronização'
+    );
+
+    const finalSourcesCheck = await (await fetch(`${BASE_URL}/api/sources`)).json();
+    assert(finalSourcesCheck.data.length === 6, 'Suíte finaliza com as 6 fontes nativas limpas');
+
+    // =========================================================================
+    // 18. Oráculo da Leitura & Surpreenda-me (Exclusão de Ocultos/Salvos Cross-Source)
+    // =========================================================================
+    console.log('\n[18/18] Testando Oráculo da Leitura & Surpreenda-me (Ocultos e Salvos)...');
+    const {
+      isMangaInFavorites,
+      isMangaInIgnored,
+      pickOracleCandidate,
+      pickSurpriseCandidate
+    } = await import('../../src/utils/libraryFilters.js');
+
+    const mIgnoredCross = {
+      id: 'mr_mangapill_11-20-seiki-shounen',
+      title: '20 Seiki Shounen',
+      altTitles: ['20th Century Boys'],
+      coverUrl: '',
+      synopsis: '',
+      authors: [],
+      artists: [],
+      genres: ['Mystery'],
+      status: 'completed',
+      publicationInfo: {},
+      sources: [{ sourceId: 'mangapill', externalId: '11-20-seiki-shounen' }],
+      updatedAt: '',
+      isAdult: false
+    };
+    const mSavedCross = {
+      id: 'mr_weebcentral_komi',
+      title: "Komi Can't Communicate",
+      altTitles: ['Komi-san wa Komyushou Desu.'],
+      coverUrl: '',
+      synopsis: '',
+      authors: [],
+      artists: [],
+      genres: ['Comedy'],
+      status: 'completed',
+      publicationInfo: {},
+      sources: [{ sourceId: 'weebcentral', externalId: 'komi' }],
+      updatedAt: '',
+      isAdult: false
+    };
+    const mFreshDiscovery = {
+      id: 'mr_mangadex_pluto',
+      title: 'Pluto',
+      altTitles: ['PLUTO'],
+      coverUrl: '',
+      synopsis: '',
+      authors: [],
+      artists: [],
+      genres: ['Mystery'],
+      status: 'completed',
+      publicationInfo: {},
+      sources: [{ sourceId: 'mangadex', externalId: 'pluto' }],
+      updatedAt: '',
+      isAdult: false
+    };
+
+    const mockIgnored = [
+      {
+        mangaId: 'mr_comick_20th-century',
+        title: '20th Century Boys',
+        dismissedAt: Date.now()
+      }
+    ];
+    const mockFavorites = [
+      {
+        mangaId: 'mr_mangadex_komi-dex',
+        title: 'Komi-san wa Komyushou Desu.',
+        coverUrl: '',
+        updatedAt: Date.now()
+      }
+    ];
+
+    assert(
+      isMangaInIgnored(mIgnoredCross, mockIgnored) === true,
+      'isMangaInIgnored detecta obra oculta cross-source por altTitle (20 Seiki Shounen vs 20th Century Boys)'
+    );
+    assert(
+      isMangaInFavorites(mSavedCross, mockFavorites) === true,
+      'isMangaInFavorites detecta obra salva cross-source por altTitle (Komi Can\'t Communicate vs Komi-san)'
+    );
+
+    const oraclePick = pickOracleCandidate(
+      [mIgnoredCross, mSavedCross, mFreshDiscovery],
+      mockFavorites,
+      mockIgnored
+    );
+    assert(
+      oraclePick?.id === mFreshDiscovery.id,
+      'Oráculo da Leitura exclui ocultos e salvos priorizando nova descoberta (Pluto)'
+    );
+
+    const oracleAllIgnored = pickOracleCandidate([mIgnoredCross], mockFavorites, mockIgnored);
+    assert(
+      oracleAllIgnored === null,
+      'Oráculo da Leitura retorna null em vez de exibir uma obra oculta'
+    );
+
+    const surpriseFromFallback = pickSurpriseCandidate(
+      [[mIgnoredCross, mSavedCross], [mFreshDiscovery]],
+      mockFavorites,
+      mockIgnored
+    );
+    assert(
+      surpriseFromFallback?.id === mFreshDiscovery.id,
+      'Surpreenda-me pula ocultos e salvos da lista atual e escolhe descoberta inédita no fallback'
+    );
+
+    const surpriseNeverIgnored = pickSurpriseCandidate([[mIgnoredCross]], mockFavorites, mockIgnored);
+    assert(
+      surpriseNeverIgnored === null,
+      'Surpreenda-me nunca abre uma obra da lista de ocultos/dispensados'
+    );
+
+    // =========================================================================
+    // 19. Direcionamento Inteligente & Filtro Estrito de Foco (1 palavra ou frase)
+    // =========================================================================
+    console.log('\n[19/19] Testando Direcionamento Inteligente & Filtro Estrito de Foco...');
+    const {
+      evaluateCandidateFocusFit
+    } = await import('../services/aiSimilarityService.js');
+
+    const resolvedPhraseFocus = resolveFocusToCategoriesAndQueries(
+      [],
+      'isekai,protagonista reinacarna como crianca'
+    );
+    assert(
+      resolvedPhraseFocus.muCategories.includes('Child Protagonist') &&
+      resolvedPhraseFocus.muCategories.includes('Transported to Another World') &&
+      resolvedPhraseFocus.muCategories.includes('Reincarnation'),
+      'Frase com erro de digitação ("isekai,protagonista reinacarna como crianca") resolve para Child Protagonist + Reincarnation + Isekai'
+    );
+    assert(
+      resolvedPhraseFocus.searchQueries.includes('reincarnated as a boy') &&
+      resolvedPhraseFocus.anilistTags.includes('Isekai'),
+      'Gera queries em inglês e tags do AniList específicas para reencarnação como criança'
+    );
+
+    const resolvedSingleWordShota = resolveFocusToCategoriesAndQueries([], 'shouta');
+    assert(
+      resolvedSingleWordShota.muCategories.includes('Child Protagonist') &&
+      resolvedSingleWordShota.searchQueries.includes('shota'),
+      'Uma única palavra ("shouta") ativa o conceito completo de Protagonista Criança / Shota'
+    );
+
+    const slimeCandidate = {
+      id: 'mr_mangadex_slime',
+      title: 'Tensei shitara Slime Datta Ken',
+      altTitles: ['That Time I Got Reincarnated as a Slime'],
+      coverUrl: '',
+      synopsis: '37-year-old corporate worker Satoru Mikami is stabbed and reincarnated as a slime monster in another world with unique skills.',
+      authors: ['Fuse'],
+      artists: [],
+      genres: ['Isekai', 'Reincarnation', 'Action', 'Fantasy', 'Male Protagonist'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: ''
+    };
+    const childIsekaiCandidate = {
+      id: 'mr_mangadex_tensei_boukenroku',
+      title: 'Tensei Kizoku no Isekai Boukenroku',
+      altTitles: ['Chronicles of an Aristocrat Reborn in Another World'],
+      coverUrl: '',
+      synopsis: 'Kazuya Shiina dies protecting a girl and is reincarnated into another world as Cain, the third son of a noble aristocrat, growing up as a young boy with magic.',
+      authors: ['Yashu'],
+      artists: [],
+      genres: ['Isekai', 'Reincarnation', 'Fantasy', 'Child Protagonist'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: ''
+    };
+    const genericOverlordCandidate = {
+      id: 'mr_mangadex_overlord',
+      title: 'Overlord',
+      altTitles: [],
+      coverUrl: '',
+      synopsis: 'A salaryman is trapped inside a fantasy game world as an undead skeleton overlord.',
+      authors: ['Maruyama Kugane'],
+      artists: [],
+      genres: ['Isekai', 'Action', 'Fantasy'],
+      status: 'ongoing',
+      publicationInfo: {},
+      sources: [],
+      updatedAt: ''
+    };
+
+    const slimeFit = evaluateCandidateFocusFit(
+      slimeCandidate,
+      resolvedPhraseFocus,
+      undefined,
+      'isekai,protagonista reinacarna como crianca',
+      []
+    );
+    assert(
+      slimeFit.passesGate === false && slimeFit.contradicted === true,
+      'Filtro estrito rejeita Slime Datta Ken quando o foco pede protagonista reencarnado como criança'
+    );
+
+    const overlordFit = evaluateCandidateFocusFit(
+      genericOverlordCandidate,
+      resolvedPhraseFocus,
+      undefined,
+      'isekai,protagonista reinacarna como crianca',
+      []
+    );
+    assert(
+      overlordFit.passesGate === false,
+      'Filtro estrito rejeita isekais genéricos (Overlord) que não têm protagonista criança'
+    );
+
+    const childIsekaiFit = evaluateCandidateFocusFit(
+      childIsekaiCandidate,
+      resolvedPhraseFocus,
+      undefined,
+      'isekai,protagonista reinacarna como crianca',
+      []
+    );
+    assert(
+      childIsekaiFit.passesGate === true && childIsekaiFit.specificMatchedCount >= 1,
+      'Filtro estrito aprova obra coerente com o foco (reencarnado como menino nobre em outro mundo)'
+    );
+
+    const resolvedTerritoryChip = resolveFocusToCategoriesAndQueries(['Gestão de Território / Reino'], '');
+    assert(
+      resolvedTerritoryChip.muCategories.includes('Territory Management') &&
+      resolvedTerritoryChip.anilistTags.includes('Kingdom Building'),
+      'Chip de subcategoria "Gestão de Território / Reino" mapeia para Territory Management e Kingdom Building'
+    );
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

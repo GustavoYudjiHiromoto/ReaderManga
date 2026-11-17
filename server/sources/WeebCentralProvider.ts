@@ -14,6 +14,24 @@ function decodeHtmlEntities(str: string): string {
     .trim();
 }
 
+export function parseWeebCentralAssociatedNames(html: string): string[] {
+  if (!html) return [];
+  const blockMatch = html.match(/<strong>\s*Associated Name\(s\)\s*<\/strong>\s*<ul[^>]*>([\s\S]*?)<\/ul>/i);
+  if (!blockMatch) return [];
+
+  const inner = blockMatch[1];
+  const results: string[] = [];
+  const liRegex = /<li[^>]*>([^<]+)<\/li>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = liRegex.exec(inner)) !== null) {
+    const cleaned = decodeHtmlEntities(m[1]);
+    if (cleaned && !results.includes(cleaned)) {
+      results.push(cleaned);
+    }
+  }
+  return results.slice(0, 12);
+}
+
 const GENRE_MAP: Record<string, string> = {
   'ação': 'Action',
   'acao': 'Action',
@@ -505,10 +523,13 @@ export class WeebCentralProvider implements IMangaSource {
         ? 'pornographic'
         : (isSuggestive ? 'suggestive' : 'safe');
 
+      const altTitles = parseWeebCentralAssociatedNames(html)
+        .filter(a => a.toLowerCase() !== title.toLowerCase());
+
       const manga: Manga = {
         id: `mr_${this.sourceId}_${externalId}`,
         title,
-        altTitles: [],
+        altTitles,
         coverUrl,
         synopsis,
         authors: authors.length > 0 ? authors : ['Autor Desconhecido'],

@@ -1,6 +1,7 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo, MangaStatus } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
+import { residentialRelayService } from '../services/ResidentialRelayService.js';
 
 function decodeHtmlEntities(str: string): string {
   if (!str) return '';
@@ -67,6 +68,31 @@ export class MangaFireProvider implements IMangaSource {
    * Helper that executes HTTP requests either directly or via FlareSolverr proxy if configured.
    */
   private async fetchHtml(url: string, referer: string = this.baseUrl): Promise<string> {
+    const reqHeaders: Record<string, string> = {
+      'User-Agent': this.userAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7',
+      'Referer': referer,
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'same-origin',
+      'Cache-Control': 'no-cache'
+    };
+
+    if (residentialRelayService.getMode() === 'always' && residentialRelayService.isRelayReady()) {
+      try {
+        const relayed = await residentialRelayService.fetchThroughRelay(url, {
+          headers: reqHeaders,
+          responseType: 'text'
+        });
+        if (relayed.ok && relayed.bodyText && !relayed.bodyText.includes('challenge-platform')) {
+          return relayed.bodyText;
+        }
+      } catch {
+        // Fallback to direct/FlareSolverr below
+      }
+    }
+
     const flareUrl = process.env.FLARESOLVERR_URL;
     if (flareUrl) {
       try {
@@ -91,24 +117,29 @@ export class MangaFireProvider implements IMangaSource {
     }
 
     // Direct HTTP request with browser identity
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': this.userAgent,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7',
-        'Referer': referer,
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Cache-Control': 'no-cache'
+    const res = await fetch(url, { headers: reqHeaders });
+    const html = await res.text();
+    const isCf = res.status === 403 || html.includes('challenge-platform') || html.includes('Just a moment...');
+
+    if (isCf && residentialRelayService.isRelayReady()) {
+      try {
+        const relayed = await residentialRelayService.fetchThroughRelay(url, {
+          headers: reqHeaders,
+          responseType: 'text'
+        });
+        if (relayed.bodyText) {
+          return relayed.bodyText;
+        }
+      } catch {
+        // Return original response handling
       }
-    });
+    }
 
     if (!res.ok && res.status !== 403) {
       throw new HttpError(res.status, `MangaFire returned HTTP ${res.status}`);
     }
 
-    return await res.text();
+    return html;
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {

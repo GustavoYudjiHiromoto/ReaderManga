@@ -8,6 +8,46 @@ function formatProxyUrl(rawUrl: string): string {
   return `/api/proxy/image?url=${encodeURIComponent(rawUrl)}`;
 }
 
+export function prioritizeMangaDexAltTitles(
+  primaryTitle: string,
+  attrsTitle?: Record<string, string> | null,
+  rawAltTitles?: Array<Record<string, string>> | null,
+  limit = 12
+): string[] {
+  const rawAlts: Array<{ title: string; priority: number }> = [];
+  const seenAltSet = new Set<string>([String(primaryTitle || '').toLowerCase()]);
+  const pushAlt = (val: string, lang?: string) => {
+    const cleaned = val?.trim();
+    if (!cleaned || seenAltSet.has(cleaned.toLowerCase())) return;
+    seenAltSet.add(cleaned.toLowerCase());
+    const l = (lang || '').toLowerCase();
+    const isLatin = /^[a-zA-Z0-9\s\-:.,!?'"()&/]+$/.test(cleaned) || /[a-zA-Z]{4,}/.test(cleaned);
+    const priority =
+      l === 'en' ? 4 :
+      l === 'ja-ro' ? 3 :
+      (l === 'pt-br' || l === 'pt') ? 2 :
+      isLatin ? 1 : 0;
+    rawAlts.push({ title: cleaned, priority });
+  };
+
+  if (attrsTitle && typeof attrsTitle === 'object') {
+    for (const [langKey, val] of Object.entries(attrsTitle)) {
+      if (typeof val === 'string') pushAlt(val, langKey);
+    }
+  }
+  if (Array.isArray(rawAltTitles)) {
+    for (const altObj of rawAltTitles) {
+      if (altObj && typeof altObj === 'object') {
+        for (const [langKey, val] of Object.entries(altObj)) {
+          if (typeof val === 'string') pushAlt(val, langKey);
+        }
+      }
+    }
+  }
+  rawAlts.sort((a, b) => b.priority - a.priority);
+  return rawAlts.slice(0, limit).map(a => a.title);
+}
+
 export class MangaDexProvider implements IMangaSource {
   private readonly baseUrl = 'https://api.mangadex.org';
   private readonly sourceId = 'mangadex';
@@ -78,17 +118,7 @@ export class MangaDexProvider implements IMangaSource {
   private normalizeMangaDexItem(item: any): Manga {
     const attrs = item.attributes || {};
     const title = attrs.title?.en || attrs.title?.ja || attrs.title?.['ja-ro'] || Object.values(attrs.title || {})[0] || 'Sem Título';
-    
-    // Alt titles
-    const altTitles: string[] = [];
-    if (Array.isArray(attrs.altTitles)) {
-      for (const altObj of attrs.altTitles) {
-        const val = Object.values(altObj)[0] as string;
-        if (val && !altTitles.includes(val)) {
-          altTitles.push(val);
-        }
-      }
-    }
+    const altTitles = prioritizeMangaDexAltTitles(String(title), attrs.title, attrs.altTitles, 12);
 
     // Cover art relationship
     let coverFileName = '';
@@ -157,7 +187,7 @@ export class MangaDexProvider implements IMangaSource {
     return {
       id: `mr_${this.sourceId}_${item.id}`,
       title,
-      altTitles: altTitles.slice(0, 5),
+      altTitles: altTitles.slice(0, 12),
       coverUrl,
       synopsis,
       authors: authorName ? [authorName] : ['Autor Desconhecido'],
@@ -465,6 +495,42 @@ export class MangaDexProvider implements IMangaSource {
       return mangaList;
     } catch (err) {
       console.warn(`[MangaDexProvider] getPopular failed:`, (err as Error).message);
+      return [];
+    }
+  }
+
+  async getLatest(options?: SourceSearchOptions): Promise<Manga[]> {
+    try {
+      const limit = Math.min(options?.limit || 24, 60);
+      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+      const ratingsQuery = options?.includeAdult
+        ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
+        : 'contentRating[]=safe&contentRating[]=suggestive';
+      const availableParam = options?.onlyAvailable !== false ? '&hasAvailableChapters=true' : '';
+      let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&order[latestUploadedChapter]=desc${availableParam}`;
+
+      if (options?.genre && options.genre !== 'all') {
+        const tagId = MangaDexProvider.GENRE_MAP[options.genre.toLowerCase()];
+        if (tagId) {
+          url += `&includedTags[]=${encodeURIComponent(tagId)}`;
+        }
+      }
+
+      const res = await this.fetchWithTimeout(url);
+      const list = Array.isArray(res.data) ? res.data : [];
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeMangaDexItem(item));
+
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
+
+      return mangaList;
+    } catch (err) {
+      console.warn(`[MangaDexProvider] getLatest failed:`, (err as Error).message);
       return [];
     }
   }

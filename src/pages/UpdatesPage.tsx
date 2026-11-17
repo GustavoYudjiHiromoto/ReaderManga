@@ -475,6 +475,17 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                                   </span>
                                 </>
                               )}
+                              {update?.failoverUsed && update.chapterSourceId && (
+                                <>
+                                  <span aria-hidden="true" className="text-zinc-700">·</span>
+                                  <span
+                                    className="text-emerald-400/90 font-medium"
+                                    title="Capítulo localizado automaticamente em outra fonte ativa"
+                                  >
+                                    via {update.chapterSourceName || update.chapterSourceId}
+                                  </span>
+                                </>
+                              )}
                             </div>
 
                             {update?.latestChapterTitle && (

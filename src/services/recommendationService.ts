@@ -2,6 +2,7 @@ import { Manga, FavoriteManga, ReadingProgress } from '../types/manga.js';
 import { HistoryService } from './history.js';
 import { MangaApi, SimilarityCategory, DetectedTropeTag } from './api.js';
 import { getPreferredLanguage } from '../utils/languagePreference.js';
+import { isMangaInIgnored } from '../utils/libraryFilters.js';
 
 export type { SimilarityCategory, DetectedTropeTag };
 
@@ -1404,7 +1405,7 @@ export const RecommendationService = {
 
         if (hybrid && hybrid.matches && hybrid.matches.length > 0) {
           const mapped: RecommendationMatch[] = hybrid.matches
-            .filter(m => !ignoredIds.has(m.manga.id))
+            .filter(m => !ignoredIds.has(m.manga.id) && !isMangaInIgnored(m.manga, ignored))
             .map(m => ({
               manga: m.manga,
               affinityScore: m.affinityScore,
@@ -1453,7 +1454,7 @@ export const RecommendationService = {
         if (res.status === 'fulfilled') {
           const list: Manga[] = Array.isArray(res.value) ? res.value : (res.value?.data || []);
           list.forEach(m => {
-            if (m && m.id && !seenIds.has(m.id) && !m.isAdult && !ignoredIds.has(m.id)) {
+            if (m && m.id && !seenIds.has(m.id) && !m.isAdult && !ignoredIds.has(m.id) && !isMangaInIgnored(m, ignored)) {
               seenIds.add(m.id);
               pool.push(m);
             }
@@ -1514,10 +1515,10 @@ export const RecommendationService = {
     const ignored = HistoryService.getIgnoredMangas();
     const ignoredIds = ignored.map(i => i.mangaId);
     const ignoredTitles = ignored.map(i => i.title);
-    const ignoredSet = new Set(ignoredIds);
 
+    const hasActiveFocus = focusTags.length > 0 || focusQuery.trim().length > 0;
     const localPool = this.getLocalCandidatePool().filter(
-      m => !ignoredSet.has(m.id) && (m.synopsis || (m.genres && m.genres.length > 0))
+      m => !isMangaInIgnored(m, ignored) && (m.synopsis || (m.genres && m.genres.length > 0))
     );
 
     // 1. Try Hybrid Server Engine (AI Premise + MangaUpdates + AniList + Live Sources)
@@ -1534,9 +1535,9 @@ export const RecommendationService = {
           limit
         });
 
-        if (hybrid && Array.isArray(hybrid.matches) && hybrid.matches.length > 0) {
+        if (hybrid && Array.isArray(hybrid.matches) && (hybrid.matches.length > 0 || hasActiveFocus)) {
           const hydrated: SimilarMangaMatch[] = hybrid.matches
-            .filter(m => !ignoredSet.has(m.manga.id))
+            .filter(m => !isMangaInIgnored(m.manga, ignored))
             .map(m => ({
               ...m,
               isInLibrary: this.isMangaInLibrary(m.manga)
@@ -1557,7 +1558,7 @@ export const RecommendationService = {
       }
     }
 
-    // 2. Deterministic Local + Live Search Fallback
+    // 2. Deterministic Local + Live Search Fallback (offline / network error recovery)
     const targetGenres = (targetManga.genres || [])
       .map(normalizeGenreName)
       .filter(g => g !== 'Manga');
@@ -1576,22 +1577,24 @@ export const RecommendationService = {
         promises.push(MangaApi.search(ft, { limit: 10, language, onlyAvailable: true }));
       });
 
-      plotQueries.forEach(q => {
-        promises.push(MangaApi.search(q, { limit: 12, language, onlyAvailable: true }));
-      });
+      if (!hasActiveFocus) {
+        plotQueries.forEach(q => {
+          promises.push(MangaApi.search(q, { limit: 12, language, onlyAvailable: true }));
+        });
 
-      if (targetGenres.length > 0) {
-        promises.push(MangaApi.search('', { genre: targetGenres[0], limit: 12, language, onlyAvailable: true }));
-      }
-      if (targetGenres.length > 1) {
-        promises.push(MangaApi.search('', { genre: targetGenres[1], limit: 10, language, onlyAvailable: true }));
-      }
+        if (targetGenres.length > 0) {
+          promises.push(MangaApi.search('', { genre: targetGenres[0], limit: 12, language, onlyAvailable: true }));
+        }
+        if (targetGenres.length > 1) {
+          promises.push(MangaApi.search('', { genre: targetGenres[1], limit: 10, language, onlyAvailable: true }));
+        }
 
-      if (targetAuthor && targetAuthor !== 'Unknown' && targetAuthor !== 'Autor Desconhecido') {
-        promises.push(MangaApi.search(targetAuthor, { limit: 6, language, onlyAvailable: true }));
-      }
+        if (targetAuthor && targetAuthor !== 'Unknown' && targetAuthor !== 'Autor Desconhecido') {
+          promises.push(MangaApi.search(targetAuthor, { limit: 6, language, onlyAvailable: true }));
+        }
 
-      promises.push(MangaApi.getRelatedRecommendations(targetManga));
+        promises.push(MangaApi.getRelatedRecommendations(targetManga));
+      }
 
       const settled = await Promise.allSettled(promises);
       const candidates: Manga[] = [];
@@ -1599,7 +1602,7 @@ export const RecommendationService = {
       const seenTitles = new Set<string>(targetNormTitle ? [targetNormTitle] : []);
 
       const pushCandidate = (m: Manga) => {
-        if (!m || !m.id || m.isAdult) return;
+        if (!m || !m.id || m.isAdult || isMangaInIgnored(m, ignored)) return;
         const normT = cleanTitleForMatch(m.title);
         if (seenIds.has(m.id)) return;
         if (normT && seenTitles.has(normT)) return;
@@ -1622,7 +1625,25 @@ export const RecommendationService = {
         return scoreSimilarMangaCandidate(targetManga, candidate, targetProfile, inLib);
       });
 
-      const filtered = hideLibrary ? matches.filter(m => !m.isInLibrary) : matches;
+      const focusWords = [...focusTags, focusQuery]
+        .join(' ')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .split(/[\s,;]+/)
+        .filter(w => w.length >= 3);
+
+      const focusFiltered = hasActiveFocus && focusWords.length > 0
+        ? matches.filter(m => {
+            const hay = `${m.manga.title} ${m.manga.synopsis || ''} ${(m.manga.genres || []).join(' ')}`
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '');
+            return focusWords.some(fw => hay.includes(fw));
+          })
+        : matches;
+
+      const filtered = hideLibrary ? focusFiltered.filter(m => !m.isInLibrary) : focusFiltered;
       filtered.sort((a, b) => b.similarityScore - a.similarityScore);
 
       return {

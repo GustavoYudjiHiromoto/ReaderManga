@@ -27,12 +27,14 @@ import {
   ArrowUpDown,
   EyeOff,
   Eye,
-  Trash2
+  Trash2,
+  Compass,
+  Flame
 } from 'lucide-react';
-import { Manga, FavoriteManga, IgnoredManga } from '../types/manga.js';
+import { Manga, FavoriteManga, IgnoredManga, MangaSourceInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { MangaCard, MangaCardLayoutMode } from '../components/MangaCard.js';
-import { ExtensionService } from '../services/extensionService.js';
+import { ExtensionService, FALLBACK_SOURCES_META } from '../services/extensionService.js';
 import { HistoryService } from '../services/history.js';
 import {
   LANGUAGE_OPTIONS,
@@ -40,11 +42,24 @@ import {
   setPreferredLanguage,
   subscribePreferredLanguage
 } from '../utils/languagePreference.js';
+import {
+  normalizeLibraryTitle,
+  isMangaInFavorites as checkMangaInFavorites,
+  isMangaInIgnored as checkMangaInIgnored,
+  pickSurpriseCandidate
+} from '../utils/libraryFilters.js';
+
+type SourceBrowseMode = 'popular' | 'latest' | 'search';
 
 interface SearchPageProps {
   onSelectManga: (mangaId: string) => void;
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   initialQuery?: string;
+  browseSignal?: {
+    sourceId: string;
+    mode: SourceBrowseMode;
+    nonce: number;
+  } | null;
 }
 
 export const GENRE_TRANSLATIONS: Record<string, string[]> = {
@@ -113,6 +128,35 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'delinquente / gangue': ['delinquent', 'gang', 'yankee', 'delinquente', 'gangue', 'brawler', 'bosozoku'],
   'caçada de monstros': ['monster hunter', 'monster hunting', 'caçador de monstros', 'caçada', 'beasts'],
   'jogo da morte': ['death game', 'jogo da morte', 'battle royale', 'deathmatch'],
+  'protagonista criança / shota': [
+    'child protagonist', 'young male lead', 'shota', 'shouta', 'reincarnated as a boy',
+    'reborn as a boy', 'young boy', 'young lord', 'child', 'criança', 'menino', 'garoto'
+  ],
+  'nobreza / aristocracia': [
+    'aristocracy', 'noble', 'duke', 'count', 'baron', 'kizoku', 'royal', 'prince',
+    'aristocrat', 'nobre', 'nobreza', 'realeza'
+  ],
+  'avaliação (appraisal)': [
+    'appraisal', 'kantei', 'appraise', 'evaluate', 'avaliação', 'avaliacao', 'identificar'
+  ],
+  'recrutamento / aliados': [
+    'recruit', 'loyal subordinates', 'subordinate', 'retainer', 'vassal', 'talented',
+    'recrutamento', 'aliados', 'talento'
+  ],
+  'ferreiro / artesão / mercador': [
+    'blacksmith', 'merchant', 'crafting', 'alchemy', 'potion', 'ferreiro', 'mercador',
+    'artesão', 'alquimia'
+  ],
+  'médico / curandeiro': [
+    'doctor', 'healer', 'medicine', 'medical', 'pharmacy', 'pharmacist', 'médico', 'curandeiro'
+  ],
+  'vida lenta (slow life)': [
+    'slow life', 'vida lenta', 'peaceful life', 'laid back', 'iyashikei', 'rural'
+  ],
+  'estrategista / gênio': [
+    'strategist', 'tactician', 'smart', 'genius', 'mastermind', 'clever protagonist',
+    'estrategista', 'inteligente'
+  ],
 
   // Gêneros Clássicos
   'ação': ['action', 'ação', 'acao'],
@@ -132,10 +176,15 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
 
 export const SPECIFIC_TROPES = [
   { id: 'Isekai', label: 'Isekai', highlight: true },
+  { id: 'Protagonista Criança / Shota', label: 'Protagonista Criança / Shota', highlight: true },
+  { id: 'Construção de Vila', label: 'Gestão de Território / Reino', highlight: true },
+  { id: 'Nobreza / Aristocracia', label: 'Nobreza / Aristocracia', highlight: true },
   { id: 'Overpower (OP)', label: 'Overpower (OP)', highlight: true },
   { id: 'Dungeon / Sistema', label: 'Dungeon / Sistema', highlight: true },
   { id: 'Regressão / Tempo', label: 'Regressão / Tempo', highlight: true },
   { id: 'Reencarnação', label: 'Reencarnação', highlight: true },
+  { id: 'Avaliação (Appraisal)', label: 'Avaliação (Appraisal)', highlight: true },
+  { id: 'Recrutamento / Aliados', label: 'Recrutamento / Talentos', highlight: true },
   { id: 'Vilã (Villainess)', label: 'Vilã (Villainess)', highlight: true },
   { id: 'Cultivação / Murim', label: 'Cultivação / Murim', highlight: true },
   { id: 'Vingança', label: 'Vingança / Traição', highlight: true },
@@ -144,9 +193,12 @@ export const SPECIFIC_TROPES = [
   { id: 'Harém', label: 'Harém', highlight: true },
   { id: 'Ecchi', label: 'Ecchi / Sensual', highlight: true },
   { id: 'RomCom / Comédia Romântica', label: 'Comédia Romântica', highlight: true },
+  { id: 'Estrategista / Gênio', label: 'Estrategista / Inteligente' },
+  { id: 'Vida Lenta (Slow Life)', label: 'Vida Lenta (Slow Life)' },
+  { id: 'Ferreiro / Artesão / Mercador', label: 'Ferreiro / Mercador / Alquimia' },
+  { id: 'Médico / Curandeiro', label: 'Médico / Curandeiro' },
   { id: 'Apocalipse / Zumbis', label: 'Apocalipse / Zumbis' },
-  { id: 'Construção de Vila', label: 'Construção de Reino' },
-  { id: 'Fazenda / Agricultura', label: 'Fazenda / Vida Lenta' },
+  { id: 'Fazenda / Agricultura', label: 'Fazenda / Agricultura' },
   { id: 'Academia de Magia', label: 'Academia de Magia' },
   { id: 'Trabalho / Adulto', label: 'Romance Adulto / Office' },
   { id: 'Troca de Gênero', label: 'Troca de Gênero (Gender Bender)' },
@@ -247,6 +299,31 @@ export function getMangaDemographic(manga: Manga): string | undefined {
   return undefined;
 }
 
+function normalizeWorkTitle(t: string): string {
+  return normalizeLibraryTitle(t);
+}
+
+function areSameSearchManga(a: Manga, b: Manga): boolean {
+  if (a.id === b.id) return true;
+  const nA = normalizeWorkTitle(a.title);
+  const nB = normalizeWorkTitle(b.title);
+  if (nA && nB && nA.length >= 3 && nA === nB) return true;
+
+  const altsA = (a.altTitles || []).map(normalizeWorkTitle).filter(s => s.length >= 3);
+  const altsB = (b.altTitles || []).map(normalizeWorkTitle).filter(s => s.length >= 3);
+  if (nB.length >= 4 && altsA.includes(nB)) return true;
+  if (nA.length >= 4 && altsB.includes(nA)) return true;
+
+  for (const x of altsA) {
+    if (x.length >= 5 && altsB.includes(x)) return true;
+  }
+
+  const romajiLoose = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
+  const setA = [nA, ...altsA].filter(s => s.length >= 12).map(romajiLoose);
+  const setB = [nB, ...altsB].filter(s => s.length >= 12).map(romajiLoose);
+  return setA.some(s => setB.includes(s));
+}
+
 export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGenre: string, scanSynopsis = true): boolean {
   if (!mangaOrGenres) return false;
   const targetLower = filterGenre.toLowerCase().trim();
@@ -287,7 +364,12 @@ export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGe
   });
 }
 
-export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadChapter, initialQuery = '' }) => {
+export const SearchPage: React.FC<SearchPageProps> = ({
+  onSelectManga,
+  onReadChapter,
+  initialQuery = '',
+  browseSignal = null
+}) => {
   const getUrlParam = (key: string, fallback: string = '') => {
     if (typeof window !== 'undefined') {
       const sp = new URLSearchParams(window.location.search);
@@ -303,12 +385,18 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
   const [loadingMore, setLoadingMore] = useState(false);
   const [searchPage, setSearchPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [sourcesList, setSourcesList] = useState<MangaSourceInfo[]>(() => [...FALLBACK_SOURCES_META]);
 
   // Filters state
   const [selectedStatus, setSelectedStatus] = useState<string>(() => getUrlParam('status', 'all'));
   const [selectedDemographic, setSelectedDemographic] = useState<string>(() => getUrlParam('demographic', 'all'));
   const [selectedType, setSelectedType] = useState<string>(() => getUrlParam('type', 'all'));
   const [selectedSource, setSelectedSource] = useState<string>(() => getUrlParam('source', 'all'));
+  const [sourceBrowseMode, setSourceBrowseMode] = useState<SourceBrowseMode>(() => {
+    const m = getUrlParam('mode', '');
+    if (m === 'latest' || m === 'popular' || m === 'search') return m;
+    return getUrlParam('source', 'all') !== 'all' && !getUrlParam('q', '') ? 'popular' : 'search';
+  });
   const [selectedLanguage, setSelectedLanguage] = useState<string>(() => getUrlParam('lang', '') || getPreferredLanguage());
   const [includedGenres, setIncludedGenres] = useState<string[]>(() => {
     const gs = getUrlParam('genres', '');
@@ -371,8 +459,14 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     favoritesList.forEach(fav => {
       if (fav.mangaId) ids.add(fav.mangaId);
       if (fav.title) {
-        const clean = fav.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const clean = normalizeWorkTitle(fav.title);
         if (clean) titles.add(clean);
+      }
+      if (Array.isArray(fav.altTitles)) {
+        fav.altTitles.forEach(alt => {
+          const cleanAlt = normalizeWorkTitle(alt);
+          if (cleanAlt && cleanAlt.length >= 3) titles.add(cleanAlt);
+        });
       }
     });
     return { savedIdsSet: ids, savedTitlesSet: titles };
@@ -384,8 +478,14 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     ignoredList.forEach(item => {
       if (item.mangaId) ids.add(item.mangaId);
       if (item.title) {
-        const clean = item.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const clean = normalizeWorkTitle(item.title);
         if (clean) titles.add(clean);
+      }
+      if (Array.isArray(item.altTitles)) {
+        item.altTitles.forEach(alt => {
+          const cleanAlt = normalizeWorkTitle(alt);
+          if (cleanAlt && cleanAlt.length >= 3) titles.add(cleanAlt);
+        });
       }
     });
     return { ignoredIdsSet: ids, ignoredTitlesSet: titles };
@@ -394,12 +494,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
   const isMangaInLibrary = (m: Manga): boolean => {
     if (savedIdsSet.has(m.id)) return true;
     if (m.title) {
-      const clean = m.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const clean = normalizeWorkTitle(m.title);
       if (clean && savedTitlesSet.has(clean)) return true;
     }
     if (m.altTitles && m.altTitles.length > 0) {
       for (const alt of m.altTitles) {
-        const cleanAlt = alt.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const cleanAlt = normalizeWorkTitle(alt);
         if (cleanAlt && savedTitlesSet.has(cleanAlt)) return true;
       }
     }
@@ -408,18 +508,18 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
         if (s.externalId && savedIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
       }
     }
-    return false;
+    return checkMangaInFavorites(m, favoritesList);
   };
 
   const isMangaIgnored = (m: Manga): boolean => {
     if (ignoredIdsSet.has(m.id)) return true;
     if (m.title) {
-      const clean = m.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const clean = normalizeWorkTitle(m.title);
       if (clean && ignoredTitlesSet.has(clean)) return true;
     }
     if (m.altTitles && m.altTitles.length > 0) {
       for (const alt of m.altTitles) {
-        const cleanAlt = alt.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const cleanAlt = normalizeWorkTitle(alt);
         if (cleanAlt && ignoredTitlesSet.has(cleanAlt)) return true;
       }
     }
@@ -428,7 +528,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
         if (s.externalId && ignoredIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
       }
     }
-    return false;
+    return checkMangaInIgnored(m, ignoredList);
   };
 
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
@@ -519,11 +619,28 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
   }, [selectedStatus, selectedDemographic, selectedType, selectedSource, selectedLanguage, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
 
   useEffect(() => {
+    let active = true;
+    const syncSources = () => {
+      ExtensionService.getSourcesMeta().then(list => {
+        if (active && Array.isArray(list) && list.length > 0) {
+          setSourcesList(list);
+        }
+      }).catch(() => {});
+    };
+    syncSources();
+
     const startQ = getUrlParam('q', initialQuery);
     const startStatus = getUrlParam('status', 'all');
     const startDemo = getUrlParam('demographic', 'all');
     const startType = getUrlParam('type', 'all');
     const startSrc = getUrlParam('source', 'all');
+    const startModeParam = getUrlParam('mode', '');
+    const startMode: SourceBrowseMode =
+      startModeParam === 'latest' || startModeParam === 'popular' || startModeParam === 'search'
+        ? startModeParam
+        : startSrc !== 'all' && !startQ.trim()
+        ? 'popular'
+        : 'search';
     const startLang = getUrlParam('lang', '') || getPreferredLanguage();
     const startInc = getUrlParam('genres', '')
       ? getUrlParam('genres', '').split(',').filter(Boolean)
@@ -535,7 +652,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     const startAvail = getUrlParam('available', '1') !== '0';
     const startDeep = getUrlParam('deep', '1') !== '0';
 
-    executeSearch(startQ, startInc, startExc, startStatus, startDemo, startType, startSafe, startAvail, startSrc, startDeep, startLang);
+    executeSearch(startQ, startInc, startExc, startStatus, startDemo, startType, startSafe, startAvail, startSrc, startDeep, startLang, startMode);
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Subscribe to preferred language changes from Profile / other tabs
@@ -543,26 +664,72 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     return subscribePreferredLanguage((nextLang) => {
       setSelectedLanguage(prev => {
         if (prev === nextLang) return prev;
-        executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, nextLang);
+        executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, nextLang, sourceBrowseMode);
         return nextLang;
       });
     });
-  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch]);
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, sourceBrowseMode]);
 
-  // Subscribe to extension toggles in modal to automatically refresh active sources
+  // Subscribe to extension toggles / installs / uninstalls to keep source options and results live
   useEffect(() => {
     const unsub = ExtensionService.subscribe(() => {
-      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage);
+      ExtensionService.getSourcesMeta().then(list => {
+        if (Array.isArray(list) && list.length > 0) {
+          setSourcesList(list);
+        }
+      }).catch(() => {});
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
     });
     return unsub;
-  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage]);
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode]);
 
   useEffect(() => {
     if (initialQuery && initialQuery !== query) {
       setQuery(initialQuery);
-      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage);
+      setSourceBrowseMode('search');
+      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, 'search');
     }
   }, [initialQuery]);
+
+  // Respond to external Browse Source signals (e.g., clicking "Explorar catálogo" in ExtensionsModal)
+  useEffect(() => {
+    if (!browseSignal || !browseSignal.sourceId) return;
+    const nextMode = browseSignal.mode || 'popular';
+    setQuery('');
+    setSelectedStatus('all');
+    setSelectedDemographic('all');
+    setSelectedType('all');
+    setIncludedGenres([]);
+    setExcludedGenres([]);
+    setSelectedSource(browseSignal.sourceId);
+    setSourceBrowseMode(nextMode);
+    ExtensionService.getSourcesMeta().then(list => {
+      if (Array.isArray(list) && list.length > 0) setSourcesList(list);
+    }).catch(() => {});
+    executeSearch('', [], [], 'all', 'all', 'all', safeSearch, onlyAvailable, browseSignal.sourceId, deepSynopsisSearch, selectedLanguage, nextMode);
+  }, [browseSignal?.sourceId, browseSignal?.mode, browseSignal?.nonce]);
+
+  const isCatalogBrowseEligible = (
+    searchQuery: string,
+    src: string,
+    mode: SourceBrowseMode,
+    incGenres: string[],
+    excGenres: string[],
+    stat: string,
+    demo: string,
+    typ: string
+  ) => {
+    return (
+      src !== 'all' &&
+      mode !== 'search' &&
+      !searchQuery.trim() &&
+      incGenres.length === 0 &&
+      excGenres.length === 0 &&
+      stat === 'all' &&
+      demo === 'all' &&
+      typ === 'all'
+    );
+  };
 
   const executeSearch = async (
     searchQuery: string,
@@ -575,11 +742,15 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     availOnly = onlyAvailable,
     src = selectedSource,
     deepSynopsis = deepSynopsisSearch,
-    lang = selectedLanguage
+    lang = selectedLanguage,
+    browseMode: SourceBrowseMode = sourceBrowseMode
   ) => {
     setLoading(true);
     setSearchPage(1);
     setHasMore(true);
+
+    const effectiveMode: SourceBrowseMode =
+      src === 'all' ? 'search' : searchQuery.trim() ? 'search' : browseMode;
 
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/search')) {
       const sp = new URLSearchParams();
@@ -587,7 +758,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
       if (stat && stat !== 'all') sp.set('status', stat);
       if (demo && demo !== 'all') sp.set('demographic', demo);
       if (typ && typ !== 'all') sp.set('type', typ);
-      if (src && src !== 'all') sp.set('source', src);
+      if (src && src !== 'all') {
+        sp.set('source', src);
+        if (effectiveMode !== 'search') sp.set('mode', effectiveMode);
+      }
       if (lang && lang !== 'pt-br,en') sp.set('lang', lang);
       if (incGenres.length > 0) sp.set('genres', incGenres.join(','));
       if (excGenres.length > 0) sp.set('excluded_genres', excGenres.join(','));
@@ -599,6 +773,21 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     }
 
     try {
+      if (isCatalogBrowseEligible(searchQuery, src, effectiveMode, incGenres, excGenres, stat, demo, typ)) {
+        const catalogRes = await MangaApi.getSourceCatalog(src, {
+          mode: effectiveMode === 'latest' ? 'latest' : 'popular',
+          page: 1,
+          limit: 24,
+          includeAdult: !isSafe,
+          onlyAvailable: availOnly
+        });
+        const items = catalogRes.data || [];
+        setResults(items);
+        setSourcesQueried([src]);
+        setHasMore(Boolean(catalogRes.hasMore));
+        return;
+      }
+
       // Map primary genre to English for provider APIs
       const primaryGenreEnglish = incGenres.length > 0
         ? (GENRE_TRANSLATIONS[incGenres[0].toLowerCase()]?.[0] || incGenres[0])
@@ -664,6 +853,26 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     setLoadingMore(true);
     const nextPage = searchPage + 1;
     try {
+      if (isCatalogBrowseEligible(query, selectedSource, sourceBrowseMode, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType)) {
+        const catalogRes = await MangaApi.getSourceCatalog(selectedSource, {
+          mode: sourceBrowseMode === 'latest' ? 'latest' : 'popular',
+          page: nextPage,
+          limit: 24,
+          includeAdult: !safeSearch,
+          onlyAvailable
+        });
+        const newItems = catalogRes.data || [];
+        if (newItems.length === 0 || !catalogRes.hasMore) {
+          setHasMore(false);
+        }
+        setResults(prev => {
+          const filteredNew = newItems.filter(m => !prev.some(existing => areSameSearchManga(existing, m)));
+          return [...prev, ...filteredNew];
+        });
+        setSearchPage(nextPage);
+        return;
+      }
+
       const primaryGenreEnglish = includedGenres.length > 0
         ? (GENRE_TRANSLATIONS[includedGenres[0].toLowerCase()]?.[0] || includedGenres[0])
         : undefined;
@@ -707,8 +916,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
         setHasMore(false);
       }
       setResults(prev => {
-        const existingIds = new Set(prev.map(m => m.id));
-        const filteredNew = newItems.filter(m => !existingIds.has(m.id));
+        const filteredNew = newItems.filter(m => !prev.some(existing => areSameSearchManga(existing, m)));
         return [...prev, ...filteredNew];
       });
       setSearchPage(nextPage);
@@ -737,16 +945,22 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
 
     observer.observe(target);
     return () => observer.disconnect();
-  }, [hasMore, loading, loadingMore, results.length, searchPage]);
+  }, [hasMore, loading, loadingMore, results.length, searchPage, selectedSource, sourceBrowseMode]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    const nextMode: SourceBrowseMode = query.trim() ? 'search' : sourceBrowseMode;
+    if (query.trim() && sourceBrowseMode !== 'search') {
+      setSourceBrowseMode('search');
+    }
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, nextMode);
   };
 
   const handleClear = () => {
     setQuery('');
-    executeSearch('', includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    const nextMode: SourceBrowseMode = selectedSource !== 'all' ? 'popular' : 'search';
+    setSourceBrowseMode(nextMode);
+    executeSearch('', includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, nextMode);
   };
 
   const handleStatusSelect = (stat: string) => {
@@ -769,8 +983,20 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
 
   const handleSourceSelect = (src: string) => {
     const nextSrc = selectedSource === src ? 'all' : src;
+    const nextMode: SourceBrowseMode = nextSrc === 'all' ? 'search' : query.trim() ? 'search' : 'popular';
     setSelectedSource(nextSrc);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc, deepSynopsisSearch, selectedLanguage);
+    setSourceBrowseMode(nextMode);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, nextSrc, deepSynopsisSearch, selectedLanguage, nextMode);
+  };
+
+  const handleSourceBrowseModeChange = (mode: SourceBrowseMode) => {
+    setSourceBrowseMode(mode);
+    if (mode !== 'search' && query.trim()) {
+      setQuery('');
+      executeSearch('', includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, mode);
+    } else {
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, mode);
+    }
   };
 
   const handleLanguageSelect = (lang: string) => {
@@ -861,6 +1087,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     HistoryService.ignoreManga({
       mangaId: m.id,
       title: m.title,
+      altTitles: m.altTitles,
       coverUrl: m.coverUrl,
       sourceId: m.sources?.[0]?.sourceId,
       sourceName: m.sources?.[0]?.sourceName
@@ -891,9 +1118,31 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
 
   const handleRandomManga = async () => {
     try {
-      const pool = (displayedResults.length > 0 ? displayedResults : results.length > 0 ? results : (await MangaApi.getFeatured()));
-      if (pool.length === 0) return;
-      const chosen = pool[Math.floor(Math.random() * pool.length)];
+      const latestFavorites = HistoryService.getFavorites();
+      const latestIgnored = HistoryService.getIgnoredMangas();
+      let chosen = pickSurpriseCandidate(
+        [displayedResults, results],
+        latestFavorites,
+        latestIgnored
+      );
+
+      // If current filtered/visible results only contain saved or ignored works, fetch fresh featured works
+      if (
+        !chosen ||
+        checkMangaInFavorites(chosen, latestFavorites)
+      ) {
+        const featuredPool = await MangaApi.getFeatured().catch(() => []);
+        const freshDiscovery = pickSurpriseCandidate(
+          [displayedResults, results, featuredPool],
+          latestFavorites,
+          latestIgnored
+        );
+        if (freshDiscovery) {
+          chosen = freshDiscovery;
+        }
+      }
+
+      if (!chosen) return;
       onSelectManga(chosen.id);
     } catch (err) {
       console.warn('Failed to pick random manga:', err);
@@ -926,15 +1175,17 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
     { id: 'comic', label: 'Comics / Webtoon' }
   ];
 
-  const SOURCE_OPTIONS = [
-    { id: 'all', label: 'Todas as Extensões Ativas' },
-    { id: 'mangadex', label: 'MangaDex (Oficial)' },
-    { id: 'comick', label: 'Comick' },
-    { id: 'weebcentral', label: 'WeebCentral' },
-    { id: 'mangapill', label: 'MangaPill' },
-    { id: 'mangafire', label: 'MangaFire' },
-    { id: 'mangaball', label: 'MangaBall' }
-  ];
+  const SOURCE_OPTIONS = useMemo(() => {
+    return [
+      { id: 'all', label: 'Todas as Extensões Ativas' },
+      ...sourcesList.map(s => ({ id: s.id, label: s.name }))
+    ];
+  }, [sourcesList]);
+
+  const activeSourceInfo = useMemo(
+    () => (selectedSource !== 'all' ? sourcesList.find(s => s.id === selectedSource) : undefined),
+    [selectedSource, sourcesList]
+  );
 
   const statusLabel = (st: string) => {
     const found = STATUS_OPTIONS.find(o => o.id === st);
@@ -1607,6 +1858,97 @@ export const SearchPage: React.FC<SearchPageProps> = ({ onSelectManga, onReadCha
 
       {/* Main Results Container */}
       <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 mt-5 sm:mt-8">
+        {/* Mihon-style Browse Source Header Bar (when exploring a single extension) */}
+        {selectedSource !== 'all' && (
+          <div className="mb-5 p-3.5 sm:p-4 rounded-xl bg-zinc-900/65 border border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="h-9 w-9 rounded-xl bg-rose-500/10 border border-rose-500/25 flex items-center justify-center text-rose-400 shrink-0">
+                <Compass className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span className="text-sm font-semibold text-zinc-100 truncate">
+                    {activeSourceInfo?.name || sourceLabel(selectedSource)}
+                  </span>
+                  {activeSourceInfo?.isDynamic && (
+                    <>
+                      <span aria-hidden="true" className="text-zinc-700">·</span>
+                      <span className="text-xs text-zinc-400">
+                        Template {activeSourceInfo.template === 'themesia' ? 'Themesia' : activeSourceInfo.template === 'custom_html' ? 'Custom' : 'Madara'}
+                      </span>
+                    </>
+                  )}
+                  {activeSourceInfo?.languages && activeSourceInfo.languages.length > 0 && (
+                    <>
+                      <span aria-hidden="true" className="text-zinc-700">·</span>
+                      <span className="text-xs font-mono text-zinc-400">
+                        {activeSourceInfo.languages.join(', ')}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-400 truncate">
+                  {sourceBrowseMode === 'latest'
+                    ? 'Exibindo os últimos lançamentos publicados diretamente nesta fonte'
+                    : sourceBrowseMode === 'popular'
+                    ? 'Explorando o catálogo mais popular diretamente nesta extensão'
+                    : 'Pesquisando e filtrando dentro desta fonte'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="inline-flex items-center p-1 rounded-xl bg-zinc-950 border border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => handleSourceBrowseModeChange('popular')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                    sourceBrowseMode === 'popular'
+                      ? 'bg-zinc-800 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Flame className="h-3.5 w-3.5 text-rose-400" />
+                  <span>Populares</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSourceBrowseModeChange('latest')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                    sourceBrowseMode === 'latest'
+                      ? 'bg-zinc-800 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Clock className="h-3.5 w-3.5 text-sky-400" />
+                  <span>Últimos</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSourceBrowseModeChange('search')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                    sourceBrowseMode === 'search'
+                      ? 'bg-zinc-800 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Search className="h-3.5 w-3.5 text-zinc-300" />
+                  <span>Busca</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleSourceSelect('all')}
+                className="px-2.5 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer whitespace-nowrap"
+                title="Voltar à busca global em todas as fontes"
+              >
+                Todas as fontes
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Results Metadata & View Controls Bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between pb-3.5 sm:pb-4 border-b border-zinc-800/80 mb-4 sm:mb-6 gap-3 text-xs text-zinc-400">
           <div className="flex flex-wrap items-center gap-2">

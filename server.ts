@@ -14,10 +14,10 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
-  const isProduction = process.env.NODE_ENV === 'production';
+  const PORT = Number(process.env.PORT) || 3000;
+  const isProduction = process.env.NODE_ENV === 'production' || __filename.endsWith('.js');
 
-  app.use(express.json());
+  app.use(express.json({ limit: '16mb' }));
 
   // Mount Tracker API routes (AniList & MyAnimeList)
   app.use('/api/trackers', trackerRouter);

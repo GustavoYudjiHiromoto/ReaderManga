@@ -81,13 +81,69 @@ export interface MangaPage {
   height?: number;
 }
 
+export type ExtensionTemplate = 'native' | 'madara' | 'themesia' | 'custom_html' | 'json_api';
+
+export interface CustomHtmlSelectors {
+  searchPath?: string;
+  popularPath?: string;
+  searchItem: string;
+  title: string;
+  link: string;
+  cover?: string;
+  detailTitle?: string;
+  detailCover?: string;
+  detailSynopsis?: string;
+  detailGenres?: string;
+  detailAuthor?: string;
+  detailStatus?: string;
+  chapterItem: string;
+  chapterTitle?: string;
+  chapterLink?: string;
+  chapterDate?: string;
+  pageImg: string;
+}
+
+export interface DynamicExtensionManifest {
+  id: string;
+  name: string;
+  baseUrl: string;
+  defaultBaseUrl?: string;
+  template: 'madara' | 'themesia' | 'custom_html';
+  version: string;
+  lang: string;
+  languages?: string[];
+  description?: string;
+  badge?: string;
+  iconColor?: string;
+  repoUrl?: string;
+  nsfw?: boolean;
+  selectors?: CustomHtmlSelectors;
+  headers?: Record<string, string>;
+  installedAt?: number;
+  updatedAt?: number;
+}
+
+export interface ExtensionRepo {
+  url: string;
+  name: string;
+  description?: string;
+  lastSyncedAt: number;
+  extensions: DynamicExtensionManifest[];
+}
+
 export interface MangaSourceInfo {
   id: string;
   name: string;
   description: string;
   version: string;
   isAvailable: boolean;
-  type: 'live_api';
+  type: 'live_api' | 'template_extension';
+  template?: ExtensionTemplate;
+  baseUrl?: string;
+  defaultBaseUrl?: string;
+  isDynamic?: boolean;
+  repoUrl?: string;
+  supportsMirrorEdit?: boolean;
   websiteUrl?: string;
   supportedFeatures: {
     search: boolean;
@@ -111,11 +167,14 @@ export interface SourceConfig {
   preferredLanguage?: string;
 }
 
+export type PingErrorCode = 'cloudflare' | 'offline' | 'ratelimit' | 'layout' | 'unknown';
+
 export interface SourcePingResult {
   sourceId: string;
   status: 'online' | 'degraded' | 'offline';
   latencyMs: number;
   error?: string;
+  errorCode?: PingErrorCode;
   checkedAt?: number;
 }
 
@@ -182,6 +241,7 @@ export interface PageBookmark {
 export interface IgnoredManga {
   mangaId: string;
   title: string;
+  altTitles?: string[];
   coverUrl?: string;
   sourceId?: string;
   sourceName?: string;
@@ -207,8 +267,71 @@ export interface MangaUpdateInfo {
   latestChapterNumber: string;
   latestChapterTitle?: string;
   releaseDate?: string;
+  chapterSourceId?: string;
+  chapterSourceName?: string;
+  failoverUsed?: boolean;
   hasNew: boolean;
   lastReadNumber?: string;
   discoveredAt?: number;
   checkedAt: number;
 }
+
+export interface SiteDetectionResult {
+  detected: boolean;
+  suggestedName: string;
+  baseUrl: string;
+  lang: string;
+  template: 'madara' | 'themesia' | 'custom_html';
+  confidence: 'high' | 'medium' | 'low';
+  signals: string[];
+  cloudflareBlocked?: boolean;
+  probeSearchCount: number;
+  probeSampleTitles: string[];
+  probeChapterCount?: number;
+  selectors?: CustomHtmlSelectors;
+  error?: string;
+}
+
+export interface RepoSyncSummary {
+  reposChecked: number;
+  extensionsUpdated: Array<{
+    id: string;
+    name: string;
+    fromVersion: string;
+    toVersion: string;
+  }>;
+  failedRepos: Array<{
+    url: string;
+    error: string;
+  }>;
+}
+
+export interface MirrorProbeCandidate {
+  url: string;
+  reachable: boolean;
+  status: number;
+  latencyMs: number;
+  cloudflare?: boolean;
+}
+
+export type RelayMode = 'off' | 'fallback' | 'always';
+
+export interface RelayStatus {
+  mode: RelayMode;
+  bridgeOnline: boolean;
+  customProxyConfigured: boolean;
+  customProxyUrl?: string;
+  clientLabel?: string;
+  connectedSince?: number;
+  lastSeenAt?: number;
+  token: string;
+  stats: {
+    requestsServed: number;
+    requestsSucceeded: number;
+    requestsFailed: number;
+    lastBlockedDomain?: string;
+    lastRoutedAt?: number;
+  };
+}
+
+

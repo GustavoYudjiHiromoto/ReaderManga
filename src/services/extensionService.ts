@@ -1,4 +1,15 @@
-import { Manga, MangaSourceInfo, SourceConfig, SourcePingResult } from '../types/manga.js';
+import {
+  DynamicExtensionManifest,
+  ExtensionRepo,
+  Manga,
+  MangaSourceInfo,
+  SourceConfig,
+  SourcePingResult,
+  CustomHtmlSelectors,
+  SiteDetectionResult,
+  RepoSyncSummary,
+  MirrorProbeCandidate
+} from '../types/manga.js';
 import { MangaApi } from './api.js';
 
 const STORAGE_KEY = 'mr_extensions_config';
@@ -385,11 +396,36 @@ class ExtensionServiceImpl {
     try {
       const liveSources = await MangaApi.getSources();
       if (Array.isArray(liveSources) && liveSources.length > 0) {
-        // Ensure all fallback sources exist in the returned list
         const map = new Map<string, MangaSourceInfo>();
         FALLBACK_SOURCES_META.forEach(s => map.set(s.id, s));
         liveSources.forEach(s => map.set(s.id, { ...map.get(s.id), ...s }));
         this.sourcesMeta = Array.from(map.values());
+
+        // Auto-register any newly discovered dynamic extensions into configs
+        let configChanged = false;
+        const liveIds = new Set(this.sourcesMeta.map(s => s.id));
+        const maxPriority = Object.values(this.configs).reduce((max, c) => Math.max(max, c.priority), -1);
+        let nextPriority = maxPriority + 1;
+
+        for (const s of this.sourcesMeta) {
+          if (!this.configs[s.id]) {
+            this.configs[s.id] = { id: s.id, enabled: true, priority: nextPriority++ };
+            configChanged = true;
+          }
+        }
+
+        // Prune uninstalled dynamic sources from configs
+        for (const key of Object.keys(this.configs)) {
+          if (!DEFAULT_SOURCE_CONFIGS[key] && !liveIds.has(key)) {
+            delete this.configs[key];
+            delete this.pingResults[key];
+            configChanged = true;
+          }
+        }
+
+        if (configChanged) {
+          this.saveToStorage();
+        }
         return this.sourcesMeta;
       }
     } catch (err) {
@@ -548,6 +584,104 @@ class ExtensionServiceImpl {
       page: options?.page,
       limit: options?.limit
     });
+  }
+
+  public async getRepos(): Promise<ExtensionRepo[]> {
+    return MangaApi.getExtensionRepos();
+  }
+
+  public async addRepo(url: string): Promise<ExtensionRepo> {
+    return MangaApi.addExtensionRepo(url);
+  }
+
+  public async removeRepo(url: string): Promise<void> {
+    await MangaApi.removeExtensionRepo(url);
+  }
+
+  public async installExtension(manifest: Partial<DynamicExtensionManifest>): Promise<DynamicExtensionManifest> {
+    const installed = await MangaApi.installExtension(manifest);
+    const maxPriority = Object.values(this.configs).reduce((max, c) => Math.max(max, c.priority), -1);
+    this.configs = {
+      ...this.configs,
+      [installed.id]: {
+        id: installed.id,
+        enabled: true,
+        priority: this.configs[installed.id]?.priority ?? maxPriority + 1
+      }
+    };
+    this.saveToStorage();
+    await this.getSourcesMeta();
+    return installed;
+  }
+
+  public async updateMirror(sourceId: string, baseUrl: string | null): Promise<DynamicExtensionManifest> {
+    const updated = await MangaApi.updateExtensionMirror(sourceId, baseUrl);
+    delete this.pingResults[sourceId];
+    this.saveToStorage();
+    await this.getSourcesMeta();
+    return updated;
+  }
+
+  public async uninstallExtension(sourceId: string): Promise<void> {
+    await MangaApi.uninstallExtension(sourceId);
+    const nextConfigs = { ...this.configs };
+    delete nextConfigs[sourceId];
+    this.configs = nextConfigs;
+    delete this.pingResults[sourceId];
+    this.saveToStorage();
+    await this.getSourcesMeta();
+  }
+
+  public async detectSite(payload: {
+    url: string;
+    query?: string;
+    template?: 'madara' | 'themesia' | 'custom_html';
+    selectors?: CustomHtmlSelectors;
+  }): Promise<SiteDetectionResult> {
+    return MangaApi.detectExtensionSite(payload);
+  }
+
+  public async syncAllRepos(): Promise<RepoSyncSummary> {
+    const summary = await MangaApi.syncAllExtensionRepos();
+    await this.getSourcesMeta();
+    return summary;
+  }
+
+  public async probeMirrors(sourceId: string, baseUrl?: string): Promise<MirrorProbeCandidate[]> {
+    return MangaApi.probeExtensionMirrors(sourceId, baseUrl);
+  }
+
+  public getHealthSummary(sourceIds?: string[]): {
+    online: number;
+    degraded: number;
+    offline: number;
+    cloudflare: number;
+    untested: number;
+  } {
+    const targetIds = sourceIds || this.sourcesMeta.map(s => s.id);
+    let online = 0;
+    let degraded = 0;
+    let offline = 0;
+    let cloudflare = 0;
+    let untested = 0;
+
+    for (const id of targetIds) {
+      const p = this.pingResults[id];
+      if (!p) {
+        untested++;
+      } else if (p.status === 'online' && !p.errorCode) {
+        online++;
+      } else if (p.status === 'degraded' || p.errorCode === 'layout') {
+        degraded++;
+      } else {
+        offline++;
+        if (p.errorCode === 'cloudflare') {
+          cloudflare++;
+        }
+      }
+    }
+
+    return { online, degraded, offline, cloudflare, untested };
   }
 }
 

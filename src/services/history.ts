@@ -489,8 +489,213 @@ export const HistoryService = {
     }
   },
 
+  enrichFavoritesMetadata(
+    resolvedMap: Record<string, { altTitles?: string[]; authors?: string[] }>
+  ): boolean {
+    try {
+      const favorites = this.getFavorites();
+      let changed = false;
+      const updated = favorites.map(fav => {
+        const extra = resolvedMap[fav.mangaId];
+        if (!extra) return fav;
+        const mergedAlts = Array.from(
+          new Set([...(fav.altTitles || []), ...(extra.altTitles || [])].filter(Boolean))
+        ).slice(0, 14);
+        const nextAuthors =
+          (!fav.authors || fav.authors.length === 0 || fav.authors.includes('Coleção')) &&
+          extra.authors?.length
+            ? extra.authors
+            : fav.authors;
+        if (
+          mergedAlts.length > (fav.altTitles?.length || 0) ||
+          (nextAuthors && nextAuthors !== fav.authors)
+        ) {
+          changed = true;
+          return {
+            ...fav,
+            altTitles: mergedAlts.length > 0 ? mergedAlts : fav.altTitles,
+            authors: nextAuthors
+          };
+        }
+        return fav;
+      });
+      if (changed) {
+        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+        notifyListeners();
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  },
+
   isBookmarked(mangaId: string): boolean {
     return this.getFavorites().some(f => f.mangaId === mangaId);
+  },
+
+  /**
+   * Migrates a manga entry (favorite metadata, category, score, notes, collections,
+   * read chapters, and reading progress) from an old source/mangaId to a new target source.
+   */
+  migrateMangaData(
+    sourceMangaId: string,
+    targetManga: {
+      mangaId: string;
+      title: string;
+      coverUrl: string;
+      sourceId?: string;
+      sourceName?: string;
+      rating?: number;
+      authors?: string[];
+      genres?: string[];
+      status?: FavoriteManga['status'];
+      synopsis?: string;
+      altTitles?: string[];
+    },
+    targetChapters: Chapter[],
+    sourceChapters: Chapter[] = [],
+    options?: { removeOldSource?: boolean }
+  ): { migratedReadChapters: number; migratedFavorite: boolean; migratedProgress: boolean } {
+    const removeOld = options?.removeOldSource !== false;
+    const now = Date.now();
+    let migratedFavorite = false;
+    let migratedReadChapters = 0;
+    let migratedProgress = false;
+
+    try {
+      // 1. Migrate Favorite entry (preserving userCategory, userScore, userNotes, customCollections)
+      const favorites = this.getFavorites();
+      const oldFav = favorites.find(f => f.mangaId === sourceMangaId);
+      const existingTargetFav = favorites.find(f => f.mangaId === targetManga.mangaId);
+
+      if (oldFav || existingTargetFav) {
+        const mergedCollections = Array.from(
+          new Set([
+            ...(existingTargetFav?.customCollections || []),
+            ...(oldFav?.customCollections || [])
+          ])
+        );
+
+        const nextFav: FavoriteManga = {
+          mangaId: targetManga.mangaId,
+          title: targetManga.title || oldFav?.title || 'Mangá Salvo',
+          coverUrl: targetManga.coverUrl || oldFav?.coverUrl || '',
+          sourceName: targetManga.sourceName || oldFav?.sourceName || 'MangaReader',
+          sourceId: targetManga.sourceId || oldFav?.sourceId,
+          rating: targetManga.rating ?? oldFav?.rating,
+          authors: targetManga.authors?.length ? targetManga.authors : oldFav?.authors,
+          genres: targetManga.genres?.length ? targetManga.genres : oldFav?.genres,
+          status: targetManga.status || oldFav?.status,
+          userCategory: oldFav?.userCategory || existingTargetFav?.userCategory || 'reading',
+          userScore: oldFav?.userScore ?? existingTargetFav?.userScore,
+          userNotes: oldFav?.userNotes ?? existingTargetFav?.userNotes,
+          customCollections: mergedCollections.length > 0 ? mergedCollections : undefined,
+          synopsis: targetManga.synopsis || oldFav?.synopsis,
+          altTitles: targetManga.altTitles?.length ? targetManga.altTitles : oldFav?.altTitles,
+          updatedAt: now
+        };
+
+        const filteredFavs = favorites.filter(
+          f => f.mangaId !== targetManga.mangaId && (!removeOld || f.mangaId !== sourceMangaId)
+        );
+        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify([nextFav, ...filteredFavs]));
+        syncBridge?.onFavoriteUpdated?.(nextFav);
+        if (removeOld && oldFav && sourceMangaId !== targetManga.mangaId) {
+          syncBridge?.onFavoriteRemoved?.(sourceMangaId);
+        }
+        migratedFavorite = true;
+      }
+
+      // 2. Migrate Read Chapters by matching chapterNumber (or <= highest read chapter number)
+      const readSet = new Set(this.getReadChapters());
+      const readNumbers = new Set<string>();
+      let highestReadFloat = -1;
+
+      for (const ch of sourceChapters) {
+        const isRead = readSet.has(ch.id) || Boolean(ch.variants?.some(v => readSet.has(v.id)));
+        if (isRead) {
+          const norm = String(parseFloat(ch.chapterNumber));
+          if (norm !== 'NaN') {
+            readNumbers.add(norm);
+            highestReadFloat = Math.max(highestReadFloat, parseFloat(ch.chapterNumber));
+          } else {
+            readNumbers.add(ch.chapterNumber.trim().toLowerCase());
+          }
+        }
+      }
+
+      const historyList = this.getHistory();
+      const oldProgress = historyList.find(h => h.mangaId === sourceMangaId);
+      if (oldProgress?.chapterNumber) {
+        const pFloat = parseFloat(oldProgress.chapterNumber);
+        if (!isNaN(pFloat)) {
+          highestReadFloat = Math.max(highestReadFloat, pFloat);
+          readNumbers.add(String(pFloat));
+        }
+      }
+
+      if (readNumbers.size > 0 || highestReadFloat >= 0) {
+        for (const tCh of targetChapters) {
+          const tFloat = parseFloat(tCh.chapterNumber);
+          const matchesExact = !isNaN(tFloat)
+            ? readNumbers.has(String(tFloat))
+            : readNumbers.has(tCh.chapterNumber.trim().toLowerCase());
+          const matchesRange = !isNaN(tFloat) && highestReadFloat >= 0 && tFloat <= highestReadFloat;
+
+          if (matchesExact || matchesRange) {
+            if (!readSet.has(tCh.id)) {
+              readSet.add(tCh.id);
+              migratedReadChapters++;
+            }
+            tCh.variants?.forEach(v => readSet.add(v.id));
+          }
+        }
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(readSet)));
+      }
+
+      // 3. Migrate ReadingProgress
+      if (oldProgress && targetChapters.length > 0) {
+        const oldNum = parseFloat(oldProgress.chapterNumber);
+        const matchedTargetCh =
+          targetChapters.find(c => {
+            const cNum = parseFloat(c.chapterNumber);
+            return !isNaN(oldNum) && !isNaN(cNum)
+              ? cNum === oldNum
+              : c.chapterNumber === oldProgress.chapterNumber;
+          }) ||
+          targetChapters.find(c => !isNaN(oldNum) && parseFloat(c.chapterNumber) >= oldNum) ||
+          targetChapters[targetChapters.length - 1];
+
+        if (matchedTargetCh) {
+          const nextProgress: ReadingProgress = {
+            mangaId: targetManga.mangaId,
+            mangaTitle: targetManga.title,
+            mangaCover: targetManga.coverUrl,
+            chapterId: matchedTargetCh.id,
+            chapterNumber: matchedTargetCh.chapterNumber,
+            chapterTitle: matchedTargetCh.title,
+            pageNumber: matchedTargetCh.chapterNumber === oldProgress.chapterNumber ? oldProgress.pageNumber : 1,
+            totalPages: matchedTargetCh.pagesCount || oldProgress.totalPages || 1,
+            sourceId: targetManga.sourceId || matchedTargetCh.sourceId,
+            updatedAt: now
+          };
+
+          const filteredHistory = historyList.filter(
+            h => h.mangaId !== targetManga.mangaId && (!removeOld || h.mangaId !== sourceMangaId)
+          );
+          localStorage.setItem(STORAGE_KEY, JSON.stringify([nextProgress, ...filteredHistory].slice(0, 50)));
+          syncBridge?.onProgressSaved?.(nextProgress);
+          migratedProgress = true;
+        }
+      }
+
+      notifyListeners();
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to migrate manga data:', e);
+    }
+
+    return { migratedReadChapters, migratedFavorite, migratedProgress };
   },
 
   /**
@@ -719,6 +924,9 @@ export const HistoryService = {
         .map((item: any) => ({
           mangaId: item.mangaId,
           title: item.title || 'Obra Dispensada',
+          altTitles: Array.isArray(item.altTitles)
+            ? item.altTitles.filter((t: any) => typeof t === 'string' && t.trim().length > 0).slice(0, 10)
+            : undefined,
           coverUrl: item.coverUrl || undefined,
           sourceId: item.sourceId || undefined,
           sourceName: item.sourceName || undefined,
@@ -741,6 +949,9 @@ export const HistoryService = {
       const entry: IgnoredManga = {
         mangaId: manga.mangaId,
         title: manga.title || 'Obra Dispensada',
+        altTitles: Array.isArray(manga.altTitles)
+          ? manga.altTitles.filter(t => typeof t === 'string' && t.trim().length > 0).slice(0, 10)
+          : undefined,
         coverUrl: manga.coverUrl,
         sourceId: manga.sourceId,
         sourceName: manga.sourceName,

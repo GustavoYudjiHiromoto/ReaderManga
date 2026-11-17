@@ -24,6 +24,7 @@ export interface IMangaSource {
   getInfo(): MangaSourceInfo;
   search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult>;
   getPopular(options?: SourceSearchOptions): Promise<Manga[]>;
+  getLatest?(options?: SourceSearchOptions): Promise<Manga[]>;
   getMangaDetails(externalId: string): Promise<Manga | null>;
   getChapters(externalMangaId: string, language?: string): Promise<Chapter[]>;
   getChapterPages(externalChapterId: string): Promise<MangaPage[]>;

@@ -1,6 +1,7 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo, MangaStatus } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
+import { residentialRelayService } from '../services/ResidentialRelayService.js';
 
 function decodeHtmlEntities(str: string): string {
   if (!str) return '';
@@ -58,6 +59,38 @@ export class MangaBallProvider implements IMangaSource {
    */
   private async fetchApi(endpoint: string, options: RequestInit = {}): Promise<any> {
     const fullUrl = endpoint.startsWith('http') ? endpoint : `${this.baseUrl}${endpoint}`;
+    const reqHeaders: Record<string, string> = {
+      'User-Agent': this.userAgent,
+      'Accept': 'application/json, text/plain, */*',
+      'Origin': this.baseUrl,
+      'Referer': `${this.baseUrl}/`,
+      ...((options.headers as Record<string, string>) || {})
+    };
+
+    const parseRelayText = (text: string) => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    };
+
+    if (residentialRelayService.getMode() === 'always' && residentialRelayService.isRelayReady()) {
+      try {
+        const relayed = await residentialRelayService.fetchThroughRelay(fullUrl, {
+          method: (options.method as string) || 'GET',
+          headers: reqHeaders,
+          body: options.body ? String(options.body) : undefined,
+          responseType: 'text'
+        });
+        if (relayed.ok && relayed.bodyText) {
+          return parseRelayText(relayed.bodyText);
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
     const flareUrl = process.env.FLARESOLVERR_URL;
 
     if (flareUrl) {
@@ -75,11 +108,7 @@ export class MangaBallProvider implements IMangaSource {
         if (response.ok) {
           const json = await response.json() as any;
           if (json?.solution?.response) {
-            try {
-              return JSON.parse(json.solution.response);
-            } catch {
-              return json.solution.response;
-            }
+            return parseRelayText(json.solution.response);
           }
         }
       } catch (err) {
@@ -89,16 +118,25 @@ export class MangaBallProvider implements IMangaSource {
 
     const res = await fetch(fullUrl, {
       ...options,
-      headers: {
-        'User-Agent': this.userAgent,
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': this.baseUrl,
-        'Referer': `${this.baseUrl}/`,
-        ...(options.headers || {})
-      }
+      headers: reqHeaders
     });
 
     if (res.status === 403) {
+      if (residentialRelayService.isRelayReady()) {
+        try {
+          const relayed = await residentialRelayService.fetchThroughRelay(fullUrl, {
+            method: (options.method as string) || 'GET',
+            headers: reqHeaders,
+            body: options.body ? String(options.body) : undefined,
+            responseType: 'text'
+          });
+          if (relayed.ok && relayed.bodyText) {
+            return parseRelayText(relayed.bodyText);
+          }
+        } catch {
+          // ignore
+        }
+      }
       console.warn(`[MangaBall] Cloudflare WAF 403 on ${fullUrl}`);
       return null;
     }
@@ -108,11 +146,7 @@ export class MangaBallProvider implements IMangaSource {
     }
 
     const text = await res.text();
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
+    return parseRelayText(text);
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {

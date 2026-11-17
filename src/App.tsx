@@ -30,6 +30,8 @@ interface ParsedRoute {
   mangaId?: string;
   chapterId?: string;
   query?: string;
+  source?: string;
+  mode?: 'popular' | 'latest' | 'search';
 }
 
 function parseLocation(): ParsedRoute {
@@ -59,7 +61,14 @@ function parseLocation(): ParsedRoute {
   }
 
   if (pathname === '/search') {
-    return { tab: 'search', query: searchParams.get('q') || '' };
+    const rawMode = searchParams.get('mode');
+    const parsedMode = rawMode === 'latest' || rawMode === 'popular' || rawMode === 'search' ? rawMode : undefined;
+    return {
+      tab: 'search',
+      query: searchParams.get('q') || '',
+      source: searchParams.get('source') || undefined,
+      mode: parsedMode
+    };
   }
 
   if (pathname === '/catalog') {
@@ -91,6 +100,15 @@ export default function App() {
   const [selectedMangaId, setSelectedMangaId] = useState<string | null>(initialRoute.mangaId || null);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(initialRoute.chapterId || null);
   const [searchInitialQuery, setSearchInitialQuery] = useState<string>(initialRoute.query || '');
+  const [searchBrowseSignal, setSearchBrowseSignal] = useState<{
+    sourceId: string;
+    mode: 'popular' | 'latest' | 'search';
+    nonce: number;
+  } | null>(() =>
+    initialRoute.source
+      ? { sourceId: initialRoute.source, mode: initialRoute.mode || 'popular', nonce: 0 }
+      : null
+  );
   const [mangaDetailOrigin, setMangaDetailOrigin] = useState<OriginType>('home');
   const [inAppHistoryDepth, setInAppHistoryDepth] = useState<number>(0);
 
@@ -99,6 +117,7 @@ export default function App() {
   const [isTrackersOpen, setIsTrackersOpen] = useState(false);
   const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
   const [enabledSourcesCount, setEnabledSourcesCount] = useState<number>(() => ExtensionService.getEnabledSourceIds().length);
+  const [totalSourcesCount, setTotalSourcesCount] = useState<number>(() => Object.keys(ExtensionService.getConfigs()).length || 6);
   const [trackersModalManga, setTrackersModalManga] = useState<{ id?: string; title?: string } | null>(null);
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
@@ -154,9 +173,17 @@ export default function App() {
       setTrackersCount(ani + mal);
     });
 
-    // Subscribe to extension changes
+    // Subscribe to extension changes & sync dynamic sources count
+    ExtensionService.getSourcesMeta().then(list => {
+      if (Array.isArray(list) && list.length > 0) {
+        setTotalSourcesCount(list.length);
+        setEnabledSourcesCount(ExtensionService.getEnabledSourceIds().length);
+      }
+    }).catch(() => {});
+
     const unsubscribeExtensions = ExtensionService.subscribe(() => {
       setEnabledSourcesCount(ExtensionService.getEnabledSourceIds().length);
+      setTotalSourcesCount(Object.keys(ExtensionService.getConfigs()).length || 6);
     });
 
     // Set initial state in browser history if not present
@@ -368,6 +395,20 @@ export default function App() {
     refreshHistory();
   };
 
+  const handleExploreSource = (sourceId: string) => {
+    const nextDepth = inAppHistoryDepth + 1;
+    setInAppHistoryDepth(nextDepth);
+    setSearchInitialQuery('');
+    setSearchBrowseSignal({ sourceId, mode: 'popular', nonce: Date.now() });
+    setCurrentTab('search');
+    window.history.pushState(
+      { tab: 'search', source: sourceId, depth: nextDepth },
+      '',
+      `/search?source=${encodeURIComponent(sourceId)}&mode=popular`
+    );
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans">
       {/* Top Bar Navigation is hidden during immersive Reader mode */}
@@ -385,7 +426,7 @@ export default function App() {
           unreadUpdatesCount={unreadUpdatesCount}
           trackersCount={trackersCount}
           enabledSourcesCount={enabledSourcesCount}
-          totalSourcesCount={6}
+          totalSourcesCount={totalSourcesCount}
         />
       )}
 
@@ -409,6 +450,7 @@ export default function App() {
         <div className={currentTab === 'search' ? 'block' : 'hidden'}>
           <SearchPage
             initialQuery={searchInitialQuery}
+            browseSignal={searchBrowseSignal}
             onSelectManga={(mangaId) => handleSelectManga(mangaId, 'search')}
             onReadChapter={handleReadChapter}
           />
@@ -545,6 +587,7 @@ export default function App() {
       <ExtensionsModal
         isOpen={isExtensionsOpen}
         onClose={() => setIsExtensionsOpen(false)}
+        onExploreSource={handleExploreSource}
       />
 
       {/* Floating Offline Notification */}

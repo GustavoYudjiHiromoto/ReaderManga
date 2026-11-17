@@ -213,7 +213,7 @@ export class ComickProvider implements IMangaSource {
     return {
       id: `mr_${this.sourceId}_${hid}`,
       title,
-      altTitles: altTitles.slice(0, 5),
+      altTitles: altTitles.slice(0, 12),
       coverUrl,
       synopsis,
       authors,
@@ -385,6 +385,8 @@ export class ComickProvider implements IMangaSource {
 
       if (effectiveQuery) {
         url += `&q=${encodeURIComponent(effectiveQuery)}`;
+      } else {
+        url += `&sort=follow`;
       }
 
       const slugs = new Set<string>();
@@ -452,10 +454,10 @@ export class ComickProvider implements IMangaSource {
     try {
       const limit = Math.min(options?.limit || 24, 60);
       const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
-      let url = `${this.baseUrl}/v1.0/search?limit=${limit}&page=${page}`;
+      let url = `${this.baseUrl}/v1.0/search?sort=follow&limit=${limit}&page=${page}`;
 
       if (options?.genre && options.genre !== 'all') {
-        const genreSlug = ComickProvider.GENRE_MAP[options.genre.toLowerCase()];
+        const genreSlug = ComickProvider.resolveGenreSlug(options.genre);
         if (genreSlug) {
           url += `&genres=${encodeURIComponent(genreSlug)}`;
         }
@@ -476,6 +478,38 @@ export class ComickProvider implements IMangaSource {
       return mangaList;
     } catch (err) {
       console.warn(`[ComickProvider] getPopular failed:`, (err as Error).message);
+      return [];
+    }
+  }
+
+  async getLatest(options?: SourceSearchOptions): Promise<Manga[]> {
+    try {
+      const limit = Math.min(options?.limit || 24, 60);
+      const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
+      let url = `${this.baseUrl}/v1.0/search?sort=uploaded&limit=${limit}&page=${page}`;
+
+      if (options?.genre && options.genre !== 'all') {
+        const genreSlug = ComickProvider.resolveGenreSlug(options.genre);
+        if (genreSlug) {
+          url += `&genres=${encodeURIComponent(genreSlug)}`;
+        }
+      }
+
+      const res = await this.fetchWithTimeout(url);
+      const list = Array.isArray(res) ? res : [];
+      let mangaList: Manga[] = list.map((item: any) => this.normalizeComickItem(item));
+
+      if (!options?.includeAdult) {
+        mangaList = mangaList.filter((m: Manga) => !m.isAdult);
+      }
+
+      if (options?.onlyAvailable) {
+        mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
+      }
+
+      return mangaList;
+    } catch (err) {
+      console.warn(`[ComickProvider] getLatest failed:`, (err as Error).message);
       return [];
     }
   }

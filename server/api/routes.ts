@@ -10,6 +10,9 @@ import {
   findHybridSimilarMangas,
   findHybridPersonalizedRecommendations
 } from '../services/aiSimilarityService.js';
+import { extensionRepositoryService } from '../sources/ExtensionRepositoryService.js';
+import { residentialRelayService, isSafeExternalRelayUrl } from '../services/ResidentialRelayService.js';
+import { detectSiteExtension, probeAlternativeMirrors } from '../sources/SiteAutoDetector.js';
 
 export const apiRouter = Router();
 
@@ -27,30 +30,62 @@ function sendApiError(res: Response, err: unknown) {
   });
 }
 
-async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
-  let actualUrl = imageUrl;
-  if (actualUrl.startsWith('/api/proxy/image?url=')) {
-    actualUrl = decodeURIComponent(actualUrl.substring('/api/proxy/image?url='.length));
-  }
-
-  const isMangaDex = actualUrl.includes('mangadex.org') || actualUrl.includes('mangadex.network');
+function buildImageHeaders(targetUrl: string, explicitReferer?: string): Record<string, string> {
+  const isMangaDex = targetUrl.includes('mangadex.org') || targetUrl.includes('mangadex.network');
   const headers: Record<string, string> = {
     'User-Agent': isMangaDex
       ? 'MangaReader/1.0'
       : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   };
 
-  if (actualUrl.includes('comick.pictures') || actualUrl.includes('comick.io')) {
-    headers['Referer'] = 'https://comick.io/';
-  } else if (actualUrl.includes('weebcentral') || actualUrl.includes('planeptune.us') || actualUrl.includes('compsci88.com')) {
-    headers['Referer'] = 'https://weebcentral.com/';
-  } else if (actualUrl.includes('cdn.readdetectiveconan.com') || actualUrl.includes('mangapill.com')) {
-    headers['Referer'] = 'https://mangapill.com/';
-  } else if (actualUrl.includes('mangafire.to') || actualUrl.includes('mangafire')) {
-    headers['Referer'] = 'https://mangafire.to/';
-  } else if (actualUrl.includes('mangaball.net') || actualUrl.includes('mangaball')) {
-    headers['Referer'] = 'https://mangaball.net/';
+  if (explicitReferer && /^https?:\/\//i.test(explicitReferer)) {
+    headers['Referer'] = explicitReferer;
+    return headers;
   }
+
+  if (targetUrl.includes('comick.pictures') || targetUrl.includes('comick.io')) {
+    headers['Referer'] = 'https://comick.io/';
+  } else if (targetUrl.includes('weebcentral') || targetUrl.includes('planeptune.us') || targetUrl.includes('compsci88.com')) {
+    headers['Referer'] = 'https://weebcentral.com/';
+  } else if (targetUrl.includes('cdn.readdetectiveconan.com') || targetUrl.includes('mangapill.com')) {
+    headers['Referer'] = 'https://mangapill.com/';
+  } else if (targetUrl.includes('mangafire.to') || targetUrl.includes('mangafire')) {
+    headers['Referer'] = 'https://mangafire.to/';
+  } else if (targetUrl.includes('mangaball.net') || targetUrl.includes('mangaball')) {
+    headers['Referer'] = 'https://mangaball.net/';
+  } else {
+    try {
+      const targetHost = new URL(targetUrl).hostname;
+      const matchedSource = sourceRegistry.getSources().find(s => {
+        if (!s.baseUrl) return false;
+        try {
+          return new URL(s.baseUrl).hostname === targetHost;
+        } catch {
+          return false;
+        }
+      });
+      if (matchedSource?.baseUrl) {
+        headers['Referer'] = `${matchedSource.baseUrl.replace(/\/+$/, '')}/`;
+      }
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  return headers;
+}
+
+async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  let actualUrl = imageUrl;
+  let explicitReferer: string | undefined;
+  if (actualUrl.startsWith('/api/proxy/image?')) {
+    const qs = actualUrl.substring('/api/proxy/image?'.length);
+    const params = new URLSearchParams(qs);
+    actualUrl = params.get('url') || actualUrl;
+    explicitReferer = params.get('referer') || undefined;
+  }
+
+  const headers = buildImageHeaders(actualUrl, explicitReferer);
 
   let response = await fetch(actualUrl, { headers }).catch(() => null);
 
@@ -62,6 +97,23 @@ async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; con
   }
 
   if (!response || !response.ok) {
+    if (residentialRelayService.isRelayReady() && isSafeExternalRelayUrl(actualUrl)) {
+      try {
+        const relayed = await residentialRelayService.fetchThroughRelay(actualUrl, {
+          headers,
+          responseType: 'binary',
+          timeoutMs: 9000
+        });
+        if (relayed.ok && relayed.bodyBase64) {
+          return {
+            buffer: Buffer.from(relayed.bodyBase64, 'base64'),
+            contentType: relayed.headers?.['content-type'] || 'image/jpeg'
+          };
+        }
+      } catch {
+        // relay fallback failed
+      }
+    }
     return null;
   }
 
@@ -149,6 +201,371 @@ apiRouter.get('/sources/:id/ping', async (req: Request, res: Response) => {
     res.json({
       success: true,
       data: result
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// 1.1b Single-source catalog endpoint (Popular or Latest Releases per extension)
+apiRouter.get('/sources/:id/catalog', async (req: Request, res: Response) => {
+  try {
+    const sourceId = req.params.id;
+    const mode = req.query.mode === 'latest' ? 'latest' : 'popular';
+    const page = Math.max(1, parseInt((req.query.page as string) || '1', 10) || 1);
+    const limit = Math.min(60, Math.max(1, parseInt((req.query.limit as string) || '24', 10) || 24));
+    const includeAdult = req.query.includeAdult === 'true';
+    const onlyAvailable = req.query.onlyAvailable !== 'false';
+    const genre = req.query.genre as string | undefined;
+
+    const cacheKey = `catalog:${sourceId}:${mode}:${page}:${limit}:${includeAdult}:${onlyAvailable}:${genre || 'all'}`;
+    const cached = globalCache.get(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json(cached);
+    }
+
+    const items = await sourceRegistry.getSourceCatalog(sourceId, mode, {
+      page,
+      limit,
+      includeAdult,
+      onlyAvailable,
+      genre
+    });
+
+    const payload = {
+      success: true,
+      sourceId,
+      mode,
+      page,
+      total: items.length,
+      hasMore: items.length >= Math.min(limit, 18),
+      data: items
+    };
+    globalCache.set(cacheKey, payload, 300);
+    res.setHeader('X-Cache', 'MISS');
+    res.json(payload);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// 1.2 Extension Repositories & Dynamic Template Extensions (Mihon-style)
+apiRouter.get('/extensions/repos', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: extensionRepositoryService.getRepos()
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/extensions/repos', async (req: Request, res: Response) => {
+  try {
+    const url = req.body?.url as string;
+    const repo = await extensionRepositoryService.addOrRefreshRepo(url);
+    res.json({
+      success: true,
+      data: repo
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.delete('/extensions/repos', (req: Request, res: Response) => {
+  try {
+    const url = (req.query.url as string) || (req.body?.url as string);
+    if (!url) {
+      throw new HttpError(400, 'Parâmetro url do repositório é obrigatório.');
+    }
+    const removed = extensionRepositoryService.removeRepo(url);
+    res.json({
+      success: true,
+      removed
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.get('/extensions/installed', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: extensionRepositoryService.getInstalledExtensions()
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/extensions/install', (req: Request, res: Response) => {
+  try {
+    const rawManifest = req.body?.manifest || req.body;
+    const installed = extensionRepositoryService.installExtension(rawManifest);
+    res.json({
+      success: true,
+      data: installed
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.patch('/extensions/:id/mirror', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const baseUrl = req.body?.baseUrl ?? null;
+    const updated = extensionRepositoryService.updateMirror(id, baseUrl);
+    res.json({
+      success: true,
+      data: updated
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.delete('/extensions/:id', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const removed = extensionRepositoryService.uninstallExtension(id);
+    if (!removed) {
+      return res.status(404).json({
+        success: false,
+        error: `Extensão dinâmica '${id}' não encontrada.`
+      });
+    }
+    res.json({
+      success: true,
+      id
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// 1.2b Passo 4: Site Auto-Detection, Live Selector Test, Repo Auto-Sync, Export & Mirror Probing
+apiRouter.post('/extensions/detect', async (req: Request, res: Response) => {
+  try {
+    const rawUrl = typeof req.body?.url === 'string' ? req.body.url : '';
+    const query = typeof req.body?.query === 'string' ? req.body.query : undefined;
+    const template = req.body?.template;
+    const selectors = req.body?.selectors;
+    const result = await detectSiteExtension(rawUrl, {
+      query,
+      template:
+        template === 'madara' || template === 'themesia' || template === 'custom_html'
+          ? template
+          : undefined,
+      selectors: selectors && typeof selectors === 'object' ? selectors : undefined
+    });
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/extensions/repos/sync-all', async (_req: Request, res: Response) => {
+  try {
+    const summary = await extensionRepositoryService.syncAllRepos();
+    res.json({
+      success: true,
+      data: summary
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.get('/extensions/export-repo', (_req: Request, res: Response) => {
+  try {
+    const exported = extensionRepositoryService.exportRepoJson();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="mangareader-repo.json"');
+    res.json(exported);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/extensions/:id/probe-mirrors', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const sourceInfo = sourceRegistry.getSource(id)?.getInfo();
+    const baseUrl =
+      (typeof req.body?.baseUrl === 'string' && req.body.baseUrl.trim()) ||
+      sourceInfo?.baseUrl ||
+      sourceInfo?.websiteUrl;
+    if (!baseUrl) {
+      throw new HttpError(404, `URL base não encontrada para a fonte '${id}'.`);
+    }
+    const candidates = await probeAlternativeMirrors(baseUrl);
+    res.json({
+      success: true,
+      data: candidates
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+// 1.3 Opt-in Residential IP Bridge (Ponte Residencial)
+function extractRelayToken(req: Request): string {
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : '';
+  if (queryToken) return queryToken;
+  const auth = req.headers.authorization;
+  if (auth && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+  return '';
+}
+
+apiRouter.get('/relay/status', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: residentialRelayService.getStatus()
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.patch('/relay/config', (req: Request, res: Response) => {
+  try {
+    const status = residentialRelayService.updateConfig({
+      mode: req.body?.mode,
+      customProxyUrl: req.body?.customProxyUrl
+    });
+    res.json({
+      success: true,
+      data: status
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/relay/token/rotate', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: residentialRelayService.rotateToken()
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.post('/relay/disconnect', (_req: Request, res: Response) => {
+  try {
+    residentialRelayService.disconnectBridge();
+    res.json({
+      success: true,
+      data: residentialRelayService.getStatus()
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.get('/relay/script', (req: Request, res: Response) => {
+  try {
+    let serverBaseUrl = '';
+    const requestedBase = typeof req.query.baseUrl === 'string' ? req.query.baseUrl.trim() : '';
+    if (requestedBase) {
+      try {
+        const parsed = new URL(requestedBase);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          serverBaseUrl = parsed.origin;
+        }
+      } catch {
+        // fallback to request host
+      }
+    }
+
+    if (!serverBaseUrl) {
+      const forwardedProto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
+      const proto = forwardedProto || req.protocol || 'http';
+      const host = req.get('host') || 'localhost:3000';
+      serverBaseUrl = `${proto}://${host}`;
+    }
+
+    const script = residentialRelayService.generateBridgeScript(serverBaseUrl);
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="mangareader-bridge.mjs"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(script);
+  } catch (err) {
+    sendApiError(res, err);
+  }
+});
+
+apiRouter.get('/relay/poll', (req: Request, res: Response) => {
+  const token = extractRelayToken(req);
+  if (!residentialRelayService.validateToken(token)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Token da ponte residencial inválido ou expirado.'
+    });
+  }
+  const clientLabel = typeof req.query.label === 'string' ? req.query.label : 'Ponte Residencial';
+  residentialRelayService.handlePoll(clientLabel, res);
+});
+
+apiRouter.post('/relay/respond', (req: Request, res: Response) => {
+  const token = extractRelayToken(req);
+  if (!residentialRelayService.validateToken(token)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Token da ponte residencial inválido ou expirado.'
+    });
+  }
+  const jobId = typeof req.body?.jobId === 'string' ? req.body.jobId : '';
+  if (!jobId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Campo jobId obrigatório.'
+    });
+  }
+  const accepted = residentialRelayService.handleRespond(req.body);
+  res.json({ success: accepted });
+});
+
+apiRouter.post('/relay/test', async (req: Request, res: Response) => {
+  try {
+    const rawUrl = typeof req.body?.url === 'string' && req.body.url.trim()
+      ? req.body.url.trim()
+      : 'https://example.com';
+
+    if (!isSafeExternalRelayUrl(rawUrl)) {
+      throw new HttpError(400, 'URL de teste inválida ou bloqueada por proteção de rede.');
+    }
+
+    const startedAt = Date.now();
+    const result = await residentialRelayService.fetchThroughRelay(rawUrl, { timeoutMs: 8000 });
+    const latencyMs = Date.now() - startedAt;
+    const bytes = result.bodyText
+      ? Buffer.byteLength(result.bodyText, 'utf8')
+      : result.bodyBase64
+      ? Buffer.from(result.bodyBase64, 'base64').length
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        ok: result.ok,
+        status: result.status,
+        latencyMs,
+        bytes
+      }
     });
   } catch (err) {
     sendApiError(res, err);
@@ -354,15 +771,26 @@ apiRouter.get('/manga/:id/chapters', async (req: Request, res: Response) => {
     const lang = req.query.lang as string | undefined;
     const order = (req.query.order as string) || 'asc'; // 'asc' or 'desc'
     const deduplicate = req.query.deduplicate !== 'false';
+    const titleHint = typeof req.query.title === 'string' ? req.query.title.trim() : undefined;
+    const altTitlesRaw = typeof req.query.altTitles === 'string' ? req.query.altTitles : '';
+    const altTitlesHint = altTitlesRaw
+      ? altTitlesRaw.split('||').map(s => s.trim()).filter(Boolean).slice(0, 6)
+      : undefined;
+    const forceFederate = req.query.forceFederate === 'true';
 
-    const cacheKey = `chapters:${internalMangaId}:${lang || 'all'}:${order}:${deduplicate}`;
+    const cacheKey = `chapters:${internalMangaId}:${lang || 'all'}:${order}:${deduplicate}:${forceFederate ? 'fed' : 'std'}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
       return res.json(cached);
     }
 
-    let chapters = await sourceRegistry.getChapters(internalMangaId, lang, { deduplicate });
+    let chapters = await sourceRegistry.getChapters(internalMangaId, lang, {
+      deduplicate,
+      titleHint,
+      altTitlesHint,
+      forceFederate
+    });
 
     // Sort chapters
     chapters.sort((a, b) => {
@@ -550,29 +978,16 @@ apiRouter.get(/^\/chapters\/(.+)\/download$/, async (req: Request, res: Response
 apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
   try {
     const imageUrl = req.query.url as string;
+    const explicitReferer = req.query.referer as string | undefined;
     if (!imageUrl) {
       return res.status(400).send('Missing url parameter');
     }
 
-    const isMangaDex = imageUrl.includes('mangadex.org') || imageUrl.includes('mangadex.network');
-    const headers: Record<string, string> = {
-      'User-Agent': isMangaDex
-        ? 'MangaReader/1.0'
-        : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    };
-
-    if (imageUrl.includes('comick.pictures') || imageUrl.includes('comick.io')) {
-      headers['Referer'] = 'https://comick.io/';
-    } else if (imageUrl.includes('weebcentral') || imageUrl.includes('planeptune.us') || imageUrl.includes('compsci88.com')) {
-      headers['Referer'] = 'https://weebcentral.com/';
-    } else if (imageUrl.includes('cdn.readdetectiveconan.com') || imageUrl.includes('mangapill.com')) {
-      headers['Referer'] = 'https://mangapill.com/';
-    }
-
-    let response = await fetch(imageUrl, { headers });
+    const headers = buildImageHeaders(imageUrl, explicitReferer);
+    let response = await fetch(imageUrl, { headers }).catch(() => null);
 
     // Fallback if ephemeral MangaDex@Home node returned 404 or failed
-    if (!response.ok && imageUrl.includes('mangadex.network')) {
+    if ((!response || !response.ok) && imageUrl.includes('mangadex.network')) {
       const fallbackUrl = imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
       try {
         const fallbackRes = await fetch(fallbackUrl, {
@@ -584,6 +999,34 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
       } catch {
         // keep original response
       }
+    }
+
+    // Optional residential relay fallback for anti-hotlink/Cloudflare 403/503 protected images
+    if (
+      (!response || !response.ok || response.status === 403 || response.status === 503) &&
+      residentialRelayService.isRelayReady() &&
+      isSafeExternalRelayUrl(imageUrl)
+    ) {
+      try {
+        const relayed = await residentialRelayService.fetchThroughRelay(imageUrl, {
+          headers,
+          responseType: 'binary',
+          timeoutMs: 9000
+        });
+        if (relayed.ok && relayed.bodyBase64) {
+          const contentType = relayed.headers?.['content-type'] || 'image/jpeg';
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return res.send(Buffer.from(relayed.bodyBase64, 'base64'));
+        }
+      } catch {
+        // fall through to standard upstream failure handling
+      }
+    }
+
+    if (!response) {
+      return res.status(502).send('Failed to fetch upstream image');
     }
 
     if (!response.ok) {
@@ -620,6 +1063,115 @@ apiRouter.post('/backup/decompress', (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Falha ao descomprimir arquivo GZIP: ' + e.message });
     }
   });
+});
+
+// 8c. Cross-source altTitles resolver for library duplicate detection & "Ocultar Salvos"
+async function fetchAnilistSynonymsForTitle(rawTitle: string): Promise<string[]> {
+  const cleanTitle = (rawTitle || '').replace(/\([^)]*\)|\[[^\]]*\]/g, '').trim();
+  if (cleanTitle.length < 3) return [];
+  const normQuery = cleanTitle.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cacheKey = `anilist-syn:${normQuery}`;
+  const cached = globalCache.get<string[]>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2800);
+    const gql = `query ($search: String) { Media(search: $search, type: MANGA) { title { romaji english } synonyms } }`;
+    const resp = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: gql, variables: { search: cleanTitle } })
+    }).finally(() => clearTimeout(timer));
+    if (!resp.ok) return [];
+    const json: any = await resp.json().catch(() => null);
+    const media = json?.data?.Media;
+    if (!media) return [];
+
+    const candidates = [
+      media.title?.english,
+      media.title?.romaji,
+      ...(Array.isArray(media.synonyms) ? media.synonyms : [])
+    ]
+      .filter((s: unknown): s is string => typeof s === 'string' && s.trim().length >= 3)
+      .map(s => s.trim());
+
+    // Guard: ensure AniList actually matched the requested work before returning its synonyms
+    const normCandidates = candidates.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    const isVerifiedMatch = normCandidates.some(
+      nc => nc === normQuery || (normQuery.length >= 8 && nc.includes(normQuery)) || (nc.length >= 8 && normQuery.includes(nc))
+    );
+    const result = isVerifiedMatch
+      ? Array.from(new Set(candidates)).filter(c => c.toLowerCase() !== rawTitle.toLowerCase()).slice(0, 12)
+      : [];
+    globalCache.set(cacheKey, result, 86400);
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+apiRouter.post('/library/resolve-titles', async (req: Request, res: Response) => {
+  try {
+    const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    const items = rawItems
+      .filter((it: any) => it && typeof it.mangaId === 'string' && it.mangaId.trim())
+      .slice(0, 30) as Array<{ mangaId: string; title?: string }>;
+
+    const resolved: Record<string, { altTitles: string[]; authors?: string[] }> = {};
+    const queue = [...items];
+    const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        const cacheKey = `title-resolve:${item.mangaId}`;
+        const cached = globalCache.get<{ altTitles: string[]; authors?: string[] }>(cacheKey);
+        if (cached) {
+          resolved[item.mangaId] = cached;
+          continue;
+        }
+
+        let altTitles: string[] = [];
+        let authors: string[] | undefined;
+
+        try {
+          const details = await Promise.race([
+            sourceRegistry.getMangaById(item.mangaId),
+            new Promise<null>(resolve => setTimeout(() => resolve(null), 3500))
+          ]);
+          if (details) {
+            altTitles = Array.isArray(details.altTitles) ? details.altTitles : [];
+            if (Array.isArray(details.authors) && !details.authors.includes('Autor Desconhecido')) {
+              authors = details.authors;
+            }
+          }
+        } catch {
+          // fallback to AniList title synonyms below
+        }
+
+        if (item.title && altTitles.length < 2) {
+          const anilistSyns = await fetchAnilistSynonymsForTitle(item.title);
+          if (anilistSyns.length > 0) {
+            altTitles = Array.from(new Set([...altTitles, ...anilistSyns])).slice(0, 14);
+          }
+        }
+
+        const entry = { altTitles, authors };
+        globalCache.set(cacheKey, entry, altTitles.length > 0 ? 86400 : 1800);
+        resolved[item.mangaId] = entry;
+      }
+    });
+
+    await Promise.all(workers);
+
+    res.json({
+      success: true,
+      data: resolved
+    });
+  } catch (err) {
+    sendApiError(res, err);
+  }
 });
 
 // 9. Catch-all for undefined API routes (always returns JSON 404, never falls through to HTML)

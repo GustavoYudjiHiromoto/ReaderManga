@@ -70,6 +70,8 @@ export const MangaCard: React.FC<MangaCardProps> = ({
       authors: manga.authors,
       genres: manga.genres,
       status: manga.status,
+      synopsis: manga.synopsis,
+      altTitles: manga.altTitles,
       updatedAt: Date.now()
     });
     if (nextSaved && isIgnored) {
@@ -88,6 +90,7 @@ export const MangaCard: React.FC<MangaCardProps> = ({
     const nextIgnored = HistoryService.toggleIgnoreManga({
       mangaId: manga.id,
       title: manga.title,
+      altTitles: manga.altTitles,
       coverUrl: manga.coverUrl,
       sourceId: manga.sources?.[0]?.sourceId,
       sourceName: manga.sources?.[0]?.sourceName

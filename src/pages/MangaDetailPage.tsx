@@ -32,7 +32,8 @@ import {
   BookmarkX,
   Compass,
   Maximize2,
-  ZoomIn
+  ZoomIn,
+  ArrowRightLeft
 } from 'lucide-react';
 import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -50,6 +51,7 @@ import { TrackersModal } from '../components/TrackersModal.js';
 import { TrackerStatusBadge } from '../components/TrackerStatusBadge.js';
 import { BatchDownloadModal } from '../components/BatchDownloadModal.js';
 import { CategorySelectionModal } from '../components/CategorySelectionModal.js';
+import { MangaMigrationModal } from '../components/MangaMigrationModal.js';
 import { MangaCard } from '../components/MangaCard.js';
 import { RecommendationLoadingState } from '../components/RecommendationLoadingState.js';
 import {
@@ -126,6 +128,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid'>('list');
   const [expandAllChapters, setExpandAllChapters] = useState(false);
   const [showCoverLightbox, setShowCoverLightbox] = useState(false);
+  const [showMigrationModal, setShowMigrationModal] = useState(false);
   const similarSectionRef = useRef<HTMLElement>(null);
 
   const scrollToSimilar = () => {
@@ -394,6 +397,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     const nextIgnored = HistoryService.toggleIgnoreManga({
       mangaId: manga.id,
       title: manga.title,
+      altTitles: manga.altTitles,
       coverUrl: manga.coverUrl,
       sourceId: manga.sources?.[0]?.sourceId,
       sourceName: manga.sources?.[0]?.sourceName
@@ -651,6 +655,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   <Share2 className="h-3.5 w-3.5" />
                 </button>
               </div>
+
+              {onSelectManga && (
+                <button
+                  type="button"
+                  onClick={() => setShowMigrationModal(true)}
+                  className="w-full py-2 px-3 rounded-xl text-xs font-medium bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  title="Buscar e migrar esta obra e seu progresso para outra extensão"
+                >
+                  <ArrowRightLeft className="h-3.5 w-3.5 text-rose-400" />
+                  <span>Migrar para outra extensão</span>
+                </button>
+              )}
 
               {/* Botão Dispensar ("Não vou ler") — oculta das buscas sem salvar nos favoritos */}
               {(!isBookmarked || isIgnored) && (
@@ -1805,14 +1821,27 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                       </p>
                       {similarMeta.microTropes.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mt-2">
-                          {similarMeta.microTropes.slice(0, 4).map(trope => (
-                            <span
-                              key={trope}
-                              className="px-2 py-0.5 rounded-md bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-300 font-medium"
-                            >
-                              # {trope}
-                            </span>
-                          ))}
+                          {similarMeta.microTropes.slice(0, 5).map(trope => {
+                            const isSelected = selectedFocusTags.some(
+                              t => t.toLowerCase() === trope.toLowerCase()
+                            );
+                            return (
+                              <button
+                                key={trope}
+                                type="button"
+                                onClick={() => handleToggleFocusTag(trope)}
+                                disabled={loadingRecommendations}
+                                title={`Focar recomendações em "${trope}"`}
+                                className={`px-2 py-0.5 rounded-md border text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-60 ${
+                                  isSelected
+                                    ? 'bg-rose-500/20 border-rose-500/50 text-rose-200'
+                                    : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white'
+                                }`}
+                              >
+                                # {trope}
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -1874,7 +1903,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                         <Sliders className="h-3.5 w-3.5 text-rose-400 shrink-0" />
                         <span>Direcionar foco desta obra</span>
                         <span className="text-zinc-500 font-normal hidden sm:inline">
-                          — escolha o que você mais quer repetir (tipo de personagem, situação ou trope)
+                          — filtre estritamente por 1 palavra (ex: shota, território) ou frase (ex: reencarna como criança)
                         </span>
                       </div>
                       {hasActiveFocus && (
@@ -1890,36 +1919,52 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                       )}
                     </div>
 
-                    {focusChipOptions.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {focusChipOptions.slice(0, 10).map(item => {
-                          const isSelected = selectedFocusTags.some(
-                            t => t.toLowerCase() === item.tag.toLowerCase()
-                          );
-                          return (
-                            <button
-                              key={`${item.source}-${item.tag}`}
-                              type="button"
-                              onClick={() => handleToggleFocusTag(item.tag)}
-                              disabled={loadingRecommendations}
-                              title={`Focar recomendações em "${item.tag}" (${item.source})`}
-                              className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors cursor-pointer disabled:opacity-60 flex items-center gap-1.5 ${
-                                isSelected
-                                  ? 'bg-rose-500/15 border-rose-500/45 text-rose-200'
-                                  : 'bg-zinc-950/70 hover:bg-zinc-800 border-zinc-800 text-zinc-300 hover:text-white'
-                              }`}
-                            >
-                              <span>{item.tag}</span>
-                              {item.votes && item.source === 'mangaupdates' && (
-                                <span className="text-[9px] text-zinc-500 font-mono tabular-nums">
-                                  {item.votes}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
+                    {(() => {
+                      const QUICK_FOCUS_SUBCATEGORIES = [
+                        'Protagonista Criança / Shota',
+                        'Gestão de Território / Reino',
+                        'Nobreza / Aristocracia',
+                        'Habilidade Roubada (OP)',
+                        'Regressão no Tempo',
+                        'Vida Lenta (Slow Life)'
+                      ];
+                      const existingLower = new Set(focusChipOptions.map(o => o.tag.toLowerCase()));
+                      const quickExtras = QUICK_FOCUS_SUBCATEGORIES
+                        .filter(q => !existingLower.has(q.toLowerCase()))
+                        .map(q => ({ tag: q, source: 'anilist' as const }));
+                      const mergedChips = [...focusChipOptions.slice(0, 8), ...quickExtras.slice(0, 4)];
+
+                      return mergedChips.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {mergedChips.map(item => {
+                            const isSelected = selectedFocusTags.some(
+                              t => t.toLowerCase() === item.tag.toLowerCase()
+                            );
+                            return (
+                              <button
+                                key={`${item.source}-${item.tag}`}
+                                type="button"
+                                onClick={() => handleToggleFocusTag(item.tag)}
+                                disabled={loadingRecommendations}
+                                title={`Focar recomendações em "${item.tag}"`}
+                                className={`px-2.5 py-1 rounded-md text-[11px] font-medium border transition-colors cursor-pointer disabled:opacity-60 flex items-center gap-1.5 ${
+                                  isSelected
+                                    ? 'bg-rose-500/15 border-rose-500/45 text-rose-200'
+                                    : 'bg-zinc-950/70 hover:bg-zinc-800 border-zinc-800 text-zinc-300 hover:text-white'
+                                }`}
+                              >
+                                <span>{item.tag}</span>
+                                {'votes' in item && item.votes && item.source === 'mangaupdates' && (
+                                  <span className="text-[9px] text-zinc-500 font-mono tabular-nums">
+                                    {item.votes}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null;
+                    })()}
 
                     <form onSubmit={handleApplyCustomFocus} className="flex flex-col sm:flex-row gap-2">
                       <div className="relative flex-1">
@@ -1928,7 +1973,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           type="text"
                           value={customFocusInput}
                           onChange={(e) => setCustomFocusInput(e.target.value)}
-                          placeholder="Foco livre: ex. tall girl, muscle mommy, size difference, dívida..."
+                          placeholder="1 palavra (ex: shota, nobre) ou frase (ex: isekai protagonista reencarna como criança)..."
                           className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-rose-500/50"
                         />
                       </div>
@@ -2066,6 +2111,34 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           </div>
                         );
                       })}
+                    </div>
+                  ) : hasActiveFocus && similarMatches.length === 0 ? (
+                    <div className="text-center py-10 px-4 rounded-xl bg-zinc-900/40 border border-dashed border-zinc-800">
+                      <Sparkles className="h-8 w-8 text-amber-400/70 mx-auto mb-2" />
+                      <p className="text-sm font-medium text-zinc-200">
+                        Nenhuma obra encontrada exatamente com o foco selecionado
+                      </p>
+                      <p className="text-xs text-zinc-400 mt-1 mb-4 max-w-lg mx-auto">
+                        Para evitar sugestões sem relação, ocultamos resultados que não atendem a "{[...selectedFocusTags, appliedFocusQuery].filter(Boolean).join(', ')}". Tente usar uma palavra-chave mais direta (ex: "shota", "criança", "território") ou selecione uma subcategoria acima.
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleResetFocus}
+                          className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white transition-colors cursor-pointer"
+                        >
+                          Limpar Foco
+                        </button>
+                        {onNavigateToSearch && appliedFocusQuery && (
+                          <button
+                            type="button"
+                            onClick={() => onNavigateToSearch(appliedFocusQuery)}
+                            className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition-colors cursor-pointer"
+                          >
+                            Pesquisar no Catálogo
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div className="text-center py-12 px-4 rounded-xl bg-zinc-900/40 border border-dashed border-zinc-800">
@@ -2209,6 +2282,19 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           status: manga.status,
         } : null}
       />
+
+      {/* Manga Migration Modal */}
+      {manga && (
+        <MangaMigrationModal
+          isOpen={showMigrationModal}
+          onClose={() => setShowMigrationModal(false)}
+          sourceManga={manga}
+          sourceChapters={chapters}
+          onMigrated={(targetId) => {
+            onSelectManga?.(targetId);
+          }}
+        />
+      )}
 
       {/* Full-screen Cover Image Lightbox Modal */}
       {showCoverLightbox && (coverSrc || manga?.coverUrl) && (

@@ -208,10 +208,23 @@ export const FirebaseSyncService = {
         }
       }
 
-      // Update local storage without re-triggering duplicate uploads
+      // Update local storage without re-triggering duplicate uploads, preserving non-Firestore cached metadata
+      const localById = new Map(localFavs.map(f => [f.mangaId, f]));
+      const hydratedFavs = Array.from(mergedFavsMap.values()).map(fav => {
+        const prev = localById.get(fav.mangaId);
+        return {
+          ...fav,
+          altTitles: fav.altTitles?.length ? fav.altTitles : prev?.altTitles,
+          authors: fav.authors?.length ? fav.authors : prev?.authors,
+          genres: fav.genres?.length ? fav.genres : prev?.genres,
+          rating: fav.rating ?? prev?.rating,
+          status: fav.status || prev?.status,
+          synopsis: fav.synopsis || prev?.synopsis
+        };
+      });
       isApplyingRemoteChange = true;
       try {
-        localStorage.setItem('manga_reader_bookmarks_v1', JSON.stringify(Array.from(mergedFavsMap.values())));
+        localStorage.setItem('manga_reader_bookmarks_v1', JSON.stringify(hydratedFavs));
       } finally {
         isApplyingRemoteChange = false;
       }
@@ -367,10 +380,12 @@ export const FirebaseSyncService = {
       favoritesCol,
       (snapshot) => {
         if (isApplyingRemoteChange) return;
+        const localById = new Map(HistoryService.getFavorites().map(f => [f.mangaId, f]));
         const favorites: FavoriteManga[] = [];
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
           if (d && d.mangaId) {
+            const prev = localById.get(d.mangaId);
             favorites.push({
               mangaId: d.mangaId,
               title: d.title || 'Mangá Salvo',
@@ -381,6 +396,12 @@ export const FirebaseSyncService = {
               userScore: typeof d.userScore === 'number' ? d.userScore : undefined,
               userNotes: typeof d.userNotes === 'string' ? d.userNotes : undefined,
               customCollections: Array.isArray(d.customCollections) ? d.customCollections : [],
+              altTitles: prev?.altTitles,
+              authors: prev?.authors,
+              genres: prev?.genres,
+              rating: prev?.rating,
+              status: prev?.status,
+              synopsis: prev?.synopsis,
               updatedAt: d.updatedAt ? new Date(d.updatedAt).getTime() : Date.now()
             });
           }

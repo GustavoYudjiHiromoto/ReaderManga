@@ -21,7 +21,7 @@ import {
   Blocks,
   Dna
 } from 'lucide-react';
-import { Manga, MangaSourceInfo, ReadingProgress, FavoriteManga, MangaUpdateInfo } from '../types/manga.js';
+import { Manga, MangaSourceInfo, ReadingProgress, FavoriteManga, IgnoredManga, MangaUpdateInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
@@ -29,6 +29,11 @@ import { ExtensionService } from '../services/extensionService.js';
 import { RecommendationService, ReaderDNA, RecommendationMatch } from '../services/recommendationService.js';
 import { subscribePreferredLanguage } from '../utils/languagePreference.js';
 import { RecommendationLoadingState } from '../components/RecommendationLoadingState.js';
+import {
+  isMangaInFavorites,
+  isMangaInIgnored,
+  pickOracleCandidate
+} from '../utils/libraryFilters.js';
 
 interface HomePageProps {
   onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
@@ -106,6 +111,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [isRollingVibe, setIsRollingVibe] = useState(false);
   const [localHistory, setLocalHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
+  const [ignoredList, setIgnoredList] = useState<IgnoredManga[]>(() => HistoryService.getIgnoredMangas());
   const [updatesMap, setUpdatesMap] = useState<Record<string, MangaUpdateInfo>>(() => UpdateTrackerService.getStoredUpdates());
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
   const [readerDNA, setReaderDNA] = useState<ReaderDNA>(() => RecommendationService.calculateReaderDNA());
@@ -119,6 +125,9 @@ export const HomePage: React.FC<HomePageProps> = ({
     const unsubHistory = HistoryService.subscribe(() => {
       setLocalHistory(HistoryService.getHistory());
       setFavorites(HistoryService.getFavorites());
+      const nextIgnored = HistoryService.getIgnoredMangas();
+      setIgnoredList(nextIgnored);
+      setVibeResult(prev => (prev && isMangaInIgnored(prev, nextIgnored) ? null : prev));
       setReaderDNA(RecommendationService.calculateReaderDNA());
     });
     const unsubUpdates = UpdateTrackerService.subscribe(() => {
@@ -190,17 +199,23 @@ export const HomePage: React.FC<HomePageProps> = ({
 
     setLoadingCollection(true);
     try {
-      // First check if current featured has matches
-      const matchedFromFeatured = currentFeatured.filter(m =>
-        m.genres.some(g => targetColl.genres.some(tg => g.toLowerCase().includes(tg.toLowerCase())))
+      const currentIgnored = HistoryService.getIgnoredMangas();
+      // First check if current featured has matches (excluding hidden/ignored works)
+      const matchedFromFeatured = currentFeatured.filter(
+        m =>
+          !isMangaInIgnored(m, currentIgnored) &&
+          m.genres.some(g => targetColl.genres.some(tg => g.toLowerCase().includes(tg.toLowerCase())))
       );
 
       if (matchedFromFeatured.length >= 6) {
         setCollectionItems(matchedFromFeatured.slice(0, 8));
       } else {
         // Query live search for this collection theme
-        const searchRes = await MangaApi.search(targetColl.genres[0], { limit: 10, onlyAvailable: true });
-        const combined = [...matchedFromFeatured, ...(searchRes.data || [])];
+        const searchRes = await MangaApi.search('', { genre: targetColl.genres[0], limit: 14, onlyAvailable: true });
+        const combined = [
+          ...matchedFromFeatured,
+          ...(searchRes.data || []).filter(m => !isMangaInIgnored(m, currentIgnored))
+        ];
         const deduplicated = Array.from(new Map(combined.map(m => [m.id, m])).values());
         setCollectionItems(deduplicated.slice(0, 8));
       }
@@ -211,15 +226,15 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
-  // Top spotlight mangas (curated 4 titles)
+  // Top spotlight mangas (curated 4 titles, excluding hidden/ignored)
   const spotlightList = useMemo(() => {
     if (featuredManga.length === 0) return [];
     return featuredManga
-      .filter(m => m.hasAvailableChapters !== false && !m.isAdult)
+      .filter(m => m.hasAvailableChapters !== false && !m.isAdult && !isMangaInIgnored(m, ignoredList))
       .slice(0, 4);
-  }, [featuredManga]);
+  }, [featuredManga, ignoredList]);
 
-  const currentHero = spotlightList[heroIndex] || featuredManga[0];
+  const currentHero = spotlightList[heroIndex] || spotlightList[0];
 
   const handleHeroNext = () => {
     if (spotlightList.length === 0) return;
@@ -250,47 +265,63 @@ export const HomePage: React.FC<HomePageProps> = ({
   };
 
   const isAlreadySaved = (manga: Manga): boolean => {
-    const normTitle = (manga.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    return favorites.some(f => {
-      if (f.mangaId === manga.id) return true;
-      const fNorm = (f.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      return fNorm && fNorm === normTitle;
-    });
+    return isMangaInFavorites(manga, favorites);
   };
 
   const handleRollVibe = async (vibeId: VibeCategory) => {
     setSelectedVibe(vibeId);
     setIsRollingVibe(true);
     const vibe = VIBE_OPTIONS.find(v => v.id === vibeId);
+    const latestFavorites = HistoryService.getFavorites();
+    const latestIgnored = HistoryService.getIgnoredMangas();
+    const lastId = vibeResult?.id;
 
     try {
-      // Find matching items from featured or search
-      let candidates: Manga[] = [];
+      const candidateMap = new Map<string, Manga>();
+      const addValidCandidates = (list: Manga[]) => {
+        for (const m of list) {
+          if (m && m.id && !m.isAdult && !isMangaInIgnored(m, latestIgnored) && !candidateMap.has(m.id)) {
+            candidateMap.set(m.id, m);
+          }
+        }
+      };
+
       if (vibe) {
-        candidates = featuredManga.filter(m =>
-          m.genres.some(g => g.toLowerCase().includes(vibe.query.toLowerCase())) && !m.isAdult
+        addValidCandidates(
+          featuredManga.filter(m =>
+            m.genres.some(g => g.toLowerCase().includes(vibe.query.toLowerCase()))
+          )
         );
       }
 
-      if (candidates.length < 3 && vibe) {
-        const searchRes = await MangaApi.search(vibe.query, { limit: 12, onlyAvailable: true });
-        candidates = searchRes.data.filter(m => !m.isAdult);
+      const countUnsaved = () =>
+        Array.from(candidateMap.values()).filter(m => !isMangaInFavorites(m, latestFavorites)).length;
+
+      // Search by genre (not as title keyword) when pool of unseen/unsaved works is small
+      if (countUnsaved() < 5 && vibe) {
+        const page1Res = await MangaApi.search('', { genre: vibe.query, limit: 24, page: 1, onlyAvailable: true });
+        addValidCandidates(page1Res.data || []);
       }
 
-      if (candidates.length === 0) {
-        candidates = featuredManga.filter(m => !m.isAdult);
+      if (countUnsaved() < 2 && vibe) {
+        const page2Res = await MangaApi.search('', { genre: vibe.query, limit: 24, page: 2, onlyAvailable: true });
+        addValidCandidates(page2Res.data || []);
       }
 
-      // Prioritize manga that the user hasn't saved yet for a fresh discovery experience
-      const unsavedCandidates = candidates.filter(m => !isAlreadySaved(m));
-      const pool = unsavedCandidates.length > 0 ? unsavedCandidates : candidates;
+      if (countUnsaved() === 0) {
+        addValidCandidates(featuredManga);
+      }
 
-      const randomManga = pool[Math.floor(Math.random() * pool.length)];
-      setVibeResult(randomManga || null);
+      const chosen = pickOracleCandidate(
+        Array.from(candidateMap.values()),
+        latestFavorites,
+        latestIgnored,
+        lastId
+      );
+      setVibeResult(chosen);
     } catch {
-      if (featuredManga.length > 0) {
-        setVibeResult(featuredManga[0]);
-      }
+      const fallbackChosen = pickOracleCandidate(featuredManga, latestFavorites, latestIgnored, lastId);
+      setVibeResult(fallbackChosen);
     } finally {
       setIsRollingVibe(false);
     }

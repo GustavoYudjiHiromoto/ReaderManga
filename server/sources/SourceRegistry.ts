@@ -1,5 +1,5 @@
 import { IMangaSource, SourceSearchOptions } from './IMangaSource.js';
-import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
+import { Manga, Chapter, MangaPage, MangaSourceInfo, PingErrorCode } from '../../src/types/manga.js';
 import { MangaDexProvider } from './MangaDexProvider.js';
 import { ComickProvider } from './ComickProvider.js';
 import { MangaPillProvider } from './MangaPillProvider.js';
@@ -8,17 +8,25 @@ import { MangaFireProvider } from './MangaFireProvider.js';
 import { MangaBallProvider } from './MangaBallProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 import { deduplicateAndGroupChapters, normalizeChapterNumber } from './ChapterDeduplicator.js';
+import { extensionRepositoryService } from './ExtensionRepositoryService.js';
+
+function stripEditionTags(t: string): string {
+  return (t || '')
+    .replace(/\((?:official|colored|full\s*color|digital|webtoon|manga|uncensored|simulpub|pt-br|en)\)/gi, '')
+    .replace(/\[(?:official|colored|pt-br|en|br|eng)\]/gi, '')
+    .trim();
+}
 
 function normalizeTitle(t: string): string {
   if (!t) return '';
-  return t
+  return stripEditionTags(t)
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, '');
 }
 
-function areSameManga(m1: Manga, m2: Manga): boolean {
+export function areSameManga(m1: Manga, m2: Manga): boolean {
   if (m1.id === m2.id) return true;
 
   const norm1 = normalizeTitle(m1.title);
@@ -87,7 +95,7 @@ function mergeManga(primary: Manga, secondary: Manga): Manga {
 
   return {
     ...primary,
-    altTitles: Array.from(altTitlesSet).slice(0, 8),
+    altTitles: Array.from(altTitlesSet).slice(0, 12),
     genres: Array.from(genresSet),
     authors,
     artists,
@@ -116,7 +124,7 @@ function mergeManga(primary: Manga, secondary: Manga): Manga {
   };
 }
 
-function deduplicateMangaList(list: Manga[]): Manga[] {
+export function deduplicateMangaList(list: Manga[]): Manga[] {
   const result: Manga[] = [];
 
   for (const item of list) {
@@ -141,11 +149,16 @@ export class SourceRegistry {
     this.registerSource(new MangaPillProvider());
     this.registerSource(new MangaFireProvider());
     this.registerSource(new MangaBallProvider());
+    extensionRepositoryService.attachRegistry(this);
   }
 
   public registerSource(source: IMangaSource): void {
     const info = source.getInfo();
     this.sources.set(info.id, source);
+  }
+
+  public unregisterSource(id: string): boolean {
+    return this.sources.delete(id);
   }
 
   public getSources(): MangaSourceInfo[] {
@@ -174,8 +187,8 @@ export class SourceRegistry {
       const src = this.sources.get(targetSourceId);
       if (src) sourcesToQuery.push(src);
     } else {
-      // Query enabled live sources in user priority order, or all live sources by default
-      const defaultLiveIds = ['comick', 'mangadex', 'weebcentral', 'mangapill', 'mangafire', 'mangaball'];
+      // Query enabled live sources in user priority order, or all registered sources by default
+      const defaultLiveIds = Array.from(this.sources.keys());
       let candidateIds = defaultLiveIds;
       if (options?.enabledSources && options.enabledSources.length > 0) {
         candidateIds = options.enabledSources.filter(id => this.sources.has(id));
@@ -205,7 +218,15 @@ export class SourceRegistry {
       'yandere': ['yandere', 'stalker'],
       'tomboy': ['tomboy', 'boyish'],
       'vilã (villainess)': ['villainess', 'vilã'],
-      'reencarnação': ['reincarnation', 'transmigration']
+      'reencarnação': ['reincarnation', 'transmigration'],
+      'protagonista criança / shota': ['child protagonist', 'reincarnated as a boy', 'young lord isekai'],
+      'nobreza / aristocracia': ['aristocrat', 'noble isekai', 'duke'],
+      'avaliação (appraisal)': ['appraisal', 'kantei'],
+      'recrutamento / aliados': ['recruit', 'loyal subordinates', 'talent'],
+      'ferreiro / artesão / mercador': ['blacksmith', 'merchant', 'alchemy'],
+      'médico / curandeiro': ['doctor isekai', 'healer', 'pharmacy'],
+      'vida lenta (slow life)': ['slow life', 'peaceful life'],
+      'estrategista / gênio': ['strategist', 'genius', 'tactician']
     };
 
     const extraSynonyms: string[] = [];
@@ -227,9 +248,11 @@ export class SourceRegistry {
     );
 
     const extraPromises = extraSynonyms.flatMap(syn =>
-      sourcesToQuery.map(src =>
-        src.search(syn, { ...options, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
-      )
+      sourcesToQuery
+        .filter(src => src.getInfo().id !== 'mangapill')
+        .map(src =>
+          src.search(syn, { ...options, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
+        )
     );
 
     const [outcomes, extraOutcomes] = await Promise.all([
@@ -238,9 +261,20 @@ export class SourceRegistry {
     ]);
     const rawLiveResults: Manga[] = [];
 
-    outcomes.forEach((outcome) => {
-      rawLiveResults.push(...outcome.mangaList);
-    });
+    if (!query.trim() && outcomes.length > 1) {
+      const maxLen = Math.max(...outcomes.map(o => o.mangaList.length), 0);
+      for (let i = 0; i < maxLen; i++) {
+        for (const outcome of outcomes) {
+          if (i < outcome.mangaList.length) {
+            rawLiveResults.push(outcome.mangaList[i]);
+          }
+        }
+      }
+    } else {
+      outcomes.forEach((outcome) => {
+        rawLiveResults.push(...outcome.mangaList);
+      });
+    }
     extraOutcomes.forEach((outcome) => {
       rawLiveResults.push(...outcome.mangaList);
     });
@@ -284,7 +318,7 @@ export class SourceRegistry {
         const country = (m.publicationInfo?.country || '').toLowerCase();
         const gLowers = (m.genres || []).map(g => g.toLowerCase());
         let detected = 'manga';
-        if (country === 'kr' || country === 'coreia' || country === 'korea' || gLowers.includes('manhwa')) detected = 'manhwa';
+        if (country === 'kr' || country === 'ko' || country === 'coreia' || country === 'korea' || gLowers.includes('manhwa')) detected = 'manhwa';
         else if (country === 'cn' || country === 'china' || country === 'zh' || gLowers.includes('manhua')) detected = 'manhua';
         else if (country === 'us' || country === 'en' || gLowers.includes('comic') || gLowers.includes('webtoon')) detected = 'comic';
         return detected === targetType;
@@ -351,7 +385,7 @@ export class SourceRegistry {
    * Safe mode and chapter availability are enforced for a premium discovery experience.
    */
   public async getFeatured(options?: { enabledSources?: string[] }): Promise<Manga[]> {
-    const defaultLiveIds = ['comick', 'mangadex', 'weebcentral', 'mangapill', 'mangafire', 'mangaball'];
+    const defaultLiveIds = Array.from(this.sources.keys());
     let candidateIds = defaultLiveIds;
     if (options?.enabledSources && options.enabledSources.length > 0) {
       candidateIds = options.enabledSources.filter(id => this.sources.has(id));
@@ -375,6 +409,61 @@ export class SourceRegistry {
   }
 
   /**
+   * Browse catalog of a single source directly (Popular or Latest Releases), Mihon Browse Source style.
+   */
+  public async getSourceCatalog(
+    sourceId: string,
+    mode: 'popular' | 'latest' = 'popular',
+    options?: SourceSearchOptions
+  ): Promise<Manga[]> {
+    const src = this.sources.get(sourceId);
+    if (!src) {
+      throw new HttpError(404, `Fonte '${sourceId}' não encontrada.`);
+    }
+
+    let list: Manga[];
+    if (mode === 'latest' && typeof src.getLatest === 'function') {
+      list = await src.getLatest(options);
+    } else {
+      list = await src.getPopular(options);
+      if (mode === 'latest') {
+        list = [...list].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+      }
+    }
+
+    if (!options?.includeAdult) {
+      list = list.filter(m => !m.isAdult);
+    }
+    return list;
+  }
+
+  /**
+   * Build prioritized failover source order including native APIs first,
+   * followed by secondary native sources and any installed dynamic template extensions.
+   */
+  public getFailoverOrder(excludeSourceId: string, kind: 'chapters' | 'pages' = 'chapters'): string[] {
+    const preferredBuiltins =
+      kind === 'pages'
+        ? ['weebcentral', 'mangapill', 'mangadex', 'comick']
+        : ['comick', 'weebcentral', 'mangapill', 'mangadex'];
+
+    const ordered: string[] = [];
+    for (const id of preferredBuiltins) {
+      if (id !== excludeSourceId && this.sources.has(id) && !ordered.includes(id)) {
+        ordered.push(id);
+      }
+    }
+
+    for (const id of this.sources.keys()) {
+      if (id !== excludeSourceId && !ordered.includes(id)) {
+        ordered.push(id);
+      }
+    }
+
+    return ordered;
+  }
+
+  /**
    * Ping a specific source to test connectivity, latency, and operational status.
    */
   public async pingSource(sourceId: string): Promise<{
@@ -382,12 +471,20 @@ export class SourceRegistry {
     status: 'online' | 'degraded' | 'offline';
     latencyMs: number;
     error?: string;
+    errorCode?: PingErrorCode;
     checkedAt: number;
   }> {
     const src = this.sources.get(sourceId);
     const checkedAt = Date.now();
     if (!src) {
-      return { sourceId, status: 'offline', latencyMs: 0, error: 'Fonte não encontrada', checkedAt };
+      return {
+        sourceId,
+        status: 'offline',
+        latencyMs: 0,
+        error: 'Fonte não encontrada',
+        errorCode: 'offline',
+        checkedAt
+      };
     }
 
     const start = Date.now();
@@ -403,15 +500,39 @@ export class SourceRegistry {
         sourceId,
         status: latencyMs > 3500 ? 'degraded' : 'online',
         latencyMs,
-        ...(count === 0 ? { error: 'Nenhum resultado retornado na sondagem' } : {}),
+        ...(count === 0
+          ? {
+              error: 'Site respondeu, mas nenhum resultado foi extraído (possível mudança de layout ou busca vazia)',
+              errorCode: 'layout' as PingErrorCode
+            }
+          : {}),
         checkedAt
       };
     } catch (err) {
+      const msg = (err as Error).message || '';
+      const lower = msg.toLowerCase();
+      let errorCode: PingErrorCode = 'unknown';
+      if (lower.includes('cloudflare') || lower.includes('403') || lower.includes('challenge')) {
+        errorCode = 'cloudflare';
+      } else if (lower.includes('429') || lower.includes('rate limit') || lower.includes('too many')) {
+        errorCode = 'ratelimit';
+      } else if (
+        lower.includes('tempo limite') ||
+        lower.includes('enotfound') ||
+        lower.includes('econnrefused') ||
+        lower.includes('etimedout') ||
+        lower.includes('fetch') ||
+        lower.includes('conexão')
+      ) {
+        errorCode = 'offline';
+      }
+
       return {
         sourceId,
         status: 'offline',
         latencyMs: Date.now() - start,
-        error: (err as Error).message,
+        error: msg,
+        errorCode,
         checkedAt
       };
     }
@@ -532,9 +653,14 @@ export class SourceRegistry {
         externalChapterId = remainder;
       }
     } else {
-      const parts = remainder.split('_');
-      externalMangaId = parts[0];
-      externalChapterId = parts.slice(1).join('_');
+      const lastUnderscore = remainder.lastIndexOf('_');
+      if (lastUnderscore !== -1) {
+        externalMangaId = remainder.substring(0, lastUnderscore);
+        externalChapterId = remainder.substring(lastUnderscore + 1);
+      } else {
+        externalMangaId = remainder;
+        externalChapterId = remainder;
+      }
     }
 
     if (!externalMangaId || !externalChapterId) {
@@ -598,27 +724,58 @@ export class SourceRegistry {
   public async getChapters(
     internalMangaId: string,
     language?: string,
-    options?: { deduplicate?: boolean }
+    options?: {
+      deduplicate?: boolean;
+      titleHint?: string;
+      altTitlesHint?: string[];
+      forceFederate?: boolean;
+    }
   ): Promise<Chapter[]> {
     const parsed = this.parseInternalMangaId(internalMangaId);
     const source = this.sources.get(parsed.sourceId);
-    if (!source) {
+
+    if (!source && !options?.titleHint?.trim()) {
       throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o mangá '${internalMangaId}'.`);
     }
 
-    let chapters = await source.getChapters(parsed.externalId, language);
+    let chapters: Chapter[] = [];
+    let primaryError: unknown = null;
 
-    // If primary source returned 0 or an incomplete/DMCA-fragmented chapter list,
-    // federate missing chapters in parallel from reliable alternative sources
-    if (this.shouldFederateChapters(chapters, parsed.sourceId, language)) {
+    if (source) {
       try {
-        const manga = await source.getMangaDetails(parsed.externalId).catch(() => null);
+        chapters = await source.getChapters(parsed.externalId, language);
+      } catch (err) {
+        primaryError = err;
+        console.warn(
+          `[SourceRegistry] Primary chapters failed for ${internalMangaId}, attempting cross-source failover:`,
+          (err as Error).message
+        );
+      }
+    } else {
+      primaryError = new HttpError(404, `Fonte '${parsed.sourceId}' não instalada.`);
+    }
+
+    const needsFederation =
+      Boolean(primaryError) ||
+      Boolean(options?.forceFederate) ||
+      this.shouldFederateChapters(chapters, parsed.sourceId, language);
+
+    // If primary source failed, returned an incomplete list, or forceFederate is active,
+    // federate missing/newer chapters in parallel from healthy alternative sources
+    if (needsFederation) {
+      try {
+        const manga = source
+          ? await source.getMangaDetails(parsed.externalId).catch(() => null)
+          : null;
+
         const rawTitles = [
-          manga?.title || parsed.externalId.replace(/[-_]/g, ' '),
-          ...(manga?.altTitles || []).filter(t => /[a-zA-Z]{3}/.test(t))
+          manga?.title || options?.titleHint || parsed.externalId.replace(/[-_]/g, ' '),
+          ...(manga?.altTitles || []),
+          ...(options?.altTitlesHint || [])
         ]
-          .map(t => t.trim())
-          .filter(t => t.length > 2);
+          .filter((t): t is string => typeof t === 'string' && t.trim().length > 2)
+          .filter((t, idx) => idx === 0 || /[a-zA-Z]{3}/.test(t))
+          .map(t => t.trim());
 
         const searchTitles = Array.from(new Set(rawTitles)).slice(0, 4);
 
@@ -626,7 +783,9 @@ export class SourceRegistry {
           const targetRef: Manga = {
             title: searchTitles[0],
             id: internalMangaId,
-            altTitles: manga?.altTitles || [],
+            altTitles: Array.from(
+              new Set([...(manga?.altTitles || []), ...(options?.altTitlesHint || [])])
+            ),
             coverUrl: '',
             synopsis: '',
             authors: manga?.authors || [],
@@ -638,26 +797,31 @@ export class SourceRegistry {
             sources: []
           };
 
-          const preferredAltIds = ['comick', 'weebcentral', 'mangapill', 'mangadex'].filter(
-            id => id !== parsed.sourceId && this.sources.has(id)
-          );
+          const preferredAltIds = this.getFailoverOrder(parsed.sourceId, 'chapters');
 
           const altFetches = await Promise.allSettled(
             preferredAltIds.map(async (altSourceId) => {
               const altSource = this.sources.get(altSourceId)!;
-              for (const titleQuery of searchTitles) {
-                const searchResults = await altSource.search(titleQuery, { includeAdult: true, limit: 8 }).catch(() => null);
-                const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
-                const matched = list.find((m: Manga) => areSameManga(m, targetRef));
-                if (matched) {
-                  const altExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
-                  const altChs = await altSource.getChapters(altExtId, language).catch(() => []);
-                  if (altChs && altChs.length > 0) {
-                    return altChs;
+              const probe = (async () => {
+                for (const titleQuery of searchTitles) {
+                  const searchResults = await altSource.search(titleQuery, { includeAdult: true, limit: 8 }).catch(() => null);
+                  const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
+                  const matched = list.find((m: Manga) => areSameManga(m, targetRef));
+                  if (matched) {
+                    const altExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
+                    const altChs = await altSource.getChapters(altExtId, language).catch(() => []);
+                    if (altChs && altChs.length > 0) {
+                      return altChs;
+                    }
                   }
                 }
-              }
-              return [] as Chapter[];
+                return [] as Chapter[];
+              })();
+
+              return Promise.race([
+                probe,
+                new Promise<Chapter[]>(resolve => setTimeout(() => resolve([]), 8000))
+              ]);
             })
           );
 
@@ -674,6 +838,10 @@ export class SourceRegistry {
       } catch (federateErr) {
         console.warn('[SourceRegistry] Chapter federation error:', federateErr);
       }
+    }
+
+    if (chapters.length === 0 && primaryError) {
+      throw primaryError;
     }
 
     if (options?.deduplicate !== false) {
@@ -805,34 +973,39 @@ export class SourceRegistry {
           sources: []
         };
 
-        const failoverOrder = ['weebcentral', 'mangapill', 'mangadex', 'comick'].filter(
-          id => id !== parsed.sourceId && this.sources.has(id)
-        );
+        const failoverOrder = this.getFailoverOrder(parsed.sourceId, 'pages');
 
         for (const altSourceId of failoverOrder) {
           const altSource = this.sources.get(altSourceId)!;
           try {
-            let matched: Manga | undefined;
-            for (const qTitle of failoverTitles) {
-              const searchResults = await altSource.search(qTitle, { includeAdult: true, limit: 8 }).catch(() => null);
-              const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
-              matched = list.find((m: Manga) => areSameManga(m, targetRef));
-              if (matched) break;
-            }
-
-            if (matched) {
-              const altMangaExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
-              const altChapters = await altSource.getChapters(altMangaExtId);
-              const matchingChapter = altChapters.find(
-                c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum!)
-              );
-              if (matchingChapter) {
-                const altPages = await altSource.getChapterPages(matchingChapter.externalChapterId);
-                if (altPages && altPages.length > 0) {
-                  console.log(`[SourceRegistry] Auto-failover: successfully recovered chapter ${targetNum} via '${altSourceId}'!`);
-                  return altPages;
+            const altPages = await Promise.race([
+              (async () => {
+                let matched: Manga | undefined;
+                for (const qTitle of failoverTitles) {
+                  const searchResults = await altSource.search(qTitle, { includeAdult: true, limit: 8 }).catch(() => null);
+                  const list = Array.isArray(searchResults?.mangaList) ? searchResults.mangaList : [];
+                  matched = list.find((m: Manga) => areSameManga(m, targetRef));
+                  if (matched) break;
                 }
-              }
+
+                if (matched) {
+                  const altMangaExtId = matched.sources[0]?.externalId || matched.id.replace(/^mr_[^_]+_/, '');
+                  const altChapters = await altSource.getChapters(altMangaExtId);
+                  const matchingChapter = altChapters.find(
+                    c => normalizeChapterNumber(c.chapterNumber) === normalizeChapterNumber(targetNum!)
+                  );
+                  if (matchingChapter) {
+                    return await altSource.getChapterPages(matchingChapter.externalChapterId);
+                  }
+                }
+                return [] as MangaPage[];
+              })(),
+              new Promise<MangaPage[]>(resolve => setTimeout(() => resolve([]), 7000))
+            ]);
+
+            if (altPages && altPages.length > 0) {
+              console.log(`[SourceRegistry] Auto-failover: successfully recovered chapter ${targetNum} via '${altSourceId}'!`);
+              return altPages;
             }
           } catch {
             // try next source

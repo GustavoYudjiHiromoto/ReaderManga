@@ -207,11 +207,43 @@ export const UpdateTrackerService = {
         }
 
         try {
-          const rawChapters = await MangaApi.getChapters(fav.mangaId, { order: 'desc', deduplicate: true });
+          let rawChapters = await MangaApi.getChapters(fav.mangaId, {
+            order: 'desc',
+            deduplicate: true,
+            title: fav.title,
+            altTitles: fav.altTitles
+          });
+
+          if ((!rawChapters || rawChapters.length === 0) && fav.title) {
+            rawChapters = await MangaApi.getChapters(fav.mangaId, {
+              order: 'desc',
+              deduplicate: true,
+              title: fav.title,
+              altTitles: fav.altTitles,
+              forceFederate: true
+            });
+          }
+
           const { chapters } = filterChaptersByLanguage(rawChapters, getPreferredLanguage());
           if (chapters.length > 0) {
-            const latest = chapters[0];
+            const sorted = [...chapters].sort((a, b) => {
+              const nA = parseFloat(a.chapterNumber);
+              const nB = parseFloat(b.chapterNumber);
+              if (!isNaN(nA) && !isNaN(nB) && nA !== nB) return nB - nA;
+              return b.chapterNumber.localeCompare(a.chapterNumber, undefined, { numeric: true });
+            });
+            const latest = sorted[0];
             const progress = HistoryService.getProgress(fav.mangaId);
+            const primarySourceId =
+              fav.sourceId || (fav.mangaId.startsWith('mr_') ? fav.mangaId.split('_')[1] : '');
+            const chapterSourceId = latest.sourceId;
+            const chapterSourceName =
+              latest.variants?.find(v => v.sourceId === latest.sourceId)?.sourceName ||
+              latest.variants?.[0]?.sourceName ||
+              latest.sourceId;
+            const failoverUsed = Boolean(
+              primarySourceId && chapterSourceId && chapterSourceId !== primarySourceId
+            );
 
             let hasNew = false;
             if (!readChapters.has(latest.id)) {
@@ -253,6 +285,9 @@ export const UpdateTrackerService = {
               latestChapterNumber: latest.chapterNumber,
               latestChapterTitle: latest.title,
               releaseDate: latest.releaseDate || existing?.releaseDate,
+              chapterSourceId,
+              chapterSourceName,
+              failoverUsed,
               hasNew,
               lastReadNumber: progress?.chapterNumber,
               discoveredAt,

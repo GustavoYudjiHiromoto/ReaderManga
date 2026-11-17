@@ -286,47 +286,20 @@ export class MangaPillProvider implements IMangaSource {
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
     try {
-      let q = (query || '').trim();
+      const rawQuery = (query || '').trim();
+      const q = rawQuery;
       const limit = options?.limit || 24;
       const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
       let url: string;
 
-      const KEYWORD_FALLBACKS: Record<string, string> = {
-        'time travel': 'regression',
-        'regression': 'regression',
-        'regressão / tempo': 'regression',
-        'regressao / tempo': 'regression',
-        'viagem no tempo': 'time travel',
-        'isekai': 'isekai',
-        'villainess': 'villainess',
-        'vilã (villainess)': 'villainess',
-        'vilã': 'villainess',
-        'reincarnation': 'reincarnation',
-        'reencarnação': 'reincarnation',
-        'overpower (op)': 'overpowered',
-        'overpower': 'overpowered',
-        'yandere': 'yandere',
-        'tomboy': 'tomboy',
-        'construção de vila': 'village',
-        'construção de vila / reino': 'village',
-        'fazenda / agricultura': 'farming',
-        'dungeon / sistema': 'dungeon',
-        'cultivação / murim': 'murim',
-        'domador de monstros': 'tamer',
-        'vingança': 'revenge'
-      };
-
-      if (!q && options?.genres) {
-        for (const g of options.genres) {
-          const kw = KEYWORD_FALLBACKS[g.toLowerCase()];
-          if (kw) {
-            q = kw;
-            break;
-          }
-        }
-      }
-
       const mappedGenre = mapGenre(options?.genre);
+      const isPopularBrowse = !q;
+
+      // On MangaPill /search without ?q=, page 2+ is 100% alphabetical (id ASC: numbers, A-Z).
+      // Never leak alphabetical pages into "Mais Populares" (with or without genre filters).
+      if (isPopularBrowse && page > 1) {
+        return { mangaList: [], total: 0, hasMore: false };
+      }
 
       if (q && mappedGenre) {
         url = `${this.baseUrl}/search?q=${encodeURIComponent(q)}&genre=${encodeURIComponent(mappedGenre)}&page=${page}`;
@@ -340,6 +313,10 @@ export class MangaPillProvider implements IMangaSource {
 
       const html = await this.fetchWithTimeout(url);
       let mangaList = this.parseMangaCards(html);
+
+      if (isPopularBrowse) {
+        mangaList = MangaPillProvider.sliceCuratedPopular(mangaList);
+      }
 
       // Filter adult if includeAdult is false
       if (!options?.includeAdult) {
@@ -356,7 +333,7 @@ export class MangaPillProvider implements IMangaSource {
       return {
         mangaList: sliced,
         total: mangaList.length,
-        hasMore: mangaList.length >= limit
+        hasMore: isPopularBrowse ? false : mangaList.length >= limit
       };
     } catch (err) {
       console.warn(`[MangaPillProvider] search failed:`, (err as Error).message);
@@ -364,9 +341,44 @@ export class MangaPillProvider implements IMangaSource {
     }
   }
 
+  public static sliceCuratedPopular(mangaList: Manga[]): Manga[] {
+    for (let i = 0; i < mangaList.length; i++) {
+      const item = mangaList[i];
+      const extId = item.sources?.[0]?.externalId || item.id.replace(/^mr_mangapill_/, '');
+      const slugMatch = extId.match(/^(\d+)-/);
+      if (slugMatch) {
+        const numId = parseInt(slugMatch[1], 10);
+        // MangaPill curated classics on /search are strictly IDs 1..12;
+        // IDs >= 13 belong to the alphabetical id-ASC catalog dump (μ & I, 009, 1 Love 9, 51 Ways, 6000, A-Z).
+        if (numId >= 13) {
+          return mangaList.slice(0, i);
+        }
+        continue;
+      }
+
+      // Fallback heuristic for synthetic/non-slugged items
+      if (
+        i >= 1 &&
+        (/^[^a-zA-Z0-9]/.test(item.title) ||
+          /^0\d/.test(item.title) ||
+          (/^\d/.test(item.title) && !/^20(?:th\b|\s+seiki)/i.test(item.title)))
+      ) {
+        return mangaList.slice(0, i);
+      }
+    }
+    return mangaList.slice(0, 11);
+  }
+
   async getPopular(options?: SourceSearchOptions): Promise<Manga[]> {
     const limit = options?.limit || 24;
-    const isDefaultQuery = !options?.genre && (!options?.offset || options.offset === 0);
+    const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
+    const mappedGenre = mapGenre(options?.genre);
+    const isDefaultQuery = !mappedGenre && page === 1 && (!options?.offset || options.offset === 0);
+
+    // Page 2+ on MangaPill /search without ?q= is purely alphabetical, even with genre filters.
+    if (page > 1) {
+      return [];
+    }
 
     // 1. Return fresh popular cache if available
     if (isDefaultQuery && this.popularCache && Date.now() - this.popularCache.timestamp < this.POPULAR_CACHE_TTL_MS) {
@@ -377,14 +389,12 @@ export class MangaPillProvider implements IMangaSource {
     }
 
     try {
-      const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
-      const mappedGenre = mapGenre(options?.genre);
       const url = mappedGenre
         ? `${this.baseUrl}/search?genre=${encodeURIComponent(mappedGenre)}&page=${page}`
         : `${this.baseUrl}/search?type=manga&page=${page}`;
 
       const html = await this.fetchWithTimeout(url);
-      let mangaList = this.parseMangaCards(html);
+      let mangaList = MangaPillProvider.sliceCuratedPopular(this.parseMangaCards(html));
 
       if (mangaList.length > 0 && isDefaultQuery) {
         this.popularCache = { data: mangaList, timestamp: Date.now() };
@@ -401,11 +411,15 @@ export class MangaPillProvider implements IMangaSource {
       return mangaList.slice(0, limit);
     } catch (err) {
       // If live fetch fails, fall back to stale cache or curated popular baseline
-      if (this.popularCache && this.popularCache.data.length > 0) {
+      if (!mappedGenre && this.popularCache && this.popularCache.data.length > 0) {
         let cached = [...this.popularCache.data];
         if (!options?.includeAdult) cached = cached.filter(m => !m.isAdult);
         if (options?.onlyAvailable) cached = cached.filter(m => m.hasAvailableChapters);
         return cached.slice(0, limit);
+      }
+
+      if (mappedGenre) {
+        return [];
       }
 
       const fallback = this.getFallbackPopularList();
