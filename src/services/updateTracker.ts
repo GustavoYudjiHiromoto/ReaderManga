@@ -4,10 +4,14 @@ import { MangaApi } from './api.js';
 import { filterChaptersByLanguage, getPreferredLanguage } from '../utils/languagePreference.js';
 
 const UPDATES_KEY = 'manga_reader_updates_v1';
+const SEEN_IN_FEED_KEY = 'manga_reader_updates_feed_seen_v1';
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache para não sobrecarregar as fontes
 
 type UpdateListener = () => void;
 const listeners = new Set<UpdateListener>();
+
+let cachedUpdates: Record<string, MangaUpdateInfo> | null = null;
+let cachedSeenInFeed: Record<string, string> | null = null;
 
 function notifyListeners() {
   listeners.forEach(fn => {
@@ -22,10 +26,30 @@ function notifyListeners() {
 // Sincronização entre abas
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
-    if (event.key === UPDATES_KEY) {
+    if (!event.key || event.key === UPDATES_KEY) {
+      cachedUpdates = null;
+      notifyListeners();
+    } else if (event.key === SEEN_IN_FEED_KEY) {
+      cachedSeenInFeed = null;
       notifyListeners();
     }
   });
+}
+
+function getSeenInFeedMap(): Record<string, string> {
+  if (cachedSeenInFeed) return cachedSeenInFeed;
+  try {
+    const raw = localStorage.getItem(SEEN_IN_FEED_KEY);
+    if (!raw) {
+      cachedSeenInFeed = {};
+      return cachedSeenInFeed;
+    }
+    const parsed = JSON.parse(raw);
+    cachedSeenInFeed = typeof parsed === 'object' && parsed !== null ? parsed : {};
+    return cachedSeenInFeed!;
+  } catch {
+    return {};
+  }
 }
 
 let isChecking = false;
@@ -77,11 +101,16 @@ export const UpdateTrackerService = {
   },
 
   getStoredUpdates(): Record<string, MangaUpdateInfo> {
+    if (cachedUpdates) return cachedUpdates;
     try {
       const data = localStorage.getItem(UPDATES_KEY);
-      if (!data) return {};
+      if (!data) {
+        cachedUpdates = {};
+        return cachedUpdates;
+      }
       const parsed = JSON.parse(data);
-      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+      cachedUpdates = typeof parsed === 'object' && parsed !== null ? parsed : {};
+      return cachedUpdates!;
     } catch {
       return {};
     }
@@ -96,6 +125,62 @@ export const UpdateTrackerService = {
     const all = this.getStoredUpdates();
     const readChapters = new Set(HistoryService.getReadChapters());
     return Object.values(all).filter(u => u.hasNew && !readChapters.has(u.latestChapterId)).length;
+  },
+
+  /**
+   * Unseen badge count (works like unread message notifications):
+   * resets to 0 when user opens Lançamentos, and increments again only
+   * when new chapters (different latestChapterId) are detected later.
+   */
+  getUnseenBadgeCount(): number {
+    const all = this.getStoredUpdates();
+    const seenMap = getSeenInFeedMap();
+    let count = 0;
+    for (const u of Object.values(all)) {
+      if (
+        u?.hasNew &&
+        u.latestChapterId &&
+        !HistoryService.isChapterRead(u.latestChapterId) &&
+        seenMap[u.mangaId] !== u.latestChapterId
+      ) {
+        count++;
+      }
+    }
+    return count;
+  },
+
+  /**
+   * Marks currently listed new releases as acknowledged in the Lançamentos feed,
+   * clearing the navbar counter without hiding the chapters inside UpdatesPage.
+   */
+  acknowledgeFeedUpdates(): void {
+    try {
+      const all = this.getStoredUpdates();
+      const prevSeen = getSeenInFeedMap();
+      let changed = false;
+      const nextSeen: Record<string, string> = {};
+
+      for (const u of Object.values(all)) {
+        if (u?.mangaId && u?.latestChapterId) {
+          if (u.hasNew && !HistoryService.isChapterRead(u.latestChapterId)) {
+            nextSeen[u.mangaId] = u.latestChapterId;
+            if (prevSeen[u.mangaId] !== u.latestChapterId) {
+              changed = true;
+            }
+          } else if (prevSeen[u.mangaId] === u.latestChapterId) {
+            nextSeen[u.mangaId] = u.latestChapterId;
+          }
+        }
+      }
+
+      if (changed) {
+        localStorage.setItem(SEEN_IN_FEED_KEY, JSON.stringify(nextSeen));
+        cachedSeenInFeed = nextSeen;
+        notifyListeners();
+      }
+    } catch (e) {
+      console.warn('Failed to acknowledge feed updates', e);
+    }
   },
 
   getMangasWithUpdates(): MangaUpdateInfo[] {
@@ -121,11 +206,15 @@ export const UpdateTrackerService = {
     try {
       const all = this.getStoredUpdates();
       if (all[mangaId] && all[mangaId].hasNew) {
-        all[mangaId] = {
-          ...all[mangaId],
-          hasNew: false
+        const nextAll = {
+          ...all,
+          [mangaId]: {
+            ...all[mangaId],
+            hasNew: false
+          }
         };
-        localStorage.setItem(UPDATES_KEY, JSON.stringify(all));
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(nextAll));
+        cachedUpdates = nextAll;
         notifyListeners();
       }
     } catch (e) {
@@ -137,14 +226,16 @@ export const UpdateTrackerService = {
     try {
       const all = this.getStoredUpdates();
       let changed = false;
-      Object.keys(all).forEach(mangaId => {
-        if (all[mangaId]?.hasNew) {
-          all[mangaId] = { ...all[mangaId], hasNew: false };
+      const nextAll: Record<string, MangaUpdateInfo> = { ...all };
+      Object.keys(nextAll).forEach(mangaId => {
+        if (nextAll[mangaId]?.hasNew) {
+          nextAll[mangaId] = { ...nextAll[mangaId], hasNew: false };
           changed = true;
         }
       });
       if (changed) {
-        localStorage.setItem(UPDATES_KEY, JSON.stringify(all));
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(nextAll));
+        cachedUpdates = nextAll;
         notifyListeners();
       }
     } catch (e) {
@@ -300,6 +391,7 @@ export const UpdateTrackerService = {
       }
 
       localStorage.setItem(UPDATES_KEY, JSON.stringify(newUpdates));
+      cachedUpdates = newUpdates;
     } finally {
       isChecking = false;
       checkProgress = null;
@@ -319,22 +411,37 @@ export const UpdateTrackerService = {
   initBackgroundRadar(): () => void {
     if (typeof window === 'undefined') return () => {};
 
-    // Auto-limpeza ao ler capítulos
+    let lastHistoryRef = HistoryService.getHistory();
+    let lastReadRef = HistoryService.getReadChapters();
+
+    // Auto-limpeza ao ler capítulos (ignora eventos de favoritos/dispensados que não afetam leitura)
     const unsubHistory = HistoryService.subscribe(() => {
       const history = HistoryService.getHistory();
-      const readChapters = new Set(HistoryService.getReadChapters());
+      const readList = HistoryService.getReadChapters();
+      if (history === lastHistoryRef && readList === lastReadRef) {
+        return;
+      }
+      lastHistoryRef = history;
+      lastReadRef = readList;
+
       const stored = this.getStoredUpdates();
       let changed = false;
+      let nextStored: Record<string, MangaUpdateInfo> | null = null;
 
       Object.values(stored).forEach(u => {
-        if (u.hasNew && (readChapters.has(u.latestChapterId) || history.some(h => h.chapterId === u.latestChapterId))) {
-          stored[u.mangaId] = { ...u, hasNew: false };
+        if (
+          u.hasNew &&
+          (HistoryService.isChapterRead(u.latestChapterId) || history.some(h => h.chapterId === u.latestChapterId))
+        ) {
+          if (!nextStored) nextStored = { ...stored };
+          nextStored[u.mangaId] = { ...u, hasNew: false };
           changed = true;
         }
       });
 
-      if (changed) {
-        localStorage.setItem(UPDATES_KEY, JSON.stringify(stored));
+      if (changed && nextStored) {
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(nextStored));
+        cachedUpdates = nextStored;
         notifyListeners();
       }
     });

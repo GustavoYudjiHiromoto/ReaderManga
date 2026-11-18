@@ -21,7 +21,7 @@ export function isFeedbackAdmin(email?: string | null): boolean {
   return typeof email === 'string' && email.trim().toLowerCase() === ADMIN_EMAIL;
 }
 
-export type FeedbackType = 'bug' | 'source_broken' | 'recommendation' | 'suggestion';
+export type FeedbackType = 'bug' | 'source_broken' | 'recommendation' | 'suggestion' | 'other';
 export type FeedbackStatus = 'open' | 'in_progress' | 'resolved' | 'wont_fix';
 
 export const FEEDBACK_LIMITS = {
@@ -57,6 +57,11 @@ export const FEEDBACK_TYPE_META: Record<FeedbackType, { label: string; shortLabe
     label: 'Sugestão de Melhoria',
     shortLabel: 'Sugestão',
     hint: 'Ideia de novo recurso, filtro ou ajuste de usabilidade'
+  },
+  other: {
+    label: 'Outros',
+    shortLabel: 'Outros',
+    hint: 'Dúvidas, comentários gerais ou assuntos fora das categorias acima'
   }
 };
 
@@ -124,7 +129,7 @@ function toEpochMs(val: unknown): number {
 }
 
 function normalizeType(raw: unknown): FeedbackType {
-  if (raw === 'bug' || raw === 'source_broken' || raw === 'recommendation' || raw === 'suggestion') {
+  if (raw === 'bug' || raw === 'source_broken' || raw === 'recommendation' || raw === 'suggestion' || raw === 'other') {
     return raw;
   }
   return 'bug';

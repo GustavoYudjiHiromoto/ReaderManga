@@ -74,7 +74,183 @@ function buildImageHeaders(targetUrl: string, explicitReferer?: string): Record<
   return headers;
 }
 
-async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+interface CachedImagePayload {
+  buffer: Buffer;
+  contentType: string;
+}
+
+const IMAGE_CACHE_MAX_ENTRIES = 250;
+const IMAGE_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos
+const IMAGE_CACHE_MAX_BYTES = 1_500_000; // ~1.5 MB por imagem (ideal para capas)
+const imageBufferCache = new Map<string, { payload: CachedImagePayload; expiresAt: number }>();
+const inFlightImageFetches = new Map<string, Promise<{ status: number; payload?: CachedImagePayload }>>();
+
+// Semaphore for uploads.mangadex.org bursts (prevents 429 / connection drops on 30+ simultaneous cards)
+const MAX_CONCURRENT_MANGADEX_IMAGES = 6;
+let activeMangaDexImages = 0;
+const mangaDexImageWaiters: Array<() => void> = [];
+
+async function withHostConcurrencyLimit<T>(targetUrl: string, fn: () => Promise<T>): Promise<T> {
+  if (!targetUrl.includes('uploads.mangadex.org')) {
+    return fn();
+  }
+  if (activeMangaDexImages >= MAX_CONCURRENT_MANGADEX_IMAGES) {
+    await new Promise<void>(resolve => mangaDexImageWaiters.push(resolve));
+  }
+  activeMangaDexImages++;
+  try {
+    return await fn();
+  } finally {
+    activeMangaDexImages--;
+    const next = mangaDexImageWaiters.shift();
+    if (next) next();
+  }
+}
+
+function getCachedImage(key: string): CachedImagePayload | undefined {
+  const entry = imageBufferCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    imageBufferCache.delete(key);
+    return undefined;
+  }
+  // Refresh LRU order
+  imageBufferCache.delete(key);
+  imageBufferCache.set(key, entry);
+  return entry.payload;
+}
+
+function setCachedImage(key: string, payload: CachedImagePayload): void {
+  if (!payload.buffer || payload.buffer.byteLength === 0 || payload.buffer.byteLength > IMAGE_CACHE_MAX_BYTES) {
+    return;
+  }
+  if (imageBufferCache.size >= IMAGE_CACHE_MAX_ENTRIES) {
+    const oldestKey = imageBufferCache.keys().next().value;
+    if (oldestKey) imageBufferCache.delete(oldestKey);
+  }
+  imageBufferCache.set(key, {
+    payload,
+    expiresAt: Date.now() + IMAGE_CACHE_TTL_MS
+  });
+}
+
+async function fetchWithTimeoutAndRetry(
+  url: string,
+  headers: Record<string, string>,
+  retries = 2,
+  timeoutMs = 8000
+): Promise<globalThis.Response | null> {
+  return withHostConcurrencyLimit(url, async () => {
+    let lastRes: globalThis.Response | null = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { headers, signal: controller.signal });
+        lastRes = res;
+        if (res.ok) return res;
+        // Retry only on transient rate-limits or server glitches
+        if (![429, 500, 502, 503, 504].includes(res.status) || attempt === retries) {
+          return res;
+        }
+      } catch {
+        if (attempt === retries) return lastRes;
+      } finally {
+        clearTimeout(timer);
+      }
+      const backoffMs = (attempt + 1) * 220 + Math.floor(Math.random() * 140);
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+    return lastRes;
+  });
+}
+
+function buildImageCandidateUrls(imageUrl: string): string[] {
+  const candidates = [imageUrl];
+  if (imageUrl.includes('mangadex.network')) {
+    candidates.push(imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org'));
+  }
+  if (imageUrl.includes('uploads.mangadex.org/covers/')) {
+    if (/\.512\.jpg$/i.test(imageUrl)) {
+      candidates.push(imageUrl.replace(/\.512\.jpg$/i, '.256.jpg'));
+      candidates.push(imageUrl.replace(/\.512\.jpg$/i, ''));
+    } else if (/\.256\.jpg$/i.test(imageUrl)) {
+      candidates.push(imageUrl.replace(/\.256\.jpg$/i, ''));
+    }
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function fetchUpstreamImageWithFallback(
+  imageUrl: string,
+  explicitReferer?: string
+): Promise<{ status: number; payload?: CachedImagePayload }> {
+  const cacheKey = `${imageUrl}||${explicitReferer || ''}`;
+  const cached = getCachedImage(cacheKey);
+  if (cached) {
+    return { status: 200, payload: cached };
+  }
+
+  const existingInFlight = inFlightImageFetches.get(cacheKey);
+  if (existingInFlight) {
+    return existingInFlight;
+  }
+
+  const task = (async (): Promise<{ status: number; payload?: CachedImagePayload }> => {
+    const candidates = buildImageCandidateUrls(imageUrl);
+    let lastStatus = 502;
+
+    for (const candidateUrl of candidates) {
+      const headers = buildImageHeaders(candidateUrl, explicitReferer);
+      const response = await fetchWithTimeoutAndRetry(candidateUrl, headers, 2, 8000);
+
+      if (response && response.ok) {
+        const contentType = response.headers.get('content-type') || 'image/jpeg';
+        const arrayBuf = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        if (buffer.byteLength > 0) {
+          const payload: CachedImagePayload = { buffer, contentType };
+          setCachedImage(cacheKey, payload);
+          return { status: 200, payload };
+        }
+      } else if (response) {
+        lastStatus = response.status;
+      }
+    }
+
+    // Optional residential relay fallback for anti-hotlink/Cloudflare 403/503 protected images
+    if (residentialRelayService.isRelayReady() && isSafeExternalRelayUrl(imageUrl)) {
+      try {
+        const headers = buildImageHeaders(imageUrl, explicitReferer);
+        const relayed = await residentialRelayService.fetchThroughRelay(imageUrl, {
+          headers,
+          responseType: 'binary',
+          timeoutMs: 9000
+        });
+        if (relayed.ok && relayed.bodyBase64) {
+          const buffer = Buffer.from(relayed.bodyBase64, 'base64');
+          const contentType = relayed.headers?.['content-type'] || 'image/jpeg';
+          const payload: CachedImagePayload = { buffer, contentType };
+          setCachedImage(cacheKey, payload);
+          return { status: 200, payload };
+        }
+      } catch {
+        // relay fallback failed
+      }
+    }
+
+    return { status: lastStatus };
+  })();
+
+  inFlightImageFetches.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    inFlightImageFetches.delete(cacheKey);
+  }
+}
+
+async function fetchImageBuffer(imageUrl: string): Promise<CachedImagePayload | null> {
   let actualUrl = imageUrl;
   let explicitReferer: string | undefined;
   if (actualUrl.startsWith('/api/proxy/image?')) {
@@ -84,44 +260,8 @@ async function fetchImageBuffer(imageUrl: string): Promise<{ buffer: Buffer; con
     explicitReferer = params.get('referer') || undefined;
   }
 
-  const headers = buildImageHeaders(actualUrl, explicitReferer);
-
-  let response = await fetch(actualUrl, { headers }).catch(() => null);
-
-  if ((!response || !response.ok) && actualUrl.includes('mangadex.network')) {
-    const fallbackUrl = actualUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
-    response = await fetch(fallbackUrl, {
-      headers: { 'User-Agent': 'MangaReader/1.0' }
-    }).catch(() => null);
-  }
-
-  if (!response || !response.ok) {
-    if (residentialRelayService.isRelayReady() && isSafeExternalRelayUrl(actualUrl)) {
-      try {
-        const relayed = await residentialRelayService.fetchThroughRelay(actualUrl, {
-          headers,
-          responseType: 'binary',
-          timeoutMs: 9000
-        });
-        if (relayed.ok && relayed.bodyBase64) {
-          return {
-            buffer: Buffer.from(relayed.bodyBase64, 'base64'),
-            contentType: relayed.headers?.['content-type'] || 'image/jpeg'
-          };
-        }
-      } catch {
-        // relay fallback failed
-      }
-    }
-    return null;
-  }
-
-  const contentType = response.headers.get('content-type') || 'image/jpeg';
-  const arrayBuf = await response.arrayBuffer();
-  return {
-    buffer: Buffer.from(arrayBuf),
-    contentType
-  };
+  const result = await fetchUpstreamImageWithFallback(actualUrl, explicitReferer);
+  return result.payload || null;
 }
 
 // 0. Cache stats endpoint
@@ -582,6 +722,8 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const genresRaw = req.query.genres as string;
     const genres = genresRaw ? genresRaw.split(',').map(s => s.trim()).filter(Boolean) : (genre && genre !== 'all' ? [genre] : undefined);
     const demographic = req.query.demographic as string;
+    const rawProtagonist = (req.query.protagonist as string)?.toLowerCase();
+    const protagonist = rawProtagonist === 'female' || rawProtagonist === 'male' ? rawProtagonist : undefined;
     const mangaType = (req.query.type as string) || (req.query.format as string);
     const status = req.query.status as string;
     const language = (req.query.language as string) || (req.query.lang as string);
@@ -592,7 +734,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const includeAdult = req.query.includeAdult === 'true';
     const onlyAvailable = req.query.onlyAvailable !== 'false';
 
-    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
+    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${protagonist || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
@@ -605,6 +747,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       genre,
       genres,
       demographic,
+      protagonist,
       type: mangaType,
       status,
       language,
@@ -983,64 +1126,16 @@ apiRouter.get('/proxy/image', async (req: Request, res: Response) => {
       return res.status(400).send('Missing url parameter');
     }
 
-    const headers = buildImageHeaders(imageUrl, explicitReferer);
-    let response = await fetch(imageUrl, { headers }).catch(() => null);
-
-    // Fallback if ephemeral MangaDex@Home node returned 404 or failed
-    if ((!response || !response.ok) && imageUrl.includes('mangadex.network')) {
-      const fallbackUrl = imageUrl.replace(/https:\/\/[^/]+\.mangadex\.network/, 'https://uploads.mangadex.org');
-      try {
-        const fallbackRes = await fetch(fallbackUrl, {
-          headers: { 'User-Agent': 'MangaReader/1.0' }
-        });
-        if (fallbackRes.ok) {
-          response = fallbackRes;
-        }
-      } catch {
-        // keep original response
-      }
+    const result = await fetchUpstreamImageWithFallback(imageUrl, explicitReferer);
+    if (!result.payload) {
+      return res.status(result.status || 502).send('Failed to fetch upstream image');
     }
 
-    // Optional residential relay fallback for anti-hotlink/Cloudflare 403/503 protected images
-    if (
-      (!response || !response.ok || response.status === 403 || response.status === 503) &&
-      residentialRelayService.isRelayReady() &&
-      isSafeExternalRelayUrl(imageUrl)
-    ) {
-      try {
-        const relayed = await residentialRelayService.fetchThroughRelay(imageUrl, {
-          headers,
-          responseType: 'binary',
-          timeoutMs: 9000
-        });
-        if (relayed.ok && relayed.bodyBase64) {
-          const contentType = relayed.headers?.['content-type'] || 'image/jpeg';
-          res.setHeader('Content-Type', contentType);
-          res.setHeader('Cache-Control', 'public, max-age=86400');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          return res.send(Buffer.from(relayed.bodyBase64, 'base64'));
-        }
-      } catch {
-        // fall through to standard upstream failure handling
-      }
-    }
-
-    if (!response) {
-      return res.status(502).send('Failed to fetch upstream image');
-    }
-
-    if (!response.ok) {
-      return res.status(response.status).send('Failed to fetch upstream image');
-    }
-
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Type', result.payload.contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.setHeader('Access-Control-Allow-Origin', '*');
-
-    const arrayBuffer = await response.arrayBuffer();
-    res.send(Buffer.from(arrayBuffer));
-  } catch (err) {
+    res.send(result.payload.buffer);
+  } catch {
     res.status(500).send('Proxy error');
   }
 });

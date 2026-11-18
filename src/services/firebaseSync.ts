@@ -770,6 +770,33 @@ export const FirebaseSyncService = {
   }
 };
 
+let libraryStatePushTimer: ReturnType<typeof setTimeout> | null = null;
+let hasPendingLibraryStatePush = false;
+
+function scheduleLibraryStatePush() {
+  if (!auth.currentUser || isApplyingRemoteChange) return;
+  hasPendingLibraryStatePush = true;
+  if (libraryStatePushTimer) clearTimeout(libraryStatePushTimer);
+  libraryStatePushTimer = setTimeout(() => {
+    libraryStatePushTimer = null;
+    if (hasPendingLibraryStatePush) {
+      hasPendingLibraryStatePush = false;
+      FirebaseSyncService.pushLibraryState();
+    }
+  }, 1200);
+}
+
+function flushPendingLibraryStatePush() {
+  if (libraryStatePushTimer) {
+    clearTimeout(libraryStatePushTimer);
+    libraryStatePushTimer = null;
+  }
+  if (hasPendingLibraryStatePush) {
+    hasPendingLibraryStatePush = false;
+    FirebaseSyncService.pushLibraryState();
+  }
+}
+
 // Register sync bridge with HistoryService
 HistoryService.setSyncBridge({
   onProgressSaved: (prog) => {
@@ -784,9 +811,10 @@ HistoryService.setSyncBridge({
     FirebaseSyncService.removeFavorite(mangaId);
   },
   onLibraryStateChanged: () => {
-    FirebaseSyncService.pushLibraryState();
+    scheduleLibraryStatePush();
   },
   onBulkImported: () => {
+    flushPendingLibraryStatePush();
     const user = FirebaseSyncService.getCurrentUser();
     if (user) {
       FirebaseSyncService.syncAllData(user.uid);
@@ -796,6 +824,15 @@ HistoryService.setSyncBridge({
 
 // Monitor Auth State and automatically initialize/teardown sync
 if (typeof window !== 'undefined') {
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushPendingLibraryStatePush();
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    flushPendingLibraryStatePush();
+  });
+
   onAuthStateChanged(auth, (user) => {
     if (user) {
       FirebaseSyncService.syncAllData(user.uid);

@@ -125,7 +125,7 @@ export default function App() {
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
   const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
-  const [unreadUpdatesCount, setUnreadUpdatesCount] = useState<number>(() => UpdateTrackerService.getUnreadUpdatesCount());
+  const [unreadUpdatesCount, setUnreadUpdatesCount] = useState<number>(() => UpdateTrackerService.getUnseenBadgeCount());
   const [trackersCount, setTrackersCount] = useState<number>(() => {
     const ani = TrackerService.getAniListAccount().connected ? 1 : 0;
     const mal = TrackerService.getMalAccount().connected ? 1 : 0;
@@ -156,12 +156,12 @@ export default function App() {
     const unsubscribeHistory = HistoryService.subscribe(() => {
       setHistory(HistoryService.getHistory());
       setFavorites(HistoryService.getFavorites());
-      setUnreadUpdatesCount(UpdateTrackerService.getUnreadUpdatesCount());
+      setUnreadUpdatesCount(UpdateTrackerService.getUnseenBadgeCount());
     });
 
     // Subscribe to update tracker changes
     const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
-      setUnreadUpdatesCount(UpdateTrackerService.getUnreadUpdatesCount());
+      setUnreadUpdatesCount(UpdateTrackerService.getUnseenBadgeCount());
     });
 
     // Subscribe to offline cache changes

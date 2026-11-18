@@ -7,6 +7,7 @@ export interface SourceSearchOptions {
   genre?: string;
   genres?: string[];
   demographic?: string;
+  protagonist?: 'female' | 'male';
   type?: string;
   status?: string;
   language?: string;

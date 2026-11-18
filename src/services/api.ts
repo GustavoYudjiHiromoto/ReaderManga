@@ -262,6 +262,7 @@ export const MangaApi = {
     genre?: string;
     genres?: string[];
     demographic?: string;
+    protagonist?: 'female' | 'male';
     type?: string;
     status?: string;
     language?: string;
@@ -277,6 +278,7 @@ export const MangaApi = {
     if (options?.sources && options.sources.length > 0) params.set('sources', options.sources.join(','));
     if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
     if (options?.demographic && options.demographic !== 'all') params.set('demographic', options.demographic);
+    if (options?.protagonist) params.set('protagonist', options.protagonist);
     if (options?.type && options.type !== 'all') params.set('type', options.type);
     if (options?.status && options.status !== 'all') params.set('status', options.status);
     if (options?.language && options.language !== 'all') params.set('language', options.language);

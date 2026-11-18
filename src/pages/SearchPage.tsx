@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Search,
   X,
@@ -29,7 +29,8 @@ import {
   Eye,
   Trash2,
   Compass,
-  Flame
+  Flame,
+  User
 } from 'lucide-react';
 import { Manga, FavoriteManga, IgnoredManga, MangaSourceInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
@@ -45,9 +46,12 @@ import {
 import {
   normalizeLibraryTitle,
   isMangaInFavorites as checkMangaInFavorites,
-  isMangaInIgnored as checkMangaInIgnored,
   pickSurpriseCandidate
 } from '../utils/libraryFilters.js';
+import {
+  ProtagonistGender,
+  matchesProtagonistGender
+} from '../utils/protagonistFilter.js';
 
 type SourceBrowseMode = 'popular' | 'latest' | 'search';
 
@@ -61,6 +65,24 @@ interface SearchPageProps {
     nonce: number;
   } | null;
 }
+
+export type TropeCategory = 'all' | 'isekai' | 'romance' | 'lifestyle' | 'action' | 'dark' | 'format';
+
+export interface SpecificTrope {
+  id: string;
+  label: string;
+  category: Exclude<TropeCategory, 'all'>;
+}
+
+export const TROPE_CATEGORIES: Array<{ id: TropeCategory; label: string }> = [
+  { id: 'all', label: 'Todas' },
+  { id: 'isekai', label: 'Isekai & Poder' },
+  { id: 'romance', label: 'Romance & Dinâmicas' },
+  { id: 'lifestyle', label: 'Vida & Profissões' },
+  { id: 'action', label: 'Ação & Mundos' },
+  { id: 'dark', label: 'Sombrio & Sci-Fi' },
+  { id: 'format', label: 'Esportes & Formatos' }
+];
 
 export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   // Tropes & Subgêneros Específicos
@@ -77,7 +99,10 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
     'ecchi', 'fanservice', 'sensual', 'borderline h', 'softcore'
   ],
   'troca de gênero': [
-    'gender bender', 'gender swap', 'genderswap', 'troca de gênero', 'troca de sexo', 'crossdressing'
+    'gender bender', 'gender swap', 'genderswap', 'magical sex shift', 'troca de gênero', 'troca de sexo'
+  ],
+  'crossdressing / trap': [
+    'crossdressing', 'trap', 'josou', 'disguised as a boy', 'disguised as a girl', 'femboy', 'otokonoko'
   ],
   'mecha / robôs': [
     'mecha', 'robot', 'robô', 'robos', 'robôs', 'mechas', 'giant robot', 'piloto'
@@ -98,7 +123,7 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
     'reverse isekai', 'isekai reverso', 'modern fantasy'
   ],
   'música / artes': [
-    'music', 'música', 'musica', 'band', 'banda', 'idol', 'ídolo', 'art', 'teatro'
+    'music', 'música', 'musica', 'band', 'banda', 'idol', 'ídolo', 'performing arts', 'visual arts', 'teatro'
   ],
   'overpower (op)': [
     'overpower', 'overpowered', 'op protagonist', 'cheat skill', 'cheat ability',
@@ -121,11 +146,11 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'psicológico': ['psychological', 'psicológico', 'psicologico'],
   'sobrevivência': ['survival', 'sobrevivência', 'sobrevivencia', 'death game'],
   'isekai': ['isekai', 'another world', 'outro mundo', 'summoned', 'transported'],
-  'apocalipse / zumbis': ['zombie', 'apocalypse', 'apocalipse', 'zumbi', 'survival', 'post-apocalyptic', 'fim do mundo'],
+  'apocalipse / zumbis': ['zombie', 'zombies', 'apocalypse', 'apocalipse', 'zumbi', 'survival', 'post-apocalyptic', 'fim do mundo'],
   'academia de magia': ['magic academy', 'academia de magia', 'magic school', 'escola de magia'],
   'romcom / comédia romântica': ['romcom', 'romantic comedy', 'comédia romântica', 'comedia romantica'],
-  'trabalho / adulto': ['office', 'office romance', 'workplace', 'ceo', 'trabalho', 'adult romance', 'empresa'],
-  'delinquente / gangue': ['delinquent', 'gang', 'yankee', 'delinquente', 'gangue', 'brawler', 'bosozoku'],
+  'trabalho / adulto': ['office', 'office workers', 'office romance', 'workplace', 'ceo', 'trabalho', 'adult romance', 'empresa'],
+  'delinquente / gangue': ['delinquents', 'delinquent', 'gang', 'yankee', 'delinquente', 'gangue', 'brawler', 'bosozoku'],
   'caçada de monstros': ['monster hunter', 'monster hunting', 'caçador de monstros', 'caçada', 'beasts'],
   'jogo da morte': ['death game', 'jogo da morte', 'battle royale', 'deathmatch'],
   'protagonista criança / shota': [
@@ -154,8 +179,251 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
     'slow life', 'vida lenta', 'peaceful life', 'laid back', 'iyashikei', 'rural'
   ],
   'estrategista / gênio': [
-    'strategist', 'tactician', 'smart', 'genius', 'mastermind', 'clever protagonist',
+    'strategist', 'tactician', 'strategy game', 'smart', 'genius', 'mastermind', 'clever protagonist',
     'estrategista', 'inteligente'
+  ],
+  'necromante / invocação': [
+    'necromancer', 'necromancy', 'summoner', 'undead', 'skeleton', 'shadow monarch',
+    'necromante', 'invocador', 'invocação'
+  ],
+  'torre / escalada': [
+    'tower', 'climber', 'climbing', 'floor', 'ranker', 'torre', 'escalada'
+  ],
+  'realidade virtual / vrmmo': [
+    'virtual reality', 'vrmmo', 'vr game', 'full dive', 'mmorpg', 'realidade virtual'
+  ],
+  'máfia / yakuza / crime': [
+    'mafia', 'yakuza', 'crime', 'organized crime', 'syndicate', 'gangster', 'máfia'
+  ],
+  'vampiros': [
+    'vampires', 'vampire', 'vampiro', 'vampira', 'bloodsucker'
+  ],
+  'samurai / espadachim': [
+    'samurai', 'katana', 'swordsman', 'swordmaster', 'espadachim'
+  ],
+  'ninja / shinobi / assassino': [
+    'ninja', 'shinobi', 'assassin', 'assassination', 'hitman', 'assassino'
+  ],
+  'super-heróis / poderes': [
+    'superhero', 'super power', 'superpowers', 'vigilante', 'super-herói', 'poderes'
+  ],
+  'garotas mágicas (mahou shoujo)': [
+    'magical girls', 'mahou shoujo', 'magical girl', 'garota mágica'
+  ],
+  'fantasmas / ocultismo': [
+    'ghosts', 'ghost', 'occult', 'exorcist', 'spirit', 'fantasma', 'ocultismo', 'exorcista'
+  ],
+  'pós-apocalíptico': [
+    'post-apocalyptic', 'post apocalyptic', 'wasteland', 'ruined world', 'pós-apocalíptico'
+  ],
+  'cyberpunk / futurista': [
+    'cyberpunk', 'dystopia', 'android', 'cyborg', 'hacker', 'distopia', 'futurista'
+  ],
+  'suspense / thriller': [
+    'thriller', 'suspense', 'mind games', 'tension'
+  ],
+  'tragédia / drama pesado': [
+    'tragedy', 'tragédia', 'tragedia', 'tragic', 'heartbreak'
+  ],
+  'gore / violência': [
+    'gore', 'brutal', 'splatter', 'violência'
+  ],
+  'gyaru': [
+    'gyaru', 'kogal', 'gal'
+  ],
+  'garotas monstro': [
+    'monster girls', 'monster girl', 'lamia', 'harpy', 'centaur', 'garota monstro'
+  ],
+  'colorido (full color)': [
+    'full color', 'official colored', 'fan colored', 'colored', 'colorido'
+  ],
+  'jogos / e-sports / apostas': [
+    'video games', 'video game', 'high stakes game', 'gambling', 'esports', 'apostas', 'jogos'
+  ],
+  'aventura em guilda / rank s': [
+    'adventurer', 'guild', 's-rank', 'f-rank', 'banished', 'kicked from party', 'guilda', 'aventureiro'
+  ],
+  'filosofia / reflexivo': [
+    'philosophical', 'philosophy', 'existential', 'filosófico', 'filosofia'
+  ],
+  'artes marciais': [
+    'martial arts', 'karate', 'kung fu', 'mma', 'boxing', 'artes marciais', 'luta'
+  ],
+
+  // Novos Subgêneros & Nichos Expandidos
+  'expulso do grupo': [
+    'banished', 'kicked out', 'expelled', 'fired', 'useless', 'dismissed', 'expulso', 'expulsa'
+  ],
+  'fraco para forte': [
+    'weak to strong', 'weakest', 'f-rank', 'e-rank', 'lowest rank', 'underdog', 'trash', 'fraco', 'zero to hero'
+  ],
+  'reencarnado como monstro': [
+    'reincarnated as a', 'slime', 'goblin', 'spider', 'dragon', 'skeleton', 'sword', 'vending machine', 'monster', 'reencarnado como'
+  ],
+  'lorde demônio / rei demônio': [
+    'demon lord', 'demon king', 'maou', 'dark lord', 'rei demônio', 'lorde demônio'
+  ],
+  'constelações / stream divino': [
+    'constellation', 'constellations', 'sponsor', 'viewers', 'gods watching', 'livestream', 'constelação', 'constelações'
+  ],
+  'herói invocado / traído': [
+    'summoned hero', 'betrayed hero', 'hero party', 'classmates', 'herói traído', 'invocado'
+  ],
+  'portais na terra (gate)': [
+    'gate', 'gates', 'portal', 'portais', 'rift', 'dungeon break', 'awakened', 'hunter'
+  ],
+  'habilidade única / cheat': [
+    'cheat skill', 'unique skill', 'broken skill', 'status window', 'skill tree', 'habilidade única', 'janela de status'
+  ],
+  'imortal / cultivo moderno': [
+    'immortal', 'urban cultivation', 'cultivator in modern', 'cultivation', 'imortal', 'cultivo moderno'
+  ],
+  'casamento por contrato': [
+    'contract marriage', 'arranged marriage', 'fake dating', 'fake marriage', 'contractual', 'casamento por contrato', 'casamento arranjado'
+  ],
+  'inimigos para amantes': [
+    'enemies to lovers', 'rival', 'rivals', 'arch-enemy', 'rivalry', 'inimigos', 'rivalidade'
+  ],
+  'amigos de infância': [
+    'childhood friend', 'childhood friends', 'osananajimi', 'amigo de infância', 'amiga de infância'
+  ],
+  'rompimento de noivado': [
+    'broken engagement', 'annulment', 'engagement annulled', 'condemnation', 'noivado desfeito', 'rompimento'
+  ],
+  'triângulo amoroso': [
+    'love polygon', 'love triangle', 'triângulo amoroso', 'triangle'
+  ],
+  'diferença de idade': [
+    'age gap', 'older woman', 'older man', 'younger', 'diferença de idade'
+  ],
+  'kuudere / fria por fora': [
+    'kuudere', 'ice queen', 'emotionless', 'expressionless', 'cold beauty', 'aloof', 'fria'
+  ],
+  'tsundere': [
+    'tsundere', 'hot and cold', 'stubborn'
+  ],
+  'dandere / tímida(o)': [
+    'dandere', 'shy', 'socially anxious', 'introvert', 'komyushou', 'tímida', 'tímido', 'fobia social'
+  ],
+  'morando juntos / vizinhos': [
+    'cohabitation', 'roommate', 'neighbor', 'next door', 'living together', 'vizinha', 'vizinho', 'morando juntos'
+  ],
+  'vida de casado / recém-casados': [
+    'married life', 'newlywed', 'husband and wife', 'wife', 'recém-casados', 'vida de casado'
+  ],
+  'amor proibido / secreto': [
+    'forbidden love', 'secret relationship', 'taboo', 'affair', 'amor proibido', 'secreto'
+  ],
+  'iyashikei / relaxante': [
+    'iyashikei', 'healing', 'cozy', 'relaxing', 'heartwarming', 'wholesome', 'tranquilo'
+  ],
+  'cuidando de criança (childcare)': [
+    'childcare', 'raising a child', 'parenting', 'single father', 'single mother', 'daughter', 'adopt', 'cuidando de criança', 'pai solteiro'
+  ],
+  'animais / pets': [
+    'animals', 'pets', 'pet', 'cat', 'dog', 'fluffy', 'animais', 'bichinhos', 'mascotes'
+  ],
+  'estalagem / restaurante / café': [
+    'gourmet', 'cafe', 'tavern', 'inn', 'bakery', 'izakaya', 'restaurant', 'cooking', 'cafeteria', 'padaria', 'estalagem'
+  ],
+  'professor / tutor / mentor': [
+    'teacher', 'instructor', 'tutor', 'professor', 'mentor', 'sensei', 'academy instructor'
+  ],
+  'mordomo / empregada': [
+    'maid', 'butler', 'servant', 'housekeeper', 'empregada', 'mordomo'
+  ],
+  'showbiz / atuação': [
+    'showbiz', 'performing arts', 'actor', 'actress', 'celebrity', 'audition', 'entertainment industry', 'atuação', 'idol'
+  ],
+  'otaku / mangaká / cosplay': [
+    'otaku culture', 'otaku', 'mangaka', 'manga artist', 'cosplay', 'doujin', 'anime', 'mangaká'
+  ],
+  'cgdct / clube escolar': [
+    'cgdct', 'cute girls doing cute things', 'club', 'school club', 'clube escolar', 'garotas fofas'
+  ],
+  'paródia / humor nonsense': [
+    'parody', 'gag humor', 'spoof', 'satire', 'absurd', 'paródia', 'besteirol'
+  ],
+  'santa / sacerdotisa': [
+    'saint', 'saintess', 'priestess', 'shrine maiden', 'miko', 'santa', 'sacerdotisa'
+  ],
+  'economia / comércio / império': [
+    'economics', 'commerce', 'merchant', 'business', 'trade', 'company', 'shop', 'comércio', 'economia'
+  ],
+  'engenharia / magitec': [
+    'engineer', 'inventor', 'magitech', 'invention', 'technology', 'crafting', 'engenheiro', 'invenção'
+  ],
+  'educacional / curiosidades': [
+    'educational', 'trivia', 'documentary', 'informative', 'educacional', 'aprendizado'
+  ],
+  'fantasia urbana': [
+    'urban fantasy', 'modern magic', 'hidden world', 'fantasia urbana'
+  ],
+  'mitologia / deuses': [
+    'mythology', 'gods', 'goddess', 'deity', 'greek', 'norse', 'folklore', 'mitologia', 'deuses'
+  ],
+  'anjos / demônios / guerra santa': [
+    'angel', 'angels', 'fallen angel', 'heaven', 'hell', 'seraph', 'anjo', 'anjos'
+  ],
+  'piratas / navegação': [
+    'pirate', 'pirates', 'corsair', 'pirata', 'piratas', 'voyage'
+  ],
+  'mercenário / caçador de recompensas': [
+    'mercenary', 'bounty hunter', 'sellsword', 'mercenário', 'caçador de recompensas'
+  ],
+  'steampunk / vitoriano': [
+    'steampunk', 'victorian', 'clockwork', 'airship', 'vitoriano'
+  ],
+  'velho oeste / faroeste': [
+    'western', 'cowboy', 'gunslinger', 'wild west', 'frontier', 'faroeste'
+  ],
+  'sobrevivência na selva / ilha': [
+    'deserted island', 'island', 'wilderness', 'castaway', 'shipwreck', 'jungle', 'ilha deserta'
+  ],
+  'anti-herói / vilão mc': [
+    'antihero', 'anti-hero', 'ruthless', 'evil protagonist', 'villain protagonist', 'anti-herói'
+  ],
+  'loop temporal': [
+    'time loop', 'time travel', 'die and repeat', 'groundhog', 'reset', 'loop temporal'
+  ],
+  'mistério de assassinato': [
+    'murder', 'murder mystery', 'serial killer', 'locked room', 'homicide', 'detective', 'assassinato'
+  ],
+  'body horror / mutação': [
+    'body horror', 'parasite', 'mutation', 'grotesque', 'assimilation', 'mutação', 'parasita'
+  ],
+  'horror cósmico / cultos': [
+    'cosmic horror', 'eldritch', 'lovecraft', 'cult', 'cultist', 'seita', 'culto'
+  ],
+  'espacial / aliens': [
+    'space', 'aliens', 'alien', 'starship', 'galaxy', 'planet', 'espacial', 'alienígenas'
+  ],
+  'esportes de combate': [
+    'combat sports', 'boxing', 'mma', 'wrestling', 'judo', 'karate', 'kickboxing', 'boxe'
+  ],
+  'esportes em equipe': [
+    'team sports', 'soccer', 'football', 'basketball', 'volleyball', 'baseball', 'rugby', 'futebol', 'basquete', 'vôlei'
+  ],
+  'corrida / carros / drift': [
+    'racing', 'cars', 'drift', 'motorsport', 'motorcycle', 'rally', 'corrida', 'carros'
+  ],
+  'jogos de tabuleiro / cartas': [
+    'traditional games', 'mahjong', 'shogi', 'chess', 'card game', 'karuta', 'board game', 'xadrez', 'cartas'
+  ],
+  'webtoon / scroll vertical': [
+    'long strip', 'webtoon', 'web comic', 'vertical', 'scroll vertical'
+  ],
+  'oneshot (história única)': [
+    'oneshot', 'one-shot', 'one shot', 'história única'
+  ],
+  '4-koma (tirinhas)': [
+    '4-koma', 'yonkoma', '4koma', 'tirinhas'
+  ],
+  'premiado (award winning)': [
+    'award winning', 'award', 'prize', 'premiado'
+  ],
+  'antologia / coletânea': [
+    'anthology', 'collection', 'short stories', 'antologia', 'coletânea'
   ],
 
   // Gêneros Clássicos
@@ -174,51 +442,143 @@ export const GENRE_TRANSLATIONS: Record<string, string[]> = {
   'esportes': ['sports', 'esportes', 'esporte']
 };
 
-export const SPECIFIC_TROPES = [
-  { id: 'Isekai', label: 'Isekai', highlight: true },
-  { id: 'Protagonista Criança / Shota', label: 'Protagonista Criança / Shota', highlight: true },
-  { id: 'Construção de Vila', label: 'Gestão de Território / Reino', highlight: true },
-  { id: 'Nobreza / Aristocracia', label: 'Nobreza / Aristocracia', highlight: true },
-  { id: 'Overpower (OP)', label: 'Overpower (OP)', highlight: true },
-  { id: 'Dungeon / Sistema', label: 'Dungeon / Sistema', highlight: true },
-  { id: 'Regressão / Tempo', label: 'Regressão / Tempo', highlight: true },
-  { id: 'Reencarnação', label: 'Reencarnação', highlight: true },
-  { id: 'Avaliação (Appraisal)', label: 'Avaliação (Appraisal)', highlight: true },
-  { id: 'Recrutamento / Aliados', label: 'Recrutamento / Talentos', highlight: true },
-  { id: 'Vilã (Villainess)', label: 'Vilã (Villainess)', highlight: true },
-  { id: 'Cultivação / Murim', label: 'Cultivação / Murim', highlight: true },
-  { id: 'Vingança', label: 'Vingança / Traição', highlight: true },
-  { id: 'Yaoi / BL', label: 'Yaoi / BL (Boys\' Love)', highlight: true },
-  { id: 'Yuri / GL', label: 'Yuri / GL (Girls\' Love)', highlight: true },
-  { id: 'Harém', label: 'Harém', highlight: true },
-  { id: 'Ecchi', label: 'Ecchi / Sensual', highlight: true },
-  { id: 'RomCom / Comédia Romântica', label: 'Comédia Romântica', highlight: true },
-  { id: 'Estrategista / Gênio', label: 'Estrategista / Inteligente' },
-  { id: 'Vida Lenta (Slow Life)', label: 'Vida Lenta (Slow Life)' },
-  { id: 'Ferreiro / Artesão / Mercador', label: 'Ferreiro / Mercador / Alquimia' },
-  { id: 'Médico / Curandeiro', label: 'Médico / Curandeiro' },
-  { id: 'Apocalipse / Zumbis', label: 'Apocalipse / Zumbis' },
-  { id: 'Fazenda / Agricultura', label: 'Fazenda / Agricultura' },
-  { id: 'Academia de Magia', label: 'Academia de Magia' },
-  { id: 'Trabalho / Adulto', label: 'Romance Adulto / Office' },
-  { id: 'Troca de Gênero', label: 'Troca de Gênero (Gender Bender)' },
-  { id: 'Delinquente / Gangue', label: 'Delinquentes / Gangues' },
-  { id: 'Monstros / Demônios', label: 'Monstros / Demônios' },
-  { id: 'Domador de Monstros', label: 'Domador de Monstros' },
-  { id: 'Caçada de Monstros', label: 'Caçada / Monstros' },
-  { id: 'Jogo da Morte', label: 'Jogo da Morte / Survival' },
-  { id: 'Mecha / Robôs', label: 'Mecha / Robôs' },
-  { id: 'Culinária / Gastronomia', label: 'Culinária / Gastronomia' },
-  { id: 'Militar / Guerra', label: 'Militar / Guerra' },
-  { id: 'Policial / Detetive', label: 'Policial / Detetive' },
-  { id: 'Isekai Reverso', label: 'Isekai Reverso' },
-  { id: 'Música / Artes', label: 'Música / Ídolos' },
-  { id: 'Yandere', label: 'Yandere' },
-  { id: 'Tomboy', label: 'Tomboy' },
-  { id: 'Romance Colegial', label: 'Romance Colegial' },
-  { id: 'Harem Invertido', label: 'Harem Invertido' },
-  { id: 'Psicológico', label: 'Psicológico' },
-  { id: 'Sobrevivência', label: 'Sobrevivência' }
+export const SPECIFIC_TROPES: SpecificTrope[] = [
+  // Isekai & Poder (27)
+  { id: 'Isekai', label: 'Isekai', category: 'isekai' },
+  { id: 'Reencarnação', label: 'Reencarnação', category: 'isekai' },
+  { id: 'Regressão / Tempo', label: 'Regressão / Tempo', category: 'isekai' },
+  { id: 'Dungeon / Sistema', label: 'Dungeon / Sistema', category: 'isekai' },
+  { id: 'Overpower (OP)', label: 'Overpower (OP)', category: 'isekai' },
+  { id: 'Expulso do Grupo', label: 'Expulso do Grupo (Banished)', category: 'isekai' },
+  { id: 'Fraco para Forte', label: 'Fraco para Forte (Zero to Hero)', category: 'isekai' },
+  { id: 'Reencarnado como Monstro', label: 'Reencarnado como Monstro / Objeto', category: 'isekai' },
+  { id: 'Lorde Demônio / Rei Demônio', label: 'Lorde Demônio / Maou', category: 'isekai' },
+  { id: 'Constelações / Stream Divino', label: 'Constelações / Stream Divino', category: 'isekai' },
+  { id: 'Herói Invocado / Traído', label: 'Herói Invocado / Traído', category: 'isekai' },
+  { id: 'Portais na Terra (Gate)', label: 'Portais na Terra (Gates)', category: 'isekai' },
+  { id: 'Habilidade Única / Cheat', label: 'Habilidade Única / Status', category: 'isekai' },
+  { id: 'Imortal / Cultivo Moderno', label: 'Imortal / Cultivo Moderno', category: 'isekai' },
+  { id: 'Construção de Vila', label: 'Gestão de Território / Reino', category: 'isekai' },
+  { id: 'Nobreza / Aristocracia', label: 'Nobreza / Aristocracia', category: 'isekai' },
+  { id: 'Vilã (Villainess)', label: 'Vilã (Villainess)', category: 'isekai' },
+  { id: 'Cultivação / Murim', label: 'Cultivação / Murim', category: 'isekai' },
+  { id: 'Avaliação (Appraisal)', label: 'Avaliação (Appraisal)', category: 'isekai' },
+  { id: 'Recrutamento / Aliados', label: 'Recrutamento / Talentos', category: 'isekai' },
+  { id: 'Academia de Magia', label: 'Academia de Magia', category: 'isekai' },
+  { id: 'Domador de Monstros', label: 'Domador de Monstros', category: 'isekai' },
+  { id: 'Necromante / Invocação', label: 'Necromante / Invocação', category: 'isekai' },
+  { id: 'Torre / Escalada', label: 'Torre / Escalada', category: 'isekai' },
+  { id: 'Aventura em Guilda / Rank S', label: 'Guildas / Aventureiro Rank S', category: 'isekai' },
+  { id: 'Isekai Reverso', label: 'Isekai Reverso', category: 'isekai' },
+  { id: 'Protagonista Criança / Shota', label: 'Protagonista Criança / Shota', category: 'isekai' },
+
+  // Romance & Dinâmicas (25)
+  { id: 'RomCom / Comédia Romântica', label: 'Comédia Romântica', category: 'romance' },
+  { id: 'Romance Colegial', label: 'Romance Colegial', category: 'romance' },
+  { id: 'Trabalho / Adulto', label: 'Romance Adulto / Office', category: 'romance' },
+  { id: 'Casamento por Contrato', label: 'Casamento por Contrato / Fake', category: 'romance' },
+  { id: 'Inimigos para Amantes', label: 'Inimigos para Amantes', category: 'romance' },
+  { id: 'Amigos de Infância', label: 'Amigos de Infância', category: 'romance' },
+  { id: 'Rompimento de Noivado', label: 'Rompimento de Noivado', category: 'romance' },
+  { id: 'Triângulo Amoroso', label: 'Triângulo Amoroso', category: 'romance' },
+  { id: 'Diferença de Idade', label: 'Diferença de Idade (Age Gap)', category: 'romance' },
+  { id: 'Kuudere / Fria por Fora', label: 'Kuudere / Rainha de Gelo', category: 'romance' },
+  { id: 'Tsundere', label: 'Tsundere', category: 'romance' },
+  { id: 'Dandere / Tímida(o)', label: 'Dandere / Timidez Social', category: 'romance' },
+  { id: 'Yandere', label: 'Yandere', category: 'romance' },
+  { id: 'Tomboy', label: 'Tomboy', category: 'romance' },
+  { id: 'Gyaru', label: 'Gyaru', category: 'romance' },
+  { id: 'Morando Juntos / Vizinhos', label: 'Morando Juntos / Vizinhos', category: 'romance' },
+  { id: 'Vida de Casado / Recém-Casados', label: 'Vida de Casado / Recém-Casados', category: 'romance' },
+  { id: 'Amor Proibido / Secreto', label: 'Amor Proibido / Secreto', category: 'romance' },
+  { id: 'Harém', label: 'Harém', category: 'romance' },
+  { id: 'Harem Invertido', label: 'Harem Invertido', category: 'romance' },
+  { id: 'Ecchi', label: 'Ecchi / Sensual', category: 'romance' },
+  { id: 'Yaoi / BL', label: 'Yaoi / BL (Boys\' Love)', category: 'romance' },
+  { id: 'Yuri / GL', label: 'Yuri / GL (Girls\' Love)', category: 'romance' },
+  { id: 'Troca de Gênero', label: 'Troca de Gênero (Gender Bender)', category: 'romance' },
+  { id: 'Crossdressing / Trap', label: 'Crossdressing / Trap', category: 'romance' },
+
+  // Vida & Profissões (21)
+  { id: 'Vida Lenta (Slow Life)', label: 'Vida Lenta (Slow Life)', category: 'lifestyle' },
+  { id: 'Iyashikei / Relaxante', label: 'Iyashikei / Relaxante & Cura', category: 'lifestyle' },
+  { id: 'Cuidando de Criança (Childcare)', label: 'Paternidade / Childcare', category: 'lifestyle' },
+  { id: 'Animais / Pets', label: 'Animais / Pets & Mascotes', category: 'lifestyle' },
+  { id: 'Fazenda / Agricultura', label: 'Fazenda / Agricultura', category: 'lifestyle' },
+  { id: 'Culinária / Gastronomia', label: 'Culinária / Gastronomia', category: 'lifestyle' },
+  { id: 'Estalagem / Restaurante / Café', label: 'Estalagem / Café & Tavernas', category: 'lifestyle' },
+  { id: 'Ferreiro / Artesão / Mercador', label: 'Ferreiro / Mercador / Alquimia', category: 'lifestyle' },
+  { id: 'Economia / Comércio / Império', label: 'Comércio / Economia & Negócios', category: 'lifestyle' },
+  { id: 'Engenharia / Magitec', label: 'Engenharia / Ciência & Magitec', category: 'lifestyle' },
+  { id: 'Médico / Curandeiro', label: 'Médico / Curandeiro', category: 'lifestyle' },
+  { id: 'Professor / Tutor / Mentor', label: 'Professor / Tutor / Mentor', category: 'lifestyle' },
+  { id: 'Mordomo / Empregada', label: 'Maid / Mordomo', category: 'lifestyle' },
+  { id: 'Santa / Sacerdotisa', label: 'Santa / Sacerdotisa (Saintess)', category: 'lifestyle' },
+  { id: 'Estrategista / Gênio', label: 'Estrategista / Inteligente', category: 'lifestyle' },
+  { id: 'Música / Artes', label: 'Música / Ídolos & Artes', category: 'lifestyle' },
+  { id: 'Showbiz / Atuação', label: 'Showbiz / Atuação & Fama', category: 'lifestyle' },
+  { id: 'Otaku / Mangaká / Cosplay', label: 'Cultura Otaku / Mangaká', category: 'lifestyle' },
+  { id: 'CGDCT / Clube Escolar', label: 'CGDCT / Clube Escolar', category: 'lifestyle' },
+  { id: 'Paródia / Humor Nonsense', label: 'Paródia / Humor Nonsense', category: 'lifestyle' },
+  { id: 'Educacional / Curiosidades', label: 'Educacional / Curiosidades', category: 'lifestyle' },
+
+  // Ação & Mundos (21)
+  { id: 'Artes Marciais', label: 'Artes Marciais / Luta', category: 'action' },
+  { id: 'Samurai / Espadachim', label: 'Samurai / Espadachim', category: 'action' },
+  { id: 'Ninja / Shinobi / Assassino', label: 'Ninja / Assassino', category: 'action' },
+  { id: 'Fantasia Urbana', label: 'Fantasia Urbana', category: 'action' },
+  { id: 'Mitologia / Deuses', label: 'Mitologia / Deuses & Lendas', category: 'action' },
+  { id: 'Anjos / Demônios / Guerra Santa', label: 'Anjos / Céu & Guerra Santa', category: 'action' },
+  { id: 'Militar / Guerra', label: 'Militar / Guerra', category: 'action' },
+  { id: 'Policial / Detetive', label: 'Policial / Detetive', category: 'action' },
+  { id: 'Máfia / Yakuza / Crime', label: 'Máfia / Yakuza / Crime', category: 'action' },
+  { id: 'Delinquente / Gangue', label: 'Delinquentes / Gangues', category: 'action' },
+  { id: 'Mercenário / Caçador de Recompensas', label: 'Mercenário / Caçador', category: 'action' },
+  { id: 'Piratas / Navegação', label: 'Piratas / Navegação', category: 'action' },
+  { id: 'Steampunk / Vitoriano', label: 'Steampunk / Vitoriano', category: 'action' },
+  { id: 'Velho Oeste / Faroeste', label: 'Faroeste / Pistoleiros', category: 'action' },
+  { id: 'Super-Heróis / Poderes', label: 'Super-Heróis / Poderes', category: 'action' },
+  { id: 'Garotas Mágicas (Mahou Shoujo)', label: 'Garotas Mágicas (Mahou Shoujo)', category: 'action' },
+  { id: 'Caçada de Monstros', label: 'Caçada / Monstros', category: 'action' },
+  { id: 'Monstros / Demônios', label: 'Monstros / Demônios', category: 'action' },
+  { id: 'Vampiros', label: 'Vampiros', category: 'action' },
+  { id: 'Garotas Monstro', label: 'Garotas Monstro', category: 'action' },
+  { id: 'Sobrevivência na Selva / Ilha', label: 'Ilha Deserta / Selva', category: 'action' },
+
+  // Sombrio & Sci-Fi (20)
+  { id: 'Vingança', label: 'Vingança / Traição', category: 'dark' },
+  { id: 'Anti-Herói / Vilão MC', label: 'Anti-Herói / Protagonista Vilão', category: 'dark' },
+  { id: 'Psicológico', label: 'Psicológico', category: 'dark' },
+  { id: 'Suspense / Thriller', label: 'Suspense / Thriller', category: 'dark' },
+  { id: 'Mistério de Assassinato', label: 'Mistério de Assassinato', category: 'dark' },
+  { id: 'Loop Temporal', label: 'Loop Temporal (Die & Repeat)', category: 'dark' },
+  { id: 'Sobrevivência', label: 'Sobrevivência', category: 'dark' },
+  { id: 'Jogo da Morte', label: 'Jogo da Morte / Survival', category: 'dark' },
+  { id: 'Apocalipse / Zumbis', label: 'Apocalipse / Zumbis', category: 'dark' },
+  { id: 'Pós-Apocalíptico', label: 'Pós-Apocalíptico', category: 'dark' },
+  { id: 'Tragédia / Drama Pesado', label: 'Tragédia / Drama Pesado', category: 'dark' },
+  { id: 'Gore / Violência', label: 'Gore / Violência', category: 'dark' },
+  { id: 'Body Horror / Mutação', label: 'Body Horror / Parasitas', category: 'dark' },
+  { id: 'Horror Cósmico / Cultos', label: 'Horror Cósmico / Seitas', category: 'dark' },
+  { id: 'Fantasmas / Ocultismo', label: 'Fantasmas / Ocultismo', category: 'dark' },
+  { id: 'Filosofia / Reflexivo', label: 'Filosofia / Reflexivo', category: 'dark' },
+  { id: 'Mecha / Robôs', label: 'Mecha / Robôs', category: 'dark' },
+  { id: 'Cyberpunk / Futurista', label: 'Cyberpunk / Futurista', category: 'dark' },
+  { id: 'Espacial / Aliens', label: 'Espacial / Alienígenas', category: 'dark' },
+  { id: 'Realidade Virtual / VRMMO', label: 'Realidade Virtual / VRMMO', category: 'dark' },
+
+  // Esportes & Formatos (11)
+  { id: 'Esportes de Combate', label: 'Esportes de Combate (Boxe / MMA)', category: 'format' },
+  { id: 'Esportes em Equipe', label: 'Esportes em Equipe (Futebol / Vôlei)', category: 'format' },
+  { id: 'Corrida / Carros / Drift', label: 'Corrida / Carros & Drift', category: 'format' },
+  { id: 'Jogos / E-Sports / Apostas', label: 'Jogos / Apostas / E-Sports', category: 'format' },
+  { id: 'Jogos de Tabuleiro / Cartas', label: 'Xadrez / Shogi / Mahjong / Cartas', category: 'format' },
+  { id: 'Colorido (Full Color)', label: 'Colorido (Full Color)', category: 'format' },
+  { id: 'Webtoon / Scroll Vertical', label: 'Webtoon / Scroll Vertical', category: 'format' },
+  { id: 'Oneshot (História Única)', label: 'Oneshot (História Única)', category: 'format' },
+  { id: '4-Koma (Tirinhas)', label: '4-Koma (Tirinhas)', category: 'format' },
+  { id: 'Premiado (Award Winning)', label: 'Premiado (Award Winning)', category: 'format' },
+  { id: 'Antologia / Coletânea', label: 'Antologia / Coletânea', category: 'format' }
 ];
 
 export const CLASSIC_GENRES = [
@@ -354,7 +714,8 @@ export function matchGenre(mangaOrGenres: Manga | string[] | undefined, filterGe
     // 3. Synopsis scan with word boundary for short words to prevent false positives
     if (synopsisLower) {
       if (s.length <= 4) {
-        const regex = new RegExp(`\\b${s}\\b`, 'i');
+        const escaped = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\b${escaped}\\b`, 'i');
         if (regex.test(synopsisLower)) return true;
       } else if (synopsisLower.includes(s)) {
         return true;
@@ -390,8 +751,14 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   // Filters state
   const [selectedStatus, setSelectedStatus] = useState<string>(() => getUrlParam('status', 'all'));
   const [selectedDemographic, setSelectedDemographic] = useState<string>(() => getUrlParam('demographic', 'all'));
+  const [selectedProtagonist, setSelectedProtagonist] = useState<ProtagonistGender>(() => {
+    const p = getUrlParam('protagonist', 'all').toLowerCase();
+    return p === 'female' || p === 'male' ? p : 'all';
+  });
   const [selectedType, setSelectedType] = useState<string>(() => getUrlParam('type', 'all'));
   const [selectedSource, setSelectedSource] = useState<string>(() => getUrlParam('source', 'all'));
+  const [tropeFilter, setTropeFilter] = useState('');
+  const [tropeCategory, setTropeCategory] = useState<TropeCategory>('all');
   const [sourceBrowseMode, setSourceBrowseMode] = useState<SourceBrowseMode>(() => {
     const m = getUrlParam('mode', '');
     if (m === 'latest' || m === 'popular' || m === 'search') return m;
@@ -444,8 +811,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({
 
   useEffect(() => {
     const unsub = HistoryService.subscribe(() => {
-      setFavoritesList(HistoryService.getFavorites());
-      setIgnoredList(HistoryService.getIgnoredMangas());
+      const nextFavs = HistoryService.getFavorites();
+      const nextIgnored = HistoryService.getIgnoredMangas();
+      setFavoritesList(prev => (prev === nextFavs ? prev : nextFavs));
+      setIgnoredList(prev => (prev === nextIgnored ? prev : nextIgnored));
     });
     return () => {
       unsub();
@@ -491,7 +860,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     return { ignoredIdsSet: ids, ignoredTitlesSet: titles };
   }, [ignoredList]);
 
-  const isMangaInLibrary = (m: Manga): boolean => {
+  const isMangaInLibrary = useCallback((m: Manga): boolean => {
     if (savedIdsSet.has(m.id)) return true;
     if (m.title) {
       const clean = normalizeWorkTitle(m.title);
@@ -500,7 +869,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     if (m.altTitles && m.altTitles.length > 0) {
       for (const alt of m.altTitles) {
         const cleanAlt = normalizeWorkTitle(alt);
-        if (cleanAlt && savedTitlesSet.has(cleanAlt)) return true;
+        if (cleanAlt && cleanAlt.length >= 3 && savedTitlesSet.has(cleanAlt)) return true;
       }
     }
     if (m.sources && m.sources.length > 0) {
@@ -508,10 +877,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         if (s.externalId && savedIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
       }
     }
-    return checkMangaInFavorites(m, favoritesList);
-  };
+    return false;
+  }, [savedIdsSet, savedTitlesSet]);
 
-  const isMangaIgnored = (m: Manga): boolean => {
+  const isMangaIgnored = useCallback((m: Manga): boolean => {
     if (ignoredIdsSet.has(m.id)) return true;
     if (m.title) {
       const clean = normalizeWorkTitle(m.title);
@@ -520,7 +889,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     if (m.altTitles && m.altTitles.length > 0) {
       for (const alt of m.altTitles) {
         const cleanAlt = normalizeWorkTitle(alt);
-        if (cleanAlt && ignoredTitlesSet.has(cleanAlt)) return true;
+        if (cleanAlt && cleanAlt.length >= 3 && ignoredTitlesSet.has(cleanAlt)) return true;
       }
     }
     if (m.sources && m.sources.length > 0) {
@@ -528,8 +897,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         if (s.externalId && ignoredIdsSet.has(`mr_${s.sourceId}_${s.externalId}`)) return true;
       }
     }
-    return checkMangaInIgnored(m, ignoredList);
-  };
+    return false;
+  }, [ignoredIdsSet, ignoredTitlesSet]);
+
+  const isMangaIgnoredRef = useRef(isMangaIgnored);
+  isMangaIgnoredRef.current = isMangaIgnored;
 
   const [sourcesQueried, setSourcesQueried] = useState<string[]>([]);
   const [showFilters, setShowFilters] = useState(false);
@@ -600,12 +972,13 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       hiddenFavoritesCount: favHidden,
       hiddenIgnoredCount: igHidden
     };
-  }, [results, hideLibrary, hideIgnored, savedIdsSet, savedTitlesSet, ignoredIdsSet, ignoredTitlesSet, sortBy]);
+  }, [results, hideLibrary, hideIgnored, isMangaInLibrary, isMangaIgnored, sortBy]);
 
   const activeFiltersCount = useMemo(() => {
     let count = 0;
     if (selectedStatus !== 'all') count++;
     if (selectedDemographic !== 'all') count++;
+    if (selectedProtagonist !== 'all') count++;
     if (selectedType !== 'all') count++;
     if (selectedSource !== 'all') count++;
     if (selectedLanguage !== 'pt-br,en') count++;
@@ -616,7 +989,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     count += includedGenres.length;
     count += excludedGenres.length;
     return count;
-  }, [selectedStatus, selectedDemographic, selectedType, selectedSource, selectedLanguage, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
+  }, [selectedStatus, selectedDemographic, selectedProtagonist, selectedType, selectedSource, selectedLanguage, safeSearch, onlyAvailable, includedGenres, excludedGenres, deepSynopsisSearch, hideLibrary]);
 
   useEffect(() => {
     let active = true;
@@ -678,16 +1051,16 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           setSourcesList(list);
         }
       }).catch(() => {});
-      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode, selectedProtagonist);
     });
     return unsub;
-  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode]);
+  }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode, selectedProtagonist]);
 
   useEffect(() => {
     if (initialQuery && initialQuery !== query) {
       setQuery(initialQuery);
       setSourceBrowseMode('search');
-      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, 'search');
+      executeSearch(initialQuery, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, 'search', selectedProtagonist);
     }
   }, [initialQuery]);
 
@@ -698,6 +1071,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     setQuery('');
     setSelectedStatus('all');
     setSelectedDemographic('all');
+    setSelectedProtagonist('all');
     setSelectedType('all');
     setIncludedGenres([]);
     setExcludedGenres([]);
@@ -706,7 +1080,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     ExtensionService.getSourcesMeta().then(list => {
       if (Array.isArray(list) && list.length > 0) setSourcesList(list);
     }).catch(() => {});
-    executeSearch('', [], [], 'all', 'all', 'all', safeSearch, onlyAvailable, browseSignal.sourceId, deepSynopsisSearch, selectedLanguage, nextMode);
+    executeSearch('', [], [], 'all', 'all', 'all', safeSearch, onlyAvailable, browseSignal.sourceId, deepSynopsisSearch, selectedLanguage, nextMode, 'all');
   }, [browseSignal?.sourceId, browseSignal?.mode, browseSignal?.nonce]);
 
   const isCatalogBrowseEligible = (
@@ -717,7 +1091,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     excGenres: string[],
     stat: string,
     demo: string,
-    typ: string
+    typ: string,
+    prot: ProtagonistGender = 'all'
   ) => {
     return (
       src !== 'all' &&
@@ -727,7 +1102,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       excGenres.length === 0 &&
       stat === 'all' &&
       demo === 'all' &&
-      typ === 'all'
+      typ === 'all' &&
+      prot === 'all'
     );
   };
 
@@ -743,7 +1119,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     src = selectedSource,
     deepSynopsis = deepSynopsisSearch,
     lang = selectedLanguage,
-    browseMode: SourceBrowseMode = sourceBrowseMode
+    browseMode: SourceBrowseMode = sourceBrowseMode,
+    prot: ProtagonistGender = selectedProtagonist
   ) => {
     setLoading(true);
     setSearchPage(1);
@@ -757,6 +1134,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       if (searchQuery.trim()) sp.set('q', searchQuery.trim());
       if (stat && stat !== 'all') sp.set('status', stat);
       if (demo && demo !== 'all') sp.set('demographic', demo);
+      if (prot && prot !== 'all') sp.set('protagonist', prot);
       if (typ && typ !== 'all') sp.set('type', typ);
       if (src && src !== 'all') {
         sp.set('source', src);
@@ -773,7 +1151,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     }
 
     try {
-      if (isCatalogBrowseEligible(searchQuery, src, effectiveMode, incGenres, excGenres, stat, demo, typ)) {
+      if (isCatalogBrowseEligible(searchQuery, src, effectiveMode, incGenres, excGenres, stat, demo, typ, prot)) {
         const catalogRes = await MangaApi.getSourceCatalog(src, {
           mode: effectiveMode === 'latest' ? 'latest' : 'popular',
           page: 1,
@@ -801,6 +1179,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         genre: primaryGenreEnglish,
         genres: incGenres,
         demographic: demo === 'all' ? undefined : demo,
+        protagonist: prot === 'all' ? undefined : prot,
         type: typ === 'all' ? undefined : typ,
         status: stat === 'all' ? undefined : stat,
         language: lang && lang !== 'all' ? lang : undefined,
@@ -830,6 +1209,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         data = data.filter(m => getMangaDemographic(m) === demo);
       }
 
+      // Filter by protagonist gender
+      if (prot !== 'all') {
+        data = data.filter(m => matchesProtagonistGender(m, prot));
+      }
+
       // Filter by type / format
       if (typ !== 'all') {
         data = data.filter(m => getMangaType(m) === typ);
@@ -853,7 +1237,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     setLoadingMore(true);
     const nextPage = searchPage + 1;
     try {
-      if (isCatalogBrowseEligible(query, selectedSource, sourceBrowseMode, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType)) {
+      if (isCatalogBrowseEligible(query, selectedSource, sourceBrowseMode, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, selectedProtagonist)) {
         const catalogRes = await MangaApi.getSourceCatalog(selectedSource, {
           mode: sourceBrowseMode === 'latest' ? 'latest' : 'popular',
           page: nextPage,
@@ -885,6 +1269,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         genre: primaryGenreEnglish,
         genres: includedGenres,
         demographic: selectedDemographic === 'all' ? undefined : selectedDemographic,
+        protagonist: selectedProtagonist === 'all' ? undefined : selectedProtagonist,
         type: selectedType === 'all' ? undefined : selectedType,
         status: selectedStatus === 'all' ? undefined : selectedStatus,
         language: selectedLanguage && selectedLanguage !== 'all' ? selectedLanguage : undefined,
@@ -907,6 +1292,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       }
       if (selectedDemographic !== 'all') {
         newItems = newItems.filter(m => getMangaDemographic(m) === selectedDemographic);
+      }
+      if (selectedProtagonist !== 'all') {
+        newItems = newItems.filter(m => matchesProtagonistGender(m, selectedProtagonist));
       }
       if (selectedType !== 'all') {
         newItems = newItems.filter(m => getMangaType(m) === selectedType);
@@ -973,6 +1361,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     const nextDemo = selectedDemographic === demo ? 'all' : demo;
     setSelectedDemographic(nextDemo);
     executeSearch(query, includedGenres, excludedGenres, selectedStatus, nextDemo, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+  };
+
+  const handleProtagonistSelect = (prot: ProtagonistGender) => {
+    const nextProt: ProtagonistGender = selectedProtagonist === prot ? 'all' : prot;
+    setSelectedProtagonist(nextProt);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode, nextProt);
   };
 
   const handleTypeSelect = (typ: string) => {
@@ -1078,10 +1472,10 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     } catch {}
   };
 
-  const handleDismissManga = (m: Manga) => {
-    if (isMangaIgnored(m)) {
+  const handleDismissManga = useCallback((m: Manga) => {
+    if (isMangaIgnoredRef.current(m) || HistoryService.isIgnored(m.id)) {
       HistoryService.unignoreManga(m.id);
-      if (dismissToast?.mangaId === m.id) setDismissToast(null);
+      setDismissToast(prev => (prev?.mangaId === m.id ? null : prev));
       return;
     }
     HistoryService.ignoreManga({
@@ -1097,23 +1491,30 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     dismissTimerRef.current = setTimeout(() => {
       setDismissToast(null);
     }, 5000);
-  };
+  }, []);
+
+  const handleQuickRead = useCallback((id: string) => {
+    onReadChapter?.(id, '');
+  }, [onReadChapter]);
 
   const handleClearAllFilters = () => {
     setSelectedStatus('all');
     setSelectedDemographic('all');
+    setSelectedProtagonist('all');
     setSelectedType('all');
     setSelectedSource('all');
     setSafeSearch(true);
     setOnlyAvailable(true);
     setDeepSynopsisSearch(true);
     setHideLibrary(false);
+    setTropeFilter('');
+    setTropeCategory('all');
     try {
       localStorage.removeItem('mr_search_hide_library');
     } catch {}
     setIncludedGenres([]);
     setExcludedGenres([]);
-    executeSearch(query, [], [], 'all', 'all', 'all', true, true, 'all', true);
+    executeSearch(query, [], [], 'all', 'all', 'all', true, true, 'all', true, selectedLanguage, sourceBrowseMode, 'all');
   };
 
   const handleRandomManga = async () => {
@@ -1167,6 +1568,12 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     { id: 'josei', label: 'Josei' }
   ];
 
+  const PROTAGONIST_OPTIONS: Array<{ id: ProtagonistGender; label: string }> = [
+    { id: 'all', label: 'Qualquer' },
+    { id: 'female', label: 'Feminina (FMC)' },
+    { id: 'male', label: 'Masculino (MC)' }
+  ];
+
   const TYPE_OPTIONS = [
     { id: 'all', label: 'Todos' },
     { id: 'manga', label: 'Mangá (JP)' },
@@ -1195,6 +1602,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const demographicLabel = (dm: string) => {
     const found = DEMOGRAPHIC_OPTIONS.find(o => o.id === dm);
     return found ? found.label : dm;
+  };
+
+  const protagonistLabel = (pr: ProtagonistGender) => {
+    const found = PROTAGONIST_OPTIONS.find(o => o.id === pr);
+    return found ? found.label : pr;
   };
 
   const typeLabel = (tp: string) => {
@@ -1385,6 +1797,35 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                     <span>Redefinir Tudo</span>
                   </button>
                 )}
+              </div>
+
+              {/* 0. Protagonista da História */}
+              <div className="space-y-1.5 pb-3 border-b border-zinc-850">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
+                    <User className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Protagonista da História:</span>
+                  </div>
+                  <span className="text-[11px] text-zinc-500">
+                    Analisa tags, sinopse e gênero da obra
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 text-xs">
+                  {PROTAGONIST_OPTIONS.map((pr) => (
+                    <button
+                      key={pr.id}
+                      type="button"
+                      onClick={() => handleProtagonistSelect(pr.id)}
+                      className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer border ${
+                        selectedProtagonist === pr.id
+                          ? 'bg-rose-500/20 text-rose-300 font-semibold border-rose-500/40 shadow-sm'
+                          : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border-zinc-800'
+                      }`}
+                    >
+                      {pr.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* 1. Demografia & Formato / Origem */}
@@ -1604,36 +2045,91 @@ export const SearchPage: React.FC<SearchPageProps> = ({
               </div>
 
               {/* 4. Subgêneros & Tropes Específicos (Com inclusão + e exclusão -) */}
-              <div className="space-y-2 pt-3 border-t border-zinc-850">
-                <div className="flex items-center justify-between text-xs">
+              <div className="space-y-2.5 pt-3 border-t border-zinc-850">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2 font-medium text-rose-300">
                     <div className="flex items-center gap-1.5">
                       <Sparkles className="h-3.5 w-3.5 text-rose-400" />
-                      <span>Subgêneros & Tropes:</span>
+                      <span>Subgêneros & Tropes ({SPECIFIC_TROPES.length}):</span>
                     </div>
                     <span className="hidden sm:inline text-[10px] text-zinc-500 font-normal">
                       (1 clique = Incluir <span className="text-emerald-400 font-bold">+</span> | 2 cliques = Excluir <span className="text-rose-400 font-bold">-</span>)
                     </span>
                   </div>
-                  {(includedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g)) || excludedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g))) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const remInc = includedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
-                        const remExc = excludedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
-                        setIncludedGenres(remInc);
-                        setExcludedGenres(remExc);
-                        executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
-                      }}
-                      className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer"
-                    >
-                      Limpar Tropes
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2 ml-auto">
+                    <div className="relative">
+                      <Search className="h-3 w-3 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={tropeFilter}
+                        onChange={(e) => setTropeFilter(e.target.value)}
+                        placeholder="Filtrar tag..."
+                        className="w-32 sm:w-40 pl-7 pr-6 py-1 bg-zinc-900 border border-zinc-800 rounded-lg text-[11px] text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-rose-500/60"
+                      />
+                      {tropeFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setTropeFilter('')}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                          aria-label="Limpar filtro de subgêneros"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    {(includedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g)) || excludedGenres.some(g => SPECIFIC_TROPES.some(t => t.id === g))) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const remInc = includedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
+                          const remExc = excludedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
+                          setIncludedGenres(remInc);
+                          setExcludedGenres(remExc);
+                          executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+                        }}
+                        className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer shrink-0"
+                      >
+                        Limpar Tropes
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {SPECIFIC_TROPES.map((trope) => {
+                <div className="flex flex-wrap items-center gap-1.5 pb-0.5">
+                  {TROPE_CATEGORIES.map(cat => {
+                    const count = cat.id === 'all'
+                      ? SPECIFIC_TROPES.length
+                      : SPECIFIC_TROPES.filter(t => t.category === cat.id).length;
+                    const active = tropeCategory === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setTropeCategory(cat.id)}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer border ${
+                          active
+                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                            : 'bg-zinc-900/70 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:border-zinc-700'
+                        }`}
+                      >
+                        {cat.label} <span className="opacity-65">({count})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 max-h-64 overflow-y-auto pr-1">
+                  {SPECIFIC_TROPES.filter(trope => {
+                    if (tropeCategory !== 'all' && trope.category !== tropeCategory) return false;
+                    const q = tropeFilter.trim().toLowerCase();
+                    if (!q) return true;
+                    const syns = GENRE_TRANSLATIONS[trope.id.toLowerCase()] || [];
+                    return (
+                      trope.label.toLowerCase().includes(q) ||
+                      trope.id.toLowerCase().includes(q) ||
+                      syns.some(s => s.toLowerCase().includes(q))
+                    );
+                  }).map((trope) => {
                     const isInc = includedGenres.includes(trope.id);
                     const isExc = excludedGenres.includes(trope.id);
                     return (
@@ -1653,9 +2149,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                             ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-200 font-semibold shadow-sm ring-1 ring-emerald-500/30'
                             : isExc
                             ? 'bg-rose-500/25 border-rose-500/70 text-rose-200 font-semibold shadow-sm line-through decoration-rose-400'
-                            : trope.highlight
-                            ? 'bg-zinc-900/90 border-zinc-700/80 text-zinc-300 hover:text-rose-300 hover:border-rose-500/50'
-                            : 'bg-zinc-900/80 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                            : 'bg-zinc-900/90 border-zinc-700/80 text-zinc-300 hover:text-rose-300 hover:border-rose-500/50'
                         }`}
                       >
                         {isInc && <Plus className="h-3 w-3 text-emerald-400 shrink-0" />}
@@ -1738,6 +2232,16 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           {!showFilters && activeFiltersCount > 0 && (
             <div className="mt-4 max-w-2xl mx-auto flex flex-wrap items-center gap-2 p-2.5 rounded-xl bg-zinc-900/60 border border-zinc-800/80 text-xs">
               <span className="text-zinc-500 text-[11px] font-medium">Filtros Ativos:</span>
+
+              {selectedProtagonist !== 'all' && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 text-rose-200 border border-rose-500/40 text-[11px]">
+                  <User className="h-3 w-3 text-rose-400" />
+                  <span>Protagonista: {protagonistLabel(selectedProtagonist)}</span>
+                  <button type="button" onClick={() => handleProtagonistSelect('all')} className="hover:text-white cursor-pointer">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )}
 
               {selectedDemographic !== 'all' && (
                 <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-200 border border-zinc-700/60 text-[11px]">
@@ -2136,7 +2640,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                   key={manga.id}
                   manga={manga}
                   onSelect={onSelectManga}
-                  onQuickRead={(id) => onReadChapter?.(id, '')}
+                  onQuickRead={handleQuickRead}
                   layoutMode={layoutMode}
                   allowDismiss={true}
                   onDismiss={handleDismissManga}

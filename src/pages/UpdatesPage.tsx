@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Sparkles,
   RefreshCw,
@@ -15,6 +15,7 @@ import {
 import { FavoriteManga, MangaUpdateInfo, LibraryCategory } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
+import { getNextCoverFallback } from '../utils/coverFallback.js';
 
 interface UpdatesPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -109,6 +110,13 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   const [isChecking, setIsChecking] = useState<boolean>(() => UpdateTrackerService.isChecking());
   const [progressMsg, setProgressMsg] = useState<string | null>(() => UpdateTrackerService.getProgress());
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
+  const [coverOverrides, setCoverOverrides] = useState<Record<string, string>>({});
+  const attemptedCoversRef = useRef<Record<string, Set<string>>>({});
+
+  // Reset Navbar unseen badge counter as soon as the user opens Lançamentos (unread-message style)
+  useEffect(() => {
+    UpdateTrackerService.acknowledgeFeedUpdates();
+  }, [updatesMap]);
 
   useEffect(() => {
     const syncState = () => {
@@ -414,12 +422,26 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                           className="w-16 sm:w-20 aspect-[3/4] rounded-xl overflow-hidden bg-zinc-950 border border-zinc-800 shrink-0 cursor-pointer focus:outline-none"
                           aria-label={`Ver detalhes de ${fav.title}`}
                         >
-                          {!coverErrors[fav.mangaId] && fav.coverUrl ? (
+                          {!coverErrors[fav.mangaId] && (coverOverrides[fav.mangaId] || fav.coverUrl) ? (
                             <img
-                              src={fav.coverUrl}
+                              src={coverOverrides[fav.mangaId] || fav.coverUrl}
                               alt={fav.title}
                               referrerPolicy="no-referrer"
-                              onError={() => setCoverErrors(prev => ({ ...prev, [fav.mangaId]: true }))}
+                              onError={() => {
+                                const currentSrc = coverOverrides[fav.mangaId] || fav.coverUrl;
+                                if (currentSrc) {
+                                  const attempted =
+                                    attemptedCoversRef.current[fav.mangaId] ||
+                                    (attemptedCoversRef.current[fav.mangaId] = new Set());
+                                  attempted.add(currentSrc);
+                                  const next = getNextCoverFallback(currentSrc, attempted);
+                                  if (next) {
+                                    setCoverOverrides(prev => ({ ...prev, [fav.mangaId]: next }));
+                                    return;
+                                  }
+                                }
+                                setCoverErrors(prev => ({ ...prev, [fav.mangaId]: true }));
+                              }}
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               loading="lazy"
                             />

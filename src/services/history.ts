@@ -21,6 +21,104 @@ export interface HistorySyncBridge {
 
 let syncBridge: HistorySyncBridge | null = null;
 
+// In-memory parsed caches + O(1) lookup structures to avoid repeated JSON.parse across hundreds of MangaCards
+let cachedHistory: ReadingProgress[] | null = null;
+let cachedHistoryMap: Map<string, ReadingProgress> | null = null;
+let cachedFavorites: FavoriteManga[] | null = null;
+let cachedFavoritesSet: Set<string> | null = null;
+let cachedReadChapters: string[] | null = null;
+let cachedReadChaptersSet: Set<string> | null = null;
+let cachedIgnored: IgnoredManga[] | null = null;
+let cachedIgnoredSet: Set<string> | null = null;
+let cachedCustomCollections: string[] | null = null;
+let cachedPageBookmarks: PageBookmark[] | null = null;
+let cachedStats: { totalSeconds: number; lastReadDate?: string } | null = null;
+
+function setHistoryCache(list: ReadingProgress[]) {
+  cachedHistory = list;
+  const map = new Map<string, ReadingProgress>();
+  for (const item of list) {
+    if (item?.mangaId) map.set(item.mangaId, item);
+  }
+  cachedHistoryMap = map;
+}
+
+function setFavoritesCache(list: FavoriteManga[]) {
+  cachedFavorites = list;
+  const set = new Set<string>();
+  for (const item of list) {
+    if (item?.mangaId) set.add(item.mangaId);
+  }
+  cachedFavoritesSet = set;
+}
+
+function setReadChaptersCache(list: string[]) {
+  cachedReadChapters = list;
+  cachedReadChaptersSet = new Set(list);
+}
+
+function setIgnoredCache(list: IgnoredManga[]) {
+  cachedIgnored = list;
+  const set = new Set<string>();
+  for (const item of list) {
+    if (item?.mangaId) set.add(item.mangaId);
+  }
+  cachedIgnoredSet = set;
+}
+
+function invalidateCacheForKey(key: string | null) {
+  if (!key || key === STORAGE_KEY) {
+    cachedHistory = null;
+    cachedHistoryMap = null;
+  }
+  if (!key || key === BOOKMARKS_KEY) {
+    cachedFavorites = null;
+    cachedFavoritesSet = null;
+  }
+  if (!key || key === READ_CHAPTERS_KEY) {
+    cachedReadChapters = null;
+    cachedReadChaptersSet = null;
+  }
+  if (!key || key === IGNORED_KEY) {
+    cachedIgnored = null;
+    cachedIgnoredSet = null;
+  }
+  if (!key || key === CUSTOM_COLLECTIONS_KEY) {
+    cachedCustomCollections = null;
+  }
+  if (!key || key === PAGE_BOOKMARKS_KEY) {
+    cachedPageBookmarks = null;
+  }
+  if (!key || key === STATS_KEY) {
+    cachedStats = null;
+  }
+}
+
+function loadStatsFromStorage(): { totalSeconds: number; lastReadDate?: string } {
+  if (cachedStats) return cachedStats;
+  try {
+    const data = localStorage.getItem(STATS_KEY);
+    if (!data) {
+      cachedStats = { totalSeconds: 0 };
+      return cachedStats;
+    }
+    const parsed = JSON.parse(data);
+    if (typeof parsed === 'number') {
+      cachedStats = { totalSeconds: parsed };
+    } else if (parsed && typeof parsed === 'object') {
+      cachedStats = {
+        totalSeconds: typeof parsed.totalSeconds === 'number' ? parsed.totalSeconds : 0,
+        lastReadDate: typeof parsed.lastReadDate === 'string' ? parsed.lastReadDate : undefined
+      };
+    } else {
+      cachedStats = { totalSeconds: 0 };
+    }
+    return cachedStats;
+  } catch {
+    return { totalSeconds: 0 };
+  }
+}
+
 function notifyListeners() {
   listeners.forEach(fn => {
     try {
@@ -52,6 +150,7 @@ function formatReadingTime(totalSeconds: number): string {
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (
+      !event.key ||
       event.key === STORAGE_KEY ||
       event.key === BOOKMARKS_KEY ||
       event.key === STATS_KEY ||
@@ -60,6 +159,7 @@ if (typeof window !== 'undefined') {
       event.key === CUSTOM_COLLECTIONS_KEY ||
       event.key === IGNORED_KEY
     ) {
+      invalidateCacheForKey(event.key);
       notifyListeners();
     }
   });
@@ -71,6 +171,7 @@ export const HistoryService = {
   },
 
   notifyExternalSync(): void {
+    invalidateCacheForKey(null);
     notifyListeners();
   },
 
@@ -82,26 +183,42 @@ export const HistoryService = {
   },
 
   getHistory(): ReadingProgress[] {
+    if (cachedHistory) return cachedHistory;
     try {
       const data = localStorage.getItem(STORAGE_KEY);
-      if (!data) return [];
-      return JSON.parse(data);
+      if (!data) {
+        setHistoryCache([]);
+        return cachedHistory!;
+      }
+      const parsed = JSON.parse(data);
+      const list = Array.isArray(parsed) ? parsed : [];
+      setHistoryCache(list);
+      return cachedHistory!;
     } catch {
       return [];
     }
   },
 
   getProgress(mangaId: string): ReadingProgress | undefined {
-    const list = this.getHistory();
-    return list.find(item => item.mangaId === mangaId);
+    if (!mangaId) return undefined;
+    if (!cachedHistoryMap) {
+      this.getHistory();
+    }
+    return cachedHistoryMap?.get(mangaId);
   },
 
   getReadChapters(): string[] {
+    if (cachedReadChapters) return cachedReadChapters;
     try {
       const data = localStorage.getItem(READ_CHAPTERS_KEY);
-      if (!data) return [];
+      if (!data) {
+        setReadChaptersCache([]);
+        return cachedReadChapters!;
+      }
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
+      const list = Array.isArray(parsed) ? parsed : [];
+      setReadChaptersCache(list);
+      return cachedReadChapters!;
     } catch {
       return [];
     }
@@ -111,9 +228,10 @@ export const HistoryService = {
     if (!chapterId) return;
     try {
       const list = this.getReadChapters();
-      if (!list.includes(chapterId)) {
-        list.push(chapterId);
-        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+      if (!cachedReadChaptersSet?.has(chapterId)) {
+        const next = [...list, chapterId];
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(next));
+        setReadChaptersCache(next);
         notifyListeners();
         syncBridge?.onLibraryStateChanged?.();
       }
@@ -125,8 +243,11 @@ export const HistoryService = {
   unmarkChapterAsRead(chapterId: string): void {
     if (!chapterId) return;
     try {
-      const list = this.getReadChapters().filter(id => id !== chapterId);
+      const current = this.getReadChapters();
+      if (!cachedReadChaptersSet?.has(chapterId)) return;
+      const list = current.filter(id => id !== chapterId);
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+      setReadChaptersCache(list);
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -139,7 +260,10 @@ export const HistoryService = {
     try {
       const current = this.getReadChapters();
       const set = new Set([...current, ...chapterIds]);
-      localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(set)));
+      if (set.size === current.length) return;
+      const next = Array.from(set);
+      localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(next));
+      setReadChaptersCache(next);
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -151,8 +275,11 @@ export const HistoryService = {
     if (!chapterIds || chapterIds.length === 0) return;
     try {
       const toRemove = new Set(chapterIds);
-      const list = this.getReadChapters().filter(id => !toRemove.has(id));
+      const current = this.getReadChapters();
+      const list = current.filter(id => !toRemove.has(id));
+      if (list.length === current.length) return;
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
+      setReadChaptersCache(list);
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -202,7 +329,10 @@ export const HistoryService = {
 
   isChapterRead(chapterId: string): boolean {
     if (!chapterId) return false;
-    return this.getReadChapters().includes(chapterId);
+    if (!cachedReadChaptersSet) {
+      this.getReadChapters();
+    }
+    return cachedReadChaptersSet?.has(chapterId) || false;
   },
 
   addReadingTime(seconds: number): void {
@@ -215,6 +345,7 @@ export const HistoryService = {
         lastReadDate: new Date().toISOString()
       };
       localStorage.setItem(STATS_KEY, JSON.stringify(payload));
+      cachedStats = payload;
       notifyListeners();
     } catch (e) {
       console.warn('Failed to add reading time', e);
@@ -222,16 +353,7 @@ export const HistoryService = {
   },
 
   getStoredSeconds(): number {
-    try {
-      const data = localStorage.getItem(STATS_KEY);
-      if (!data) return 0;
-      const parsed = JSON.parse(data);
-      if (typeof parsed === 'number') return parsed;
-      if (parsed && typeof parsed.totalSeconds === 'number') return parsed.totalSeconds;
-      return 0;
-    } catch {
-      return 0;
-    }
+    return loadStatsFromStorage().totalSeconds;
   },
 
   getReadingStats(): ReadingStats {
@@ -301,10 +423,16 @@ export const HistoryService = {
       // Keep most recent 50 items
       const newList = [updated, ...filtered].slice(0, 50);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+      setHistoryCache(newList);
 
-      // Mark chapter in read set
+      // Mark chapter in read set cleanly without double-notifying listeners
       if (progress.chapterId) {
-        this.markChapterAsRead(progress.chapterId);
+        const readList = this.getReadChapters();
+        if (!cachedReadChaptersSet?.has(progress.chapterId)) {
+          const nextRead = [...readList, progress.chapterId];
+          localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(nextRead));
+          setReadChaptersCache(nextRead);
+        }
       }
 
       notifyListeners();
@@ -319,6 +447,7 @@ export const HistoryService = {
     try {
       const list = this.getHistory().filter(item => item.mangaId !== mangaId);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+      setHistoryCache(list);
       notifyListeners();
     } catch (e) {
       console.warn('Failed to remove reading history', e);
@@ -330,19 +459,30 @@ export const HistoryService = {
    * without losing any previously saved IDs.
    */
   getFavorites(): FavoriteManga[] {
+    if (cachedFavorites) return cachedFavorites;
     try {
       const data = localStorage.getItem(BOOKMARKS_KEY);
-      if (!data) return [];
+      if (!data) {
+        setFavoritesCache([]);
+        return cachedFavorites!;
+      }
       const parsed = JSON.parse(data);
-      if (!Array.isArray(parsed)) return [];
+      if (!Array.isArray(parsed)) {
+        setFavoritesCache([]);
+        return cachedFavorites!;
+      }
 
       let hasLegacyStrings = false;
-      const historyList = this.getHistory();
+      let historyMap: Map<string, ReadingProgress> | null = null;
 
       const normalized: FavoriteManga[] = parsed.map((item: any) => {
         if (typeof item === 'string') {
           hasLegacyStrings = true;
-          const hist = historyList.find(h => h.mangaId === item);
+          if (!historyMap) {
+            this.getHistory();
+            historyMap = cachedHistoryMap;
+          }
+          const hist = historyMap?.get(item);
           const sourceName = item.includes('mangadex') ? 'MangaDex' :
                              item.includes('comick') ? 'Comick' :
                              item.includes('weebcentral') ? 'WeebCentral' :
@@ -382,7 +522,8 @@ export const HistoryService = {
         localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(valid));
       }
 
-      return valid;
+      setFavoritesCache(valid);
+      return cachedFavorites!;
     } catch {
       return [];
     }
@@ -399,7 +540,7 @@ export const HistoryService = {
     try {
       const mangaId = typeof mangaOrId === 'string' ? mangaOrId : mangaOrId.mangaId;
       const favorites = this.getFavorites();
-      const exists = favorites.some(f => f.mangaId === mangaId);
+      const exists = cachedFavoritesSet ? cachedFavoritesSet.has(mangaId) : favorites.some(f => f.mangaId === mangaId);
 
       let updated: FavoriteManga[];
       let createdFav: FavoriteManga | null = null;
@@ -435,6 +576,7 @@ export const HistoryService = {
       }
 
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      setFavoritesCache(updated);
       notifyListeners();
 
       if (exists) {
@@ -455,6 +597,7 @@ export const HistoryService = {
         fav.mangaId === mangaId ? { ...fav, userCategory: category, updatedAt: Date.now() } : fav
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      setFavoritesCache(updated);
       notifyListeners();
       const found = updated.find(f => f.mangaId === mangaId);
       if (found) syncBridge?.onFavoriteUpdated?.(found);
@@ -475,6 +618,7 @@ export const HistoryService = {
         } : fav
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      setFavoritesCache(updated);
       notifyListeners();
       const found = updated.find(f => f.mangaId === mangaId);
       if (found) syncBridge?.onFavoriteUpdated?.(found);
@@ -487,6 +631,7 @@ export const HistoryService = {
     try {
       const favorites = this.getFavorites().filter(f => f.mangaId !== mangaId);
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      setFavoritesCache(favorites);
       notifyListeners();
       syncBridge?.onFavoriteRemoved?.(mangaId);
     } catch (e) {
@@ -526,6 +671,7 @@ export const HistoryService = {
       });
       if (changed) {
         localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+        setFavoritesCache(updated);
         notifyListeners();
       }
       return changed;
@@ -535,7 +681,11 @@ export const HistoryService = {
   },
 
   isBookmarked(mangaId: string): boolean {
-    return this.getFavorites().some(f => f.mangaId === mangaId);
+    if (!mangaId) return false;
+    if (!cachedFavoritesSet) {
+      this.getFavorites();
+    }
+    return cachedFavoritesSet?.has(mangaId) || false;
   },
 
   /**
@@ -603,7 +753,9 @@ export const HistoryService = {
         const filteredFavs = favorites.filter(
           f => f.mangaId !== targetManga.mangaId && (!removeOld || f.mangaId !== sourceMangaId)
         );
-        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify([nextFav, ...filteredFavs]));
+        const nextFavs = [nextFav, ...filteredFavs];
+        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
+        setFavoritesCache(nextFavs);
         syncBridge?.onFavoriteUpdated?.(nextFav);
         if (removeOld && oldFav && sourceMangaId !== targetManga.mangaId) {
           syncBridge?.onFavoriteRemoved?.(sourceMangaId);
@@ -655,7 +807,9 @@ export const HistoryService = {
             tCh.variants?.forEach(v => readSet.add(v.id));
           }
         }
-        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(readSet)));
+        const nextReadList = Array.from(readSet);
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(nextReadList));
+        setReadChaptersCache(nextReadList);
       }
 
       // 3. Migrate ReadingProgress
@@ -688,7 +842,9 @@ export const HistoryService = {
           const filteredHistory = historyList.filter(
             h => h.mangaId !== targetManga.mangaId && (!removeOld || h.mangaId !== sourceMangaId)
           );
-          localStorage.setItem(STORAGE_KEY, JSON.stringify([nextProgress, ...filteredHistory].slice(0, 50)));
+          const nextHistory = [nextProgress, ...filteredHistory].slice(0, 50);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(nextHistory));
+          setHistoryCache(nextHistory);
           syncBridge?.onProgressSaved?.(nextProgress);
           migratedProgress = true;
         }
@@ -707,11 +863,16 @@ export const HistoryService = {
    * Page-level bookmarks & highlights
    */
   getPageBookmarks(): PageBookmark[] {
+    if (cachedPageBookmarks) return cachedPageBookmarks;
     try {
       const data = localStorage.getItem(PAGE_BOOKMARKS_KEY);
-      if (!data) return [];
+      if (!data) {
+        cachedPageBookmarks = [];
+        return cachedPageBookmarks;
+      }
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
+      cachedPageBookmarks = Array.isArray(parsed) ? parsed : [];
+      return cachedPageBookmarks;
     } catch {
       return [];
     }
@@ -748,6 +909,7 @@ export const HistoryService = {
 
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(updatedList));
+      cachedPageBookmarks = updatedList;
       notifyListeners();
     } catch (e) {
       console.warn('Failed to save page bookmark', e);
@@ -759,6 +921,7 @@ export const HistoryService = {
     const list = this.getPageBookmarks().filter(b => b.id !== bookmarkId);
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
+      cachedPageBookmarks = list;
       notifyListeners();
     } catch (e) {
       console.warn('Failed to remove page bookmark', e);
@@ -769,6 +932,7 @@ export const HistoryService = {
     const list = this.getPageBookmarks().filter(b => !(b.chapterId === chapterId && b.pageNumber === pageNumber));
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
+      cachedPageBookmarks = list;
       notifyListeners();
     } catch (e) {
       console.warn('Failed to remove page bookmark', e);
@@ -779,11 +943,16 @@ export const HistoryService = {
    * Custom Collections / Folders
    */
   getCustomCollections(): string[] {
+    if (cachedCustomCollections) return cachedCustomCollections;
     try {
       const data = localStorage.getItem(CUSTOM_COLLECTIONS_KEY);
-      if (!data) return [];
+      if (!data) {
+        cachedCustomCollections = [];
+        return cachedCustomCollections;
+      }
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [];
+      cachedCustomCollections = Array.isArray(parsed) ? parsed : [];
+      return cachedCustomCollections;
     } catch {
       return [];
     }
@@ -794,9 +963,10 @@ export const HistoryService = {
     if (!trimmed) return false;
     const list = this.getCustomCollections();
     if (list.some(c => c.toLowerCase() === trimmed.toLowerCase())) return false;
-    list.push(trimmed);
+    const next = [...list, trimmed];
     try {
-      localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(list));
+      localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(next));
+      cachedCustomCollections = next;
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
       return true;
@@ -809,17 +979,23 @@ export const HistoryService = {
     const list = this.getCustomCollections().filter(c => c !== name);
     try {
       localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(list));
-      // Remove from favorites that reference this collection
+      cachedCustomCollections = list;
+      // Remove from favorites that reference this collection without mutating cached objects in-place
       const favorites = this.getFavorites();
       let changed = false;
-      favorites.forEach(f => {
+      const nextFavs = favorites.map(f => {
         if (f.customCollections && f.customCollections.includes(name)) {
-          f.customCollections = f.customCollections.filter(c => c !== name);
           changed = true;
+          return {
+            ...f,
+            customCollections: f.customCollections.filter(c => c !== name)
+          };
         }
+        return f;
       });
       if (changed) {
-        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
+        setFavoritesCache(nextFavs);
       }
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
@@ -830,20 +1006,20 @@ export const HistoryService = {
 
   toggleMangaInCollection(mangaId: string, collectionName: string): boolean {
     const favorites = this.getFavorites();
-    const fav = favorites.find(f => f.mangaId === mangaId);
-    if (!fav) return false;
-    if (!fav.customCollections) fav.customCollections = [];
+    const target = favorites.find(f => f.mangaId === mangaId);
+    if (!target) return false;
+    const currentCols = target.customCollections || [];
     let isNowIn = false;
-    if (fav.customCollections.includes(collectionName)) {
-      fav.customCollections = fav.customCollections.filter(c => c !== collectionName);
-    } else {
-      fav.customCollections.push(collectionName);
-      isNowIn = true;
-    }
+    const nextCols = currentCols.includes(collectionName)
+      ? currentCols.filter(c => c !== collectionName)
+      : ((isNowIn = true), [...currentCols, collectionName]);
+    const updatedFav: FavoriteManga = { ...target, customCollections: nextCols };
+    const nextFavs = favorites.map(f => (f.mangaId === mangaId ? updatedFav : f));
     try {
-      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
+      setFavoritesCache(nextFavs);
       notifyListeners();
-      syncBridge?.onFavoriteUpdated?.(fav);
+      syncBridge?.onFavoriteUpdated?.(updatedFav);
       syncBridge?.onLibraryStateChanged?.();
       return isNowIn;
     } catch {
@@ -853,13 +1029,18 @@ export const HistoryService = {
 
   setMangaCollections(mangaId: string, collections: string[]): boolean {
     const favorites = this.getFavorites();
-    const fav = favorites.find(f => f.mangaId === mangaId);
-    if (!fav) return false;
-    fav.customCollections = Array.from(new Set(collections.filter(Boolean)));
+    const target = favorites.find(f => f.mangaId === mangaId);
+    if (!target) return false;
+    const updatedFav: FavoriteManga = {
+      ...target,
+      customCollections: Array.from(new Set(collections.filter(Boolean)))
+    };
+    const nextFavs = favorites.map(f => (f.mangaId === mangaId ? updatedFav : f));
     try {
-      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
+      setFavoritesCache(nextFavs);
       notifyListeners();
-      syncBridge?.onFavoriteUpdated?.(fav);
+      syncBridge?.onFavoriteUpdated?.(updatedFav);
       syncBridge?.onLibraryStateChanged?.();
       return true;
     } catch {
@@ -875,6 +1056,7 @@ export const HistoryService = {
         idSet.has(fav.mangaId) ? { ...fav, userCategory: category, updatedAt: Date.now() } : fav
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      setFavoritesCache(updated);
       notifyListeners();
       updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
       syncBridge?.onLibraryStateChanged?.();
@@ -894,6 +1076,7 @@ export const HistoryService = {
         return { ...fav, customCollections: combined, updatedAt: Date.now() };
       });
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
+      setFavoritesCache(updated);
       notifyListeners();
       updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
       syncBridge?.onLibraryStateChanged?.();
@@ -907,6 +1090,7 @@ export const HistoryService = {
       const idSet = new Set(mangaIds);
       const favorites = this.getFavorites().filter(f => !idSet.has(f.mangaId));
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
+      setFavoritesCache(favorites);
       notifyListeners();
       mangaIds.forEach(id => syncBridge?.onFavoriteRemoved?.(id));
       syncBridge?.onLibraryStateChanged?.();
@@ -919,12 +1103,19 @@ export const HistoryService = {
    * Ignored / Dismissed Mangas (ocultos da busca sem salvar nos favoritos)
    */
   getIgnoredMangas(): IgnoredManga[] {
+    if (cachedIgnored) return cachedIgnored;
     try {
       const data = localStorage.getItem(IGNORED_KEY);
-      if (!data) return [];
+      if (!data) {
+        setIgnoredCache([]);
+        return cachedIgnored!;
+      }
       const parsed = JSON.parse(data);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
+      if (!Array.isArray(parsed)) {
+        setIgnoredCache([]);
+        return cachedIgnored!;
+      }
+      const normalized: IgnoredManga[] = parsed
         .filter((item: any) => item && typeof item.mangaId === 'string' && item.mangaId)
         .map((item: any) => ({
           mangaId: item.mangaId,
@@ -937,6 +1128,8 @@ export const HistoryService = {
           sourceName: item.sourceName || undefined,
           dismissedAt: typeof item.dismissedAt === 'number' ? item.dismissedAt : Date.now()
         }));
+      setIgnoredCache(normalized);
+      return cachedIgnored!;
     } catch {
       return [];
     }
@@ -944,7 +1137,10 @@ export const HistoryService = {
 
   isIgnored(mangaId: string): boolean {
     if (!mangaId) return false;
-    return this.getIgnoredMangas().some(item => item.mangaId === mangaId);
+    if (!cachedIgnoredSet) {
+      this.getIgnoredMangas();
+    }
+    return cachedIgnoredSet?.has(mangaId) || false;
   },
 
   ignoreManga(manga: Omit<IgnoredManga, 'dismissedAt'> & { dismissedAt?: number }): void {
@@ -964,6 +1160,7 @@ export const HistoryService = {
       };
       const updated = [entry, ...current].slice(0, 3000);
       localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
+      setIgnoredCache(updated);
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -974,10 +1171,12 @@ export const HistoryService = {
   unignoreManga(mangaId: string): void {
     if (!mangaId) return;
     try {
+      if (cachedIgnoredSet && !cachedIgnoredSet.has(mangaId)) return;
       const current = this.getIgnoredMangas();
       const updated = current.filter(item => item.mangaId !== mangaId);
       if (updated.length !== current.length) {
         localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
+        setIgnoredCache(updated);
         notifyListeners();
         syncBridge?.onLibraryStateChanged?.();
       }
@@ -999,6 +1198,7 @@ export const HistoryService = {
   clearIgnoredMangas(): void {
     try {
       localStorage.setItem(IGNORED_KEY, JSON.stringify([]));
+      setIgnoredCache([]);
       notifyListeners();
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -1238,6 +1438,7 @@ export const HistoryService = {
 
       const mergedFavorites = Array.from(favMap.values());
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(mergedFavorites));
+      setFavoritesCache(mergedFavorites);
 
       // Merge Reading History
       const currentHistory = this.getHistory();
@@ -1261,22 +1462,27 @@ export const HistoryService = {
         .slice(0, 50);
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedHistory));
+      setHistoryCache(mergedHistory);
 
       // Merge Read Chapters if present
       if (Array.isArray(data.readChapters)) {
         const currentRead = this.getReadChapters();
         const set = new Set([...currentRead, ...data.readChapters]);
-        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(Array.from(set)));
+        const nextRead = Array.from(set);
+        localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(nextRead));
+        setReadChaptersCache(nextRead);
       }
 
       // Merge Stats if present
       if (data.stats && typeof data.stats.totalSecondsSpent === 'number') {
         const currentSec = this.getStoredSeconds();
         if (data.stats.totalSecondsSpent > currentSec) {
-          localStorage.setItem(STATS_KEY, JSON.stringify({
+          const statsPayload = {
             totalSeconds: data.stats.totalSecondsSpent,
             lastReadDate: data.stats.lastReadDate || new Date().toISOString()
-          }));
+          };
+          localStorage.setItem(STATS_KEY, JSON.stringify(statsPayload));
+          cachedStats = statsPayload;
         }
       }
 
@@ -1290,7 +1496,9 @@ export const HistoryService = {
             bmMap.set(`${b.chapterId}_${b.pageNumber}`, b);
           }
         });
-        localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(Array.from(bmMap.values())));
+        const nextBms = Array.from(bmMap.values());
+        localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(nextBms));
+        cachedPageBookmarks = nextBms;
       }
 
       // Merge Custom Collections if present
@@ -1300,7 +1508,9 @@ export const HistoryService = {
         if (set.size > currentCols.length) {
           categoriesAdded += (set.size - currentCols.length);
         }
-        localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(Array.from(set)));
+        const nextCols = Array.from(set);
+        localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(nextCols));
+        cachedCustomCollections = nextCols;
       }
 
       // Merge Ignored / Dismissed Mangas if present
@@ -1320,7 +1530,9 @@ export const HistoryService = {
             });
           }
         });
-        localStorage.setItem(IGNORED_KEY, JSON.stringify(Array.from(igMap.values()).slice(0, 3000)));
+        const nextIgnored = Array.from(igMap.values()).slice(0, 3000);
+        localStorage.setItem(IGNORED_KEY, JSON.stringify(nextIgnored));
+        setIgnoredCache(nextIgnored);
       }
 
       notifyListeners();

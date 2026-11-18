@@ -9,6 +9,7 @@ import { MangaBallProvider } from './MangaBallProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 import { deduplicateAndGroupChapters, normalizeChapterNumber } from './ChapterDeduplicator.js';
 import { extensionRepositoryService } from './ExtensionRepositoryService.js';
+import { matchesProtagonistGender } from '../../src/utils/protagonistFilter.js';
 
 function stripEditionTags(t: string): string {
   return (t || '')
@@ -226,8 +227,83 @@ export class SourceRegistry {
       'ferreiro / artesão / mercador': ['blacksmith', 'merchant', 'alchemy'],
       'médico / curandeiro': ['doctor isekai', 'healer', 'pharmacy'],
       'vida lenta (slow life)': ['slow life', 'peaceful life'],
-      'estrategista / gênio': ['strategist', 'genius', 'tactician']
+      'estrategista / gênio': ['strategist', 'genius', 'tactician'],
+      'necromante / invocação': ['necromancer', 'summoner', 'skeleton'],
+      'torre / escalada': ['tower', 'climber', 'floor'],
+      'cyberpunk / futurista': ['cyberpunk', 'android', 'dystopia'],
+      'aventura em guilda / rank s': ['guild', 's-rank', 'adventurer', 'banished'],
+      'realidade virtual / vrmmo': ['vrmmo', 'virtual reality', 'vr game'],
+      'vampiros': ['vampire', 'vampires'],
+      'samurai / espadachim': ['samurai', 'swordmaster', 'katana'],
+      'ninja / shinobi / assassino': ['ninja', 'shinobi', 'assassin'],
+      'máfia / yakuza / crime': ['mafia', 'yakuza', 'crime'],
+      'super-heróis / poderes': ['superhero', 'super power'],
+      'garotas mágicas (mahou shoujo)': ['magical girls', 'mahou shoujo'],
+      'fantasmas / ocultismo': ['ghosts', 'exorcist', 'occult'],
+      'pós-apocalíptico': ['post-apocalyptic', 'wasteland'],
+      'suspense / thriller': ['thriller', 'suspense'],
+      'tragédia / drama pesado': ['tragedy'],
+      'gore / violência': ['gore'],
+      'gyaru': ['gyaru'],
+      'garotas monstro': ['monster girls'],
+      'colorido (full color)': ['full color'],
+      'jogos / e-sports / apostas': ['video games', 'gambling'],
+      'filosofia / reflexivo': ['philosophical'],
+      'artes marciais': ['martial arts', 'fighting'],
+      'expulso do grupo': ['banished', 'kicked out', 'expelled'],
+      'fraco para forte': ['weakest', 'f-rank', 'leveling'],
+      'reencarnado como monstro': ['reincarnated as a', 'slime', 'goblin', 'dragon', 'spider'],
+      'lorde demônio / rei demônio': ['demon lord', 'demon king', 'maou'],
+      'constelações / stream divino': ['constellation', 'constellations', 'sponsor'],
+      'herói invocado / traído': ['summoned hero', 'betrayed hero', 'hero party'],
+      'portais na terra (gate)': ['hunter', 'gate', 'awakening'],
+      'habilidade única / cheat': ['cheat skill', 'unique skill', 'status window'],
+      'imortal / cultivo moderno': ['immortal', 'urban cultivation'],
+      'casamento por contrato': ['contract marriage', 'arranged marriage', 'fake marriage'],
+      'inimigos para amantes': ['rival', 'enemies to lovers', 'arch-enemy'],
+      'amigos de infância': ['childhood friend', 'childhood friends'],
+      'rompimento de noivado': ['broken engagement', 'engagement annulled'],
+      'triângulo amoroso': ['love triangle', 'love polygon'],
+      'diferença de idade': ['age gap', 'older woman', 'younger'],
+      'kuudere / fria por fora': ['ice queen', 'kuudere', 'cold'],
+      'tsundere': ['tsundere'],
+      'dandere / tímida(o)': ['shy', 'dandere', 'introvert'],
+      'morando juntos / vizinhos': ['neighbor', 'roommate', 'cohabitation'],
+      'vida de casado / recém-casados': ['married life', 'newlywed', 'wife'],
+      'amor proibido / secreto': ['forbidden love', 'secret relationship'],
+      'iyashikei / relaxante': ['iyashikei', 'healing', 'cozy'],
+      'cuidando de criança (childcare)': ['childcare', 'daughter', 'single father'],
+      'animais / pets': ['animals', 'pets', 'cat', 'dog'],
+      'estalagem / restaurante / café': ['cafe', 'tavern', 'bakery', 'restaurant'],
+      'professor / tutor / mentor': ['teacher', 'instructor', 'tutor'],
+      'mordomo / empregada': ['maid', 'butler'],
+      'showbiz / atuação': ['showbiz', 'actor', 'actress', 'idol'],
+      'otaku / mangaká / cosplay': ['otaku', 'mangaka', 'cosplay'],
+      'santa / sacerdotisa': ['saint', 'saintess', 'priestess'],
+      'economia / comércio / império': ['merchant', 'economics', 'business'],
+      'engenharia / magitec': ['engineer', 'inventor', 'magitech'],
+      'fantasia urbana': ['urban fantasy', 'modern magic'],
+      'mitologia / deuses': ['mythology', 'goddess', 'god'],
+      'anjos / demônios / guerra santa': ['angel', 'fallen angel'],
+      'piratas / navegação': ['pirate', 'pirates'],
+      'mercenário / caçador de recompensas': ['mercenary', 'bounty hunter'],
+      'steampunk / vitoriano': ['steampunk', 'victorian'],
+      'velho oeste / faroeste': ['western', 'cowboy'],
+      'sobrevivência na selva / ilha': ['island', 'deserted island'],
+      'anti-herói / vilão mc': ['antihero', 'villain'],
+      'loop temporal': ['time loop', 'regression'],
+      'mistério de assassinato': ['murder', 'detective', 'serial killer'],
+      'body horror / mutação': ['parasite', 'mutation'],
+      'horror cósmico / cultos': ['cult', 'eldritch'],
+      'espacial / aliens': ['space', 'aliens', 'starship'],
+      'esportes de combate': ['boxing', 'mma', 'wrestling'],
+      'esportes em equipe': ['soccer', 'basketball', 'volleyball', 'baseball'],
+      'corrida / carros / drift': ['racing', 'drift', 'cars']
     };
+
+    const effectiveOptions: SourceSearchOptions | undefined = options?.protagonist
+      ? { ...options, limit: Math.min(Math.max(options.limit || 24, 48), 60) }
+      : options;
 
     const extraSynonyms: string[] = [];
     if (!query.trim() && options?.genres) {
@@ -241,7 +317,7 @@ export class SourceRegistry {
     }
 
     const promises = sourcesToQuery.map(src =>
-      src.search(query, options).catch(err => {
+      src.search(query, effectiveOptions).catch(err => {
         console.error(`Error querying source ${src.getInfo().id}:`, err);
         return { mangaList: [], total: 0, hasMore: false };
       })
@@ -251,9 +327,21 @@ export class SourceRegistry {
       sourcesToQuery
         .filter(src => src.getInfo().id !== 'mangapill')
         .map(src =>
-          src.search(syn, { ...options, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
+          src.search(syn, { ...effectiveOptions, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
         )
     );
+
+    // If browsing Female Protagonist without text query or explicit subgenre, include Villainess/FMC catalog batch
+    if (options?.protagonist === 'female' && !query.trim() && (!options.genres || options.genres.length === 0)) {
+      for (const src of sourcesToQuery) {
+        const id = src.getInfo().id;
+        if (id === 'mangadex' || id === 'comick' || id === 'weebcentral') {
+          extraPromises.push(
+            src.search('', { ...effectiveOptions, genre: 'villainess', genres: ['villainess'] }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
+          );
+        }
+      }
+    }
 
     const [outcomes, extraOutcomes] = await Promise.all([
       Promise.all(promises),
@@ -303,6 +391,11 @@ export class SourceRegistry {
           : m.genres.some(g => g.toLowerCase().includes('josei')) ? 'josei' : undefined);
         return demo === targetDemo;
       });
+    }
+
+    // Filter by protagonist gender if requested
+    if (options?.protagonist) {
+      liveResults = liveResults.filter(m => matchesProtagonistGender(m, options.protagonist!));
     }
 
     // Filter by status if requested

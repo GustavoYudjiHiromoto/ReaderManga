@@ -11,7 +11,8 @@ import {
   AlertCircle,
   Trash2,
   RefreshCw,
-  Clock
+  Clock,
+  MessageCircle
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { ExtensionService } from '../services/extensionService.js';
@@ -35,7 +36,8 @@ const TYPE_ICONS: Record<FeedbackType, React.ReactNode> = {
   bug: <Bug className="h-4 w-4 text-rose-400 shrink-0" />,
   source_broken: <Unplug className="h-4 w-4 text-amber-400 shrink-0" />,
   recommendation: <Compass className="h-4 w-4 text-sky-400 shrink-0" />,
-  suggestion: <Lightbulb className="h-4 w-4 text-emerald-400 shrink-0" />
+  suggestion: <Lightbulb className="h-4 w-4 text-emerald-400 shrink-0" />,
+  other: <MessageCircle className="h-4 w-4 text-zinc-300 shrink-0" />
 };
 
 export const FeedbackModal: React.FC<FeedbackModalProps> = ({
@@ -287,6 +289,8 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({
                           type="button"
                           onClick={() => setType(key)}
                           className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            key === 'other' ? 'sm:col-span-2' : ''
+                          } ${
                             selected
                               ? 'bg-rose-500/12 border-rose-500/60 text-white'
                               : 'bg-zinc-900/50 border-zinc-800 text-zinc-300 hover:border-zinc-700'

@@ -220,7 +220,7 @@
         "type": {
           "type": "string",
           "description": "Categoria do feedback",
-          "enum": ["bug", "source_broken", "recommendation", "suggestion"],
+          "enum": ["bug", "source_broken", "recommendation", "suggestion", "other"],
           "maxLength": 32
         },
         "title": {

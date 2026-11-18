@@ -100,7 +100,7 @@ service cloud.firestore {
         data.keys().hasOnly(['id', 'authorUid', 'authorName', 'authorEmail', 'type', 'title', 'description', 'contextUrl', 'mangaContext', 'status', 'adminNotes', 'createdAt', 'updatedAt']) &&
         data.id is string && data.id.size() > 0 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.authorUid is string && data.authorUid.size() > 0 && data.authorUid.size() <= 128 && data.authorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
-        data.type in ['bug', 'source_broken', 'recommendation', 'suggestion'] &&
+        data.type in ['bug', 'source_broken', 'recommendation', 'suggestion', 'other'] &&
         data.title is string && data.title.size() >= 3 && data.title.size() <= 140 &&
         data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
         data.status in ['open', 'in_progress', 'resolved', 'wont_fix'] &&

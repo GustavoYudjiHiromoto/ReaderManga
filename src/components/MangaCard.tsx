@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BookOpen, Star, Bookmark, EyeOff, Eye } from 'lucide-react';
 import { Manga, ReadingProgress } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { TrackerStatusBadge } from './TrackerStatusBadge.js';
+import { getNextCoverFallback } from '../utils/coverFallback.js';
 
 export type MangaCardLayoutMode = 'grid' | 'compact' | 'list';
 
@@ -18,7 +19,7 @@ interface MangaCardProps {
   onDismiss?: (manga: Manga) => void;
 }
 
-export const MangaCard: React.FC<MangaCardProps> = ({
+const MangaCardComponent: React.FC<MangaCardProps> = ({
   manga,
   onSelect,
   onQuickRead,
@@ -31,11 +32,13 @@ export const MangaCard: React.FC<MangaCardProps> = ({
 }) => {
   const [currentCover, setCurrentCover] = useState(manga.coverUrl);
   const [imageError, setImageError] = useState(false);
+  const attemptedCoversRef = useRef<Set<string>>(new Set());
   const [progress, setProgress] = useState<ReadingProgress | undefined>(() => HistoryService.getProgress(manga.id));
   const [isSaved, setIsSaved] = useState<boolean>(() => HistoryService.isBookmarked(manga.id));
   const [isIgnored, setIsIgnored] = useState<boolean>(() => HistoryService.isIgnored(manga.id));
 
   useEffect(() => {
+    attemptedCoversRef.current.clear();
     setCurrentCover(manga.coverUrl);
     setImageError(false);
     setProgress(HistoryService.getProgress(manga.id));
@@ -43,19 +46,26 @@ export const MangaCard: React.FC<MangaCardProps> = ({
     setIsIgnored(HistoryService.isIgnored(manga.id));
 
     const unsub = HistoryService.subscribe(() => {
-      setProgress(HistoryService.getProgress(manga.id));
-      setIsSaved(HistoryService.isBookmarked(manga.id));
-      setIsIgnored(HistoryService.isIgnored(manga.id));
+      const nextProg = HistoryService.getProgress(manga.id);
+      const nextSaved = HistoryService.isBookmarked(manga.id);
+      const nextIgnored = HistoryService.isIgnored(manga.id);
+      setProgress(prev => (prev === nextProg ? prev : nextProg));
+      setIsSaved(prev => (prev === nextSaved ? prev : nextSaved));
+      setIsIgnored(prev => (prev === nextIgnored ? prev : nextIgnored));
     });
     return unsub;
   }, [manga.id, manga.coverUrl]);
 
   const handleImageError = () => {
-    if (currentCover && !currentCover.startsWith('/api/proxy/image') && currentCover.startsWith('http')) {
-      setCurrentCover(`/api/proxy/image?url=${encodeURIComponent(currentCover)}`);
-    } else {
-      setImageError(true);
+    if (currentCover) {
+      attemptedCoversRef.current.add(currentCover);
+      const nextFallback = getNextCoverFallback(currentCover, attemptedCoversRef.current);
+      if (nextFallback) {
+        setCurrentCover(nextFallback);
+        return;
+      }
     }
+    setImageError(true);
   };
 
   const handleToggleFavorite = (e: React.MouseEvent) => {
@@ -474,3 +484,18 @@ export const MangaCard: React.FC<MangaCardProps> = ({
     </div>
   );
 };
+
+export const MangaCard = React.memo(MangaCardComponent, (prev, next) => {
+  return (
+    prev.manga.id === next.manga.id &&
+    prev.manga.coverUrl === next.manga.coverUrl &&
+    prev.manga.title === next.manga.title &&
+    prev.manga.latestChapter === next.manga.latestChapter &&
+    prev.manga.rating === next.manga.rating &&
+    prev.manga.hasAvailableChapters === next.manga.hasAvailableChapters &&
+    prev.layoutMode === next.layoutMode &&
+    prev.hideBookmarkButton === next.hideBookmarkButton &&
+    prev.allowDismiss === next.allowDismiss &&
+    prev.showTrackerStatus === next.showTrackerStatus
+  );
+});

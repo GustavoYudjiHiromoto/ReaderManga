@@ -122,13 +122,21 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   useEffect(() => {
     loadInitialData();
+    let lastFavsRef = HistoryService.getFavorites();
+    let lastHistRef = HistoryService.getHistory();
     const unsubHistory = HistoryService.subscribe(() => {
-      setLocalHistory(HistoryService.getHistory());
-      setFavorites(HistoryService.getFavorites());
+      const nextHist = HistoryService.getHistory();
+      const nextFavs = HistoryService.getFavorites();
       const nextIgnored = HistoryService.getIgnoredMangas();
-      setIgnoredList(nextIgnored);
+      setLocalHistory(prev => (prev === nextHist ? prev : nextHist));
+      setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
+      setIgnoredList(prev => (prev === nextIgnored ? prev : nextIgnored));
       setVibeResult(prev => (prev && isMangaInIgnored(prev, nextIgnored) ? null : prev));
-      setReaderDNA(RecommendationService.calculateReaderDNA());
+      if (nextFavs !== lastFavsRef || nextHist !== lastHistRef) {
+        lastFavsRef = nextFavs;
+        lastHistRef = nextHist;
+        setReaderDNA(RecommendationService.calculateReaderDNA());
+      }
     });
     const unsubUpdates = UpdateTrackerService.subscribe(() => {
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
