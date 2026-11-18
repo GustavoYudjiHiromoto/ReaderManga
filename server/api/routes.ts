@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { ZipArchive } from 'archiver';
 import PDFDocument from 'pdfkit';
-import sharp from 'sharp';
 import zlib from 'zlib';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
 import { HttpError } from '../errors/HttpError.js';
@@ -908,6 +907,7 @@ apiRouter.get(/^\/chapters\/(.+)\/download$/, async (req: Request, res: Response
             try {
               let imgBuffer = item.data.buffer;
               if (item.data.contentType.includes('webp')) {
+                const { default: sharp } = await import('sharp');
                 imgBuffer = await sharp(item.data.buffer).jpeg({ quality: 90 }).toBuffer();
               }
               const img = (doc as any).openImage(imgBuffer);

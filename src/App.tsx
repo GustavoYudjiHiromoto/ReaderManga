@@ -19,6 +19,7 @@ import { TrackerService } from './services/trackerService.js';
 import { TrackerBackgroundService } from './services/trackerBackgroundService.js';
 import { TrackersModal } from './components/TrackersModal.js';
 import { ExtensionsModal } from './components/ExtensionsModal.js';
+import { FeedbackModal } from './components/FeedbackModal.js';
 import { ExtensionService } from './services/extensionService.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
 
@@ -116,6 +117,8 @@ export default function App() {
   const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
   const [isTrackersOpen, setIsTrackersOpen] = useState(false);
   const [isExtensionsOpen, setIsExtensionsOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackContext, setFeedbackContext] = useState<{ url?: string; mangaContext?: string } | null>(null);
   const [enabledSourcesCount, setEnabledSourcesCount] = useState<number>(() => ExtensionService.getEnabledSourceIds().length);
   const [totalSourcesCount, setTotalSourcesCount] = useState<number>(() => Object.keys(ExtensionService.getConfigs()).length || 6);
   const [trackersModalManga, setTrackersModalManga] = useState<{ id?: string; title?: string } | null>(null);
@@ -240,13 +243,21 @@ export default function App() {
       setIsExtensionsOpen(true);
     };
 
+    const handleOpenFeedbackModal = (e: Event) => {
+      const customEvent = e as CustomEvent<{ url?: string; mangaContext?: string }>;
+      setFeedbackContext(customEvent.detail || null);
+      setIsFeedbackOpen(true);
+    };
+
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('open-trackers-modal', handleOpenTrackersModal);
     window.addEventListener('open-extensions-modal', handleOpenExtensionsModal);
+    window.addEventListener('open-feedback-modal', handleOpenFeedbackModal);
     return () => {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('open-trackers-modal', handleOpenTrackersModal);
       window.removeEventListener('open-extensions-modal', handleOpenExtensionsModal);
+      window.removeEventListener('open-feedback-modal', handleOpenFeedbackModal);
       cleanupRadar();
       cleanupTrackerSync();
       unsubscribeHistory();
@@ -420,6 +431,10 @@ export default function App() {
           onOpenDownloads={() => setIsDownloadsOpen(true)}
           onOpenTrackers={() => setIsTrackersOpen(true)}
           onOpenExtensions={() => setIsExtensionsOpen(true)}
+          onOpenFeedback={() => {
+            setFeedbackContext(null);
+            setIsFeedbackOpen(true);
+          }}
           historyCount={history.length}
           favoritesCount={favorites.length}
           offlineCount={offlineCount}
@@ -542,6 +557,10 @@ export default function App() {
             onReadChapter={handleReadChapter}
             onOpenDownloads={() => setIsDownloadsOpen(true)}
             onOpenExtensions={() => setIsExtensionsOpen(true)}
+            onOpenFeedback={() => {
+              setFeedbackContext(null);
+              setIsFeedbackOpen(true);
+            }}
           />
         )}
 
@@ -551,7 +570,13 @@ export default function App() {
 
       {/* Footer is hidden during Reader mode for total immersion */}
       {currentTab !== 'reader' && (
-        <Footer onOpenApi={() => handleNavigate('api')} />
+        <Footer
+          onOpenApi={() => handleNavigate('api')}
+          onOpenFeedback={() => {
+            setFeedbackContext(null);
+            setIsFeedbackOpen(true);
+          }}
+        />
       )}
 
       {/* Slide-over Reading History Drawer */}
@@ -588,6 +613,20 @@ export default function App() {
         isOpen={isExtensionsOpen}
         onClose={() => setIsExtensionsOpen(false)}
         onExploreSource={handleExploreSource}
+      />
+
+      {/* User Feedback & Bug Report Modal */}
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => {
+          setIsFeedbackOpen(false);
+          setFeedbackContext(null);
+        }}
+        contextUrl={feedbackContext?.url}
+        mangaContext={
+          feedbackContext?.mangaContext ||
+          (selectedMangaId ? `Obra ativa: ${selectedMangaId}${selectedChapterId ? ` | Cap: ${selectedChapterId}` : ''}` : undefined)
+        }
       />
 
       {/* Floating Offline Notification */}

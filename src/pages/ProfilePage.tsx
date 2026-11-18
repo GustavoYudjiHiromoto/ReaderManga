@@ -31,7 +31,8 @@ import {
   Volume2,
   Smartphone,
   CheckCircle2,
-  Boxes
+  Boxes,
+  MessageSquarePlus
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { HistoryService } from '../services/history.js';
@@ -46,6 +47,8 @@ import { TrackersModal } from '../components/TrackersModal.js';
 import { parseTachibk } from '../services/tachibkService.js';
 import { PWAInstallButton } from '../components/PWAInstallButton.js';
 import { BackupProgressModal, BackupProgressState } from '../components/BackupProgressModal.js';
+import { FeedbackAdminPanel } from '../components/FeedbackAdminPanel.js';
+import { isFeedbackAdmin } from '../services/feedbackService.js';
 import {
   LANGUAGE_OPTIONS,
   getPreferredLanguage,
@@ -64,9 +67,10 @@ interface ProfilePageProps {
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   onOpenDownloads?: () => void;
   onOpenExtensions?: () => void;
+  onOpenFeedback?: () => void;
 }
 
-type ProfileTab = 'overview' | 'trackers' | 'preferences' | 'data';
+type ProfileTab = 'overview' | 'trackers' | 'preferences' | 'data' | 'feedback';
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({
   onNavigateToCatalog,
@@ -74,7 +78,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
   onSelectManga,
   onReadChapter,
   onOpenDownloads,
-  onOpenExtensions
+  onOpenExtensions,
+  onOpenFeedback
 }) => {
   const { user, loading: authLoading, syncStatus, lastSynced, syncError, loginWithGoogle, logout, syncNow } = useAuth();
   
@@ -652,7 +657,19 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               }`}
             >
               <Download className="h-3.5 w-3.5" />
-              <span>Backups & Armazenamento</span>
+              <span>Backups &amp; Armazenamento</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('feedback')}
+              className={`flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === 'feedback'
+                  ? 'border-rose-500 text-rose-400 font-semibold'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              <span>{isFeedbackAdmin(user?.email) ? 'Feedbacks (Triagem)' : 'Feedback &amp; Suporte'}</span>
             </button>
           </div>
 
@@ -1309,6 +1326,19 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               </div>
             </div>
           </div>
+        )}
+
+        {/* TAB 5: USER FEEDBACK & ADMIN TRIAGE */}
+        {activeTab === 'feedback' && (
+          <FeedbackAdminPanel
+            onOpenFeedbackModal={() => {
+              if (onOpenFeedback) {
+                onOpenFeedback();
+              } else {
+                window.dispatchEvent(new CustomEvent('open-feedback-modal'));
+              }
+            }}
+          />
         )}
 
       </div>

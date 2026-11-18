@@ -13,9 +13,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
+  const isProduction = process.env.NODE_ENV === 'production' || __filename.endsWith('.js');
+  if (isProduction && !process.env.NODE_ENV) {
+    process.env.NODE_ENV = 'production';
+  }
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
-  const isProduction = process.env.NODE_ENV === 'production' || __filename.endsWith('.js');
 
   app.use(express.json({ limit: '16mb' }));
 

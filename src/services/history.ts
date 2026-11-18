@@ -16,6 +16,7 @@ export interface HistorySyncBridge {
   onFavoriteUpdated?: (fav: FavoriteManga) => void;
   onFavoriteRemoved?: (mangaId: string) => void;
   onLibraryStateChanged?: () => void;
+  onBulkImported?: () => void;
 }
 
 let syncBridge: HistorySyncBridge | null = null;
@@ -67,6 +68,10 @@ if (typeof window !== 'undefined') {
 export const HistoryService = {
   setSyncBridge(bridge: HistorySyncBridge) {
     syncBridge = bridge;
+  },
+
+  notifyExternalSync(): void {
+    notifyListeners();
   },
 
   subscribe(listener: HistoryListener): () => void {
@@ -1319,6 +1324,7 @@ export const HistoryService = {
       }
 
       notifyListeners();
+      syncBridge?.onBulkImported?.();
 
       return {
         success: true,

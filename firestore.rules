@@ -12,6 +12,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'natsugustavo@gmail.com';
+    }
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
@@ -86,6 +94,25 @@ service cloud.firestore {
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
+    // User feedback validation
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['id', 'authorUid', 'type', 'title', 'description', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'authorUid', 'authorName', 'authorEmail', 'type', 'title', 'description', 'contextUrl', 'mangaContext', 'status', 'adminNotes', 'createdAt', 'updatedAt']) &&
+        data.id is string && data.id.size() > 0 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.authorUid is string && data.authorUid.size() > 0 && data.authorUid.size() <= 128 && data.authorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.type in ['bug', 'source_broken', 'recommendation', 'suggestion'] &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 140 &&
+        data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
+        data.status in ['open', 'in_progress', 'resolved', 'wont_fix'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 128)) &&
+        (!('authorEmail' in data) || (data.authorEmail is string && data.authorEmail.size() <= 256)) &&
+        (!('contextUrl' in data) || (data.contextUrl is string && data.contextUrl.size() <= 512)) &&
+        (!('mangaContext' in data) || (data.mangaContext is string && data.mangaContext.size() <= 256)) &&
+        (!('adminNotes' in data) || (data.adminNotes is string && data.adminNotes.size() <= 1000));
+    }
+
     // Match rules for user documents
     match /users/{userId} {
       allow get: if isOwner(userId);
@@ -117,6 +144,33 @@ service cloud.firestore {
         allow create, update: if isOwner(userId) && isValidId(histId) && isValidHistoryItem(incoming());
         allow delete: if isOwner(userId) && isValidId(histId);
       }
+    }
+
+    // Match rules for user feedback & admin triage
+    match /feedback/{feedbackId} {
+      allow get: if isValidId(feedbackId) && (isAdmin() || (isVerifiedUser() && existing().authorUid == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && existing().authorUid == request.auth.uid);
+      allow create: if isVerifiedUser() &&
+        isValidId(feedbackId) &&
+        isValidFeedback(incoming()) &&
+        incoming().id == feedbackId &&
+        incoming().authorUid == request.auth.uid &&
+        incoming().status == 'open' &&
+        !('adminNotes' in incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (!('authorEmail' in incoming()) || incoming().authorEmail == request.auth.token.email);
+      allow update: if isVerifiedUser() &&
+        isValidId(feedbackId) &&
+        isValidFeedback(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().authorUid == existing().authorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNotes', 'updatedAt'])) ||
+          (existing().authorUid == request.auth.uid && existing().status == 'open' && incoming().status == 'open' && incoming().diff(existing()).affectedKeys().hasOnly(['type', 'title', 'description', 'contextUrl', 'mangaContext', 'updatedAt']))
+        );
+      allow delete: if isValidId(feedbackId) && (isAdmin() || (isVerifiedUser() && existing().authorUid == request.auth.uid && existing().status == 'open'));
     }
   }
 }

@@ -1,11 +1,12 @@
 import React from 'react';
-import { Layers, ShieldCheck, Database } from 'lucide-react';
+import { Database, MessageSquarePlus } from 'lucide-react';
 
 interface FooterProps {
   onOpenApi: () => void;
+  onOpenFeedback?: () => void;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onOpenApi }) => {
+export const Footer: React.FC<FooterProps> = ({ onOpenApi, onOpenFeedback }) => {
   return (
     <footer className="mt-auto border-t border-zinc-800/80 bg-zinc-950 py-8 sm:py-10 text-xs text-zinc-500">
       <div className="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8">
@@ -20,6 +21,18 @@ export const Footer: React.FC<FooterProps> = ({ onOpenApi }) => {
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-zinc-400 text-center">
+            {onOpenFeedback && (
+              <>
+                <button
+                  onClick={onOpenFeedback}
+                  className="hover:text-rose-400 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5 shrink-0" />
+                  <span>Enviar Feedback</span>
+                </button>
+                <span className="text-zinc-700 hidden sm:inline" aria-hidden="true">·</span>
+              </>
+            )}
             <button
               onClick={onOpenApi}
               className="hover:text-rose-400 transition-colors cursor-pointer inline-flex items-center gap-1.5"

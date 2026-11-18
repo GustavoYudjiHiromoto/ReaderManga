@@ -15,7 +15,8 @@ import {
   RefreshCw,
   Cloud,
   Home,
-  Bell
+  Bell,
+  MessageSquarePlus
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { PWAInstallButton } from './PWAInstallButton.js';
@@ -27,6 +28,7 @@ interface NavbarProps {
   onOpenDownloads?: () => void;
   onOpenTrackers?: () => void;
   onOpenExtensions?: () => void;
+  onOpenFeedback?: () => void;
   historyCount: number;
   favoritesCount?: number;
   offlineCount?: number;
@@ -43,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenDownloads,
   onOpenTrackers,
   onOpenExtensions,
+  onOpenFeedback,
   favoritesCount = 0,
   offlineCount = 0,
   unreadUpdatesCount = 0,
@@ -453,6 +456,25 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </button>
                     )}
 
+                    {onOpenFeedback && (
+                      <button
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onOpenFeedback();
+                        }}
+                        className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <MessageSquarePlus className="h-3.5 w-3.5 text-rose-400" />
+                          <div>
+                            <div className="font-medium text-zinc-200">Feedback &amp; Reportar Bug</div>
+                            <div className="text-[10px] text-zinc-500">Sugestões, fontes ou erros</div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-zinc-500 font-mono">&rarr;</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => {
                         setIsMenuOpen(false);
@@ -464,7 +486,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     >
                       <div className="flex items-center gap-2">
                         <Layers className="h-3.5 w-3.5 text-zinc-400" />
-                        <span>API & Documentação</span>
+                        <span>API &amp; Documentação</span>
                       </div>
                       <span className="text-[10px] text-zinc-500 font-mono">&rarr;</span>
                     </button>

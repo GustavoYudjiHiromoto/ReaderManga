@@ -189,6 +189,85 @@
         }
       },
       "required": ["mangaId", "chapterId", "pageNumber"]
+    },
+    "feedback": {
+      "title": "UserFeedback",
+      "description": "Relatos de bugs, problemas de fontes/recomendações e sugestões enviados pelos usuários",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificador único do feedback",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "authorUid": {
+          "type": "string",
+          "description": "UID do usuário autenticado que enviou o feedback",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Nome de exibição do autor no momento do envio",
+          "maxLength": 128
+        },
+        "authorEmail": {
+          "type": "string",
+          "description": "E-mail verificado do autor (visível apenas para o próprio autor e o administrador)",
+          "maxLength": 256
+        },
+        "type": {
+          "type": "string",
+          "description": "Categoria do feedback",
+          "enum": ["bug", "source_broken", "recommendation", "suggestion"],
+          "maxLength": 32
+        },
+        "title": {
+          "type": "string",
+          "description": "Resumo curto do problema ou sugestão",
+          "minLength": 3,
+          "maxLength": 140
+        },
+        "description": {
+          "type": "string",
+          "description": "Descrição detalhada com passos para reproduzir ou contexto",
+          "minLength": 10,
+          "maxLength": 2000
+        },
+        "contextUrl": {
+          "type": "string",
+          "description": "Rota/URL onde o usuário estava ao abrir o feedback",
+          "maxLength": 512
+        },
+        "mangaContext": {
+          "type": "string",
+          "description": "Obra, capítulo ou fontes ativas no momento do relato",
+          "maxLength": 256
+        },
+        "status": {
+          "type": "string",
+          "description": "Estado atual da triagem do feedback",
+          "enum": ["open", "in_progress", "resolved", "wont_fix"],
+          "maxLength": 32
+        },
+        "adminNotes": {
+          "type": "string",
+          "description": "Observação opcional do administrador sobre a resolução",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp de criação do feedback"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp da última atualização ou triagem"
+        }
+      },
+      "required": ["id", "authorUid", "type", "title", "description", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -207,6 +286,10 @@
     "/users/{userId}/history/{histId}": {
       "schema": "historyItem",
       "description": "Histórico e progresso de leitura em tempo real por obra"
+    },
+    "/feedback/{feedbackId}": {
+      "schema": "feedback",
+      "description": "Relatos de bugs, problemas de fontes e sugestões dos usuários com triagem administrativa"
     }
   }
 }
