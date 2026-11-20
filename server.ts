@@ -127,9 +127,28 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     // Static file serving for production
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distDir = path.resolve(__dirname, 'dist');
+    app.use(express.static(distDir, {
+      setHeaders: (res, filePath) => {
+        const normalized = filePath.replace(/\\/g, '/');
+        if (
+          normalized.endsWith('/sw.js') ||
+          normalized.endsWith('/registerSW.js') ||
+          normalized.endsWith('/index.html') ||
+          normalized.endsWith('/version.json') ||
+          normalized.endsWith('/manifest.json') ||
+          normalized.endsWith('/manifest.webmanifest') ||
+          /\/workbox-[^/]+\.js$/i.test(normalized)
+        ) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        } else if (normalized.includes('/assets/')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      }
+    }));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.sendFile(path.resolve(distDir, 'index.html'));
     });
   }
 

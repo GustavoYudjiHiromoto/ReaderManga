@@ -10,12 +10,18 @@ import {
   Bookmark,
   Compass,
   Bell,
-  Calendar
+  Calendar,
+  Layers
 } from 'lucide-react';
-import { FavoriteManga, MangaUpdateInfo, LibraryCategory } from '../types/manga.js';
+import { FavoriteManga, MangaUpdateInfo, LibraryCategory, ReadingProgress } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
+import { MangaApi } from '../services/api.js';
 import { getNextCoverFallback } from '../utils/coverFallback.js';
+import {
+  DuplicateFavoritesModal,
+  detectDuplicateFavoriteGroups
+} from '../components/DuplicateFavoritesModal.js';
 
 interface UpdatesPageProps {
   onSelectManga: (mangaId: string) => void;
@@ -96,6 +102,15 @@ function formatReleaseMeta(update?: MangaUpdateInfo): string {
   return `Verificado há ${days}d`;
 }
 
+function compareChapterNums(a?: string, b?: string): number {
+  const nA = parseFloat(a || '');
+  const nB = parseFloat(b || '');
+  if (!isNaN(nA) && !isNaN(nB) && nA !== nB) return nA - nB;
+  if (!isNaN(nA) && isNaN(nB)) return 1;
+  if (isNaN(nA) && !isNaN(nB)) return -1;
+  return (a || '').localeCompare(b || '', undefined, { numeric: true });
+}
+
 export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   onSelectManga,
   onReadChapter,
@@ -111,12 +126,15 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   const [progressMsg, setProgressMsg] = useState<string | null>(() => UpdateTrackerService.getProgress());
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
   const [coverOverrides, setCoverOverrides] = useState<Record<string, string>>({});
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
   const attemptedCoversRef = useRef<Record<string, Set<string>>>({});
+  const attemptedTitleResolveRef = useRef<Set<string>>(new Set());
 
-  // Reset Navbar unseen badge counter as soon as the user opens Lançamentos (unread-message style)
+  // Prune orphaned entries and reset Navbar unseen badge counter as soon as the user opens Lançamentos
   useEffect(() => {
+    UpdateTrackerService.pruneOrphanedUpdates();
     UpdateTrackerService.acknowledgeFeedUpdates();
-  }, [updatesMap]);
+  }, [updatesMap, favorites]);
 
   useEffect(() => {
     const syncState = () => {
@@ -129,7 +147,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
       setProgressMsg(UpdateTrackerService.getProgress());
     };
 
-    const unsubHist = HistoryService.subscribe(syncState);
+    const unsubHist = HistoryService.subscribe(syncState, ['favorites', 'readChapters']);
     const unsubUpd = UpdateTrackerService.subscribe(syncUpdates);
     return () => {
       unsubHist();
@@ -137,22 +155,135 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     };
   }, []);
 
+  // Quietly resolve missing altTitles so cross-language duplicates (e.g. EN vs Romaji) are grouped cleanly
+  useEffect(() => {
+    if (favorites.length < 2) return;
+    const missing = favorites.filter(
+      f => (!f.altTitles || f.altTitles.length === 0) && !attemptedTitleResolveRef.current.has(f.mangaId)
+    );
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < missing.length; i += 30) {
+        if (cancelled) return;
+        const batch = missing.slice(i, i + 30);
+        batch.forEach(f => attemptedTitleResolveRef.current.add(f.mangaId));
+        try {
+          const resolved = await MangaApi.resolveLibraryTitles(
+            batch.map(f => ({ mangaId: f.mangaId, title: f.title }))
+          );
+          if (cancelled) return;
+          HistoryService.enrichFavoritesMetadata(resolved);
+        } catch {
+          // Non-critical background enrichment
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favorites]);
+
   const readSet = useMemo(() => new Set(readChapters), [readChapters]);
 
+  const duplicateGroups = useMemo(
+    () => detectDuplicateFavoriteGroups(favorites),
+    [favorites]
+  );
+
   const combinedRows = useMemo(() => {
-    const rows = favorites.map((fav) => {
-      const update = updatesMap[fav.mangaId];
-      const progress = HistoryService.getProgress(fav.mangaId);
-      const isUnreadNew = Boolean(update?.hasNew && !readSet.has(update.latestChapterId));
-      const effectiveTimestamp = getEffectiveUpdateTimestamp(update);
-      return {
-        fav,
-        update,
-        progress,
+    const favToGroup = new Map<string, typeof duplicateGroups[number]>();
+    for (const g of duplicateGroups) {
+      for (const item of g.items) {
+        favToGroup.set(item.mangaId, g);
+      }
+    }
+
+    const handledGroupIds = new Set<string>();
+    const rows: Array<{
+      fav: FavoriteManga;
+      update?: MangaUpdateInfo;
+      progress?: ReadingProgress;
+      isUnreadNew: boolean;
+      effectiveTimestamp: number;
+      groupedMangaIds: string[];
+      searchableTitles: string[];
+    }> = [];
+
+    for (const fav of favorites) {
+      const group = favToGroup.get(fav.mangaId);
+      const groupItems = group ? group.items : [fav];
+      if (group) {
+        if (handledGroupIds.has(group.id)) continue;
+        handledGroupIds.add(group.id);
+      }
+
+      // Pick best representative favorite, update, and progress across all items in the group
+      const primaryFav = group
+        ? groupItems.find(it => it.mangaId === group.recommendedPrimaryId) || groupItems[0]
+        : fav;
+
+      let bestUpdate: MangaUpdateInfo | undefined;
+      let bestUpdateSourceFav: FavoriteManga | undefined;
+      let bestProgress: ReadingProgress | undefined;
+      let anyUnreadRaw = false;
+
+      for (const item of groupItems) {
+        const u = updatesMap[item.mangaId];
+        const p = HistoryService.getProgress(item.mangaId);
+
+        if (p && (!bestProgress || compareChapterNums(p.chapterNumber, bestProgress.chapterNumber) > 0)) {
+          bestProgress = p;
+        }
+
+        if (u) {
+          const isItemUnread = Boolean(u.hasNew && !readSet.has(u.latestChapterId));
+          if (isItemUnread) anyUnreadRaw = true;
+          if (!bestUpdate) {
+            bestUpdate = u;
+            bestUpdateSourceFav = item;
+          } else {
+            const cmp = compareChapterNums(u.latestChapterNumber, bestUpdate.latestChapterNumber);
+            if (cmp > 0 || (cmp === 0 && getEffectiveUpdateTimestamp(u) > getEffectiveUpdateTimestamp(bestUpdate))) {
+              bestUpdate = u;
+              bestUpdateSourceFav = item;
+            }
+          }
+        }
+      }
+
+      // If any entry in the group already read >= latest chapter, don't flag the grouped card as unread
+      let isUnreadNew = false;
+      if (bestUpdate && anyUnreadRaw && !readSet.has(bestUpdate.latestChapterId)) {
+        const latestNum = parseFloat(bestUpdate.latestChapterNumber || '');
+        const progNum = bestProgress?.chapterNumber ? parseFloat(bestProgress.chapterNumber) : NaN;
+        if (!isNaN(latestNum) && !isNaN(progNum)) {
+          isUnreadNew = latestNum > progNum;
+        } else {
+          isUnreadNew = true;
+        }
+      }
+
+      // Prefer opening/reading via the favorite whose source owns the latest update chapter if available
+      const displayFav = bestUpdateSourceFav || primaryFav;
+      const effectiveTimestamp = getEffectiveUpdateTimestamp(bestUpdate);
+      const groupedMangaIds = groupItems.map(it => it.mangaId);
+      const searchableTitles = Array.from(
+        new Set(groupItems.flatMap(it => [it.title, ...(it.altTitles || [])]).filter(Boolean))
+      ).map(t => t.toLowerCase());
+
+      rows.push({
+        fav: displayFav,
+        update: bestUpdate,
+        progress: bestProgress,
         isUnreadNew,
-        effectiveTimestamp
-      };
-    });
+        effectiveTimestamp,
+        groupedMangaIds,
+        searchableTitles
+      });
+    }
 
     // Sort chronologically descending by release/discovery day so day dividers stay grouped once
     rows.sort((a, b) => {
@@ -164,7 +295,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     });
 
     return rows;
-  }, [favorites, updatesMap, readSet]);
+  }, [favorites, duplicateGroups, updatesMap, readSet]);
 
   const newCount = useMemo(
     () => combinedRows.filter(r => r.isUnreadNew).length,
@@ -178,10 +309,10 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
 
   const filteredRows = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return combinedRows.filter(({ fav, isUnreadNew }) => {
+    return combinedRows.filter(({ fav, isUnreadNew, searchableTitles }) => {
       if (filter === 'new' && !isUnreadNew) return false;
       if (filter === 'reading' && (fav.userCategory || 'reading') !== 'reading') return false;
-      if (q && !fav.title.toLowerCase().includes(q)) return false;
+      if (q && !searchableTitles.some(t => t.includes(q))) return false;
       return true;
     });
   }, [combinedRows, filter, searchTerm]);
@@ -223,6 +354,12 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     }
   };
 
+  const markGroupAsSeen = (mangaIds: string[]) => {
+    for (const id of mangaIds) {
+      UpdateTrackerService.markMangaUpdateAsSeen(id);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
       {/* Header Strip */}
@@ -238,7 +375,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                 Lançamentos & Atualizações
               </h1>
               <p className="text-xs sm:text-sm text-zinc-400 mt-1.5">
-                Acompanhe os novos capítulos das suas <span className="font-mono text-zinc-200 tabular-nums">{favorites.length}</span> obras salvas sem poluir sua tela inicial.
+                Acompanhe os novos capítulos das suas <span className="font-mono text-zinc-200 tabular-nums">{combinedRows.length}</span> obras salvas sem poluir sua tela inicial.
               </p>
             </div>
 
@@ -270,6 +407,24 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
             <div className="mt-4 px-3.5 py-2 rounded-xl bg-zinc-900 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
               <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
               <span className="truncate">{progressMsg}</span>
+            </div>
+          )}
+
+          {duplicateGroups.length > 0 && (
+            <div className="mt-4 px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <Layers className="h-4 w-4 text-amber-400 shrink-0" />
+                <span className="leading-snug">
+                  {duplicateGroups.length} {duplicateGroups.length === 1 ? 'obra duplicada foi agrupada' : 'obras duplicadas foram agrupadas'} automaticamente neste feed.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDuplicatesModal(true)}
+                className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-100 font-semibold text-[11px] transition-colors shrink-0 cursor-pointer"
+              >
+                Unificar nos Favoritos ({duplicateGroups.length})
+              </button>
             </div>
           )}
 
@@ -315,7 +470,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                   }`}
                 >
                   <span>Todos Monitorados</span>
-                  <span className="font-mono tabular-nums text-[11px]">({favorites.length})</span>
+                  <span className="font-mono tabular-nums text-[11px]">({combinedRows.length})</span>
                 </button>
               </div>
 
@@ -375,7 +530,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                   }}
                   className="min-h-[44px] px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 transition-colors cursor-pointer"
                 >
-                  Ver Todos Monitorados ({favorites.length})
+                  Ver Todos Monitorados ({combinedRows.length})
                 </button>
               )}
               <button
@@ -402,7 +557,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {group.items.map(({ fav, update, progress, isUnreadNew }) => {
+                  {group.items.map(({ fav, update, progress, isUnreadNew, groupedMangaIds }) => {
                     const catLabel = CATEGORY_LABELS[fav.userCategory || 'reading'] || 'Favorito';
                     const targetChapterId = update?.latestChapterId || progress?.chapterId;
                     const targetChapterNum = update?.latestChapterNumber || progress?.chapterNumber;
@@ -410,7 +565,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                     return (
                       <article
                         key={fav.mangaId}
-                        className={`group flex gap-3.5 p-3 sm:p-3.5 rounded-2xl border transition-all ${
+                        className={`manga-list-row-item group flex gap-3.5 p-3 sm:p-3.5 rounded-2xl border transition-colors duration-150 ${
                           isUnreadNew
                             ? 'bg-zinc-900/80 border-rose-500/35 hover:border-rose-500/60 shadow-md'
                             : 'bg-zinc-900/40 border-zinc-800/80 hover:border-zinc-700'
@@ -427,6 +582,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                               src={coverOverrides[fav.mangaId] || fav.coverUrl}
                               alt={fav.title}
                               referrerPolicy="no-referrer"
+                              decoding="async"
                               onError={() => {
                                 const currentSrc = coverOverrides[fav.mangaId] || fav.coverUrl;
                                 if (currentSrc) {
@@ -466,7 +622,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                               {isUnreadNew && (
                                 <button
                                   type="button"
-                                  onClick={() => UpdateTrackerService.markMangaUpdateAsSeen(fav.mangaId)}
+                                  onClick={() => markGroupAsSeen(groupedMangaIds)}
                                   className="min-h-[36px] min-w-[36px] -mt-1 -mr-1 p-2 rounded-lg text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 transition-colors shrink-0 cursor-pointer"
                                   title="Marcar lançamento como visto"
                                   aria-label={`Marcar ${fav.title} como visto`}
@@ -536,7 +692,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    UpdateTrackerService.markMangaUpdateAsSeen(fav.mangaId);
+                                    markGroupAsSeen(groupedMangaIds);
                                     onReadChapter(fav.mangaId, targetChapterId);
                                   }}
                                   className={`min-h-[38px] px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
@@ -561,6 +717,16 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
           </div>
         )}
       </div>
+
+      <DuplicateFavoritesModal
+        isOpen={showDuplicatesModal}
+        onClose={() => setShowDuplicatesModal(false)}
+        favorites={favorites}
+        onMerged={() => {
+          setFavorites(HistoryService.getFavorites());
+          setUpdatesMap(UpdateTrackerService.getStoredUpdates());
+        }}
+      />
     </div>
   );
 };

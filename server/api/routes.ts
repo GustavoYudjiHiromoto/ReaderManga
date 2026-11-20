@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import fs from 'fs';
+import path from 'path';
 import { ZipArchive } from 'archiver';
 import PDFDocument from 'pdfkit';
 import zlib from 'zlib';
@@ -14,6 +16,43 @@ import { residentialRelayService, isSafeExternalRelayUrl } from '../services/Res
 import { detectSiteExtension, probeAlternativeMirrors } from '../sources/SiteAutoDetector.js';
 
 export const apiRouter = Router();
+
+const SERVER_BOOT_TIME = new Date().toISOString();
+const SERVER_BOOT_STAMP = (() => {
+  const d = new Date(SERVER_BOOT_TIME);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `1.0.0+${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}.${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+})();
+
+let cachedProdVersionInfo: { version: string; buildId: string; buildTime: string } | null = null;
+
+function getActiveBuildInfo(): { version: string; buildId: string; buildTime: string } {
+  if (process.env.NODE_ENV === 'production') {
+    if (cachedProdVersionInfo) return cachedProdVersionInfo;
+    try {
+      const versionFile = path.resolve(process.cwd(), 'dist', 'version.json');
+      if (fs.existsSync(versionFile)) {
+        const parsed = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
+        if (parsed?.version && parsed?.buildId) {
+          cachedProdVersionInfo = {
+            version: String(parsed.version),
+            buildId: String(parsed.buildId),
+            buildTime: String(parsed.buildTime || SERVER_BOOT_TIME)
+          };
+          return cachedProdVersionInfo;
+        }
+      }
+    } catch {
+      // ignore read errors and fallback cleanly
+    }
+  }
+
+  return {
+    version: process.env.MANGAREADER_APP_VERSION || '1.0.0',
+    buildId: process.env.MANGAREADER_BUILD_ID || SERVER_BOOT_STAMP,
+    buildTime: process.env.MANGAREADER_BUILD_TIME || SERVER_BOOT_TIME
+  };
+}
 
 function sendApiError(res: Response, err: unknown) {
   if (err instanceof HttpError) {
@@ -272,14 +311,28 @@ apiRouter.get('/cache/stats', (_req: Request, res: Response) => {
   });
 });
 
-// 0.1 Healthcheck and server diagnostic endpoint (Fase 5)
+// 0.1 Version endpoint (always uncached so mobile PWAs can verify latest build)
+apiRouter.get('/version', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json({
+    success: true,
+    data: getActiveBuildInfo()
+  });
+});
+
+// 0.2 Healthcheck and server diagnostic endpoint (Fase 5)
 apiRouter.get('/health', (_req: Request, res: Response) => {
   const mem = process.memoryUsage();
+  const buildInfo = getActiveBuildInfo();
   res.json({
     status: 'healthy',
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: buildInfo.version,
+    buildId: buildInfo.buildId,
+    buildTime: buildInfo.buildTime,
     memory: {
       rssMb: Math.round(mem.rss / 1024 / 1024),
       heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
@@ -722,8 +775,6 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const genresRaw = req.query.genres as string;
     const genres = genresRaw ? genresRaw.split(',').map(s => s.trim()).filter(Boolean) : (genre && genre !== 'all' ? [genre] : undefined);
     const demographic = req.query.demographic as string;
-    const rawProtagonist = (req.query.protagonist as string)?.toLowerCase();
-    const protagonist = rawProtagonist === 'female' || rawProtagonist === 'male' ? rawProtagonist : undefined;
     const mangaType = (req.query.type as string) || (req.query.format as string);
     const status = req.query.status as string;
     const language = (req.query.language as string) || (req.query.lang as string);
@@ -734,7 +785,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const includeAdult = req.query.includeAdult === 'true';
     const onlyAvailable = req.query.onlyAvailable !== 'false';
 
-    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${protagonist || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
+    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
@@ -747,7 +798,6 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       genre,
       genres,
       demographic,
-      protagonist,
       type: mangaType,
       status,
       language,
@@ -1245,7 +1295,11 @@ apiRouter.post('/library/resolve-titles', async (req: Request, res: Response) =>
           // fallback to AniList title synonyms below
         }
 
-        if (item.title && altTitles.length < 2) {
+        const normalizedItemTitle = (item.title || '').trim().toLowerCase();
+        const latinAltCount = altTitles.filter(
+          t => /[a-zA-Z]{3,}/.test(t) && t.trim().toLowerCase() !== normalizedItemTitle
+        ).length;
+        if (item.title && latinAltCount < 2) {
           const anilistSyns = await fetchAnilistSynonymsForTitle(item.title);
           if (anilistSyns.length > 0) {
             altTitles = Array.from(new Set([...altTitles, ...anilistSyns])).slice(0, 14);

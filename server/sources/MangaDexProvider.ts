@@ -1,6 +1,7 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
+import { residentialRelayService } from '../services/ResidentialRelayService.js';
 
 function formatProxyUrl(rawUrl: string): string {
   if (!rawUrl) return '';
@@ -53,6 +54,16 @@ export class MangaDexProvider implements IMangaSource {
   private readonly sourceId = 'mangadex';
   private readonly sourceName = 'MangaDex (Live API)';
 
+  private searchCache: Map<string, { data: SourceSearchResult; timestamp: number }> = new Map();
+  private popularCache: Map<string, { data: Manga[]; timestamp: number }> = new Map();
+  private latestCache: Map<string, { data: Manga[]; timestamp: number }> = new Map();
+  private inFlightJson: Map<string, Promise<any>> = new Map();
+  private upstreamCooldownUntil = 0;
+  private lastCooldownLogAt = 0;
+  private readonly SEARCH_CACHE_TTL_MS = 3 * 60 * 1000;
+  private readonly POPULAR_CACHE_TTL_MS = 10 * 60 * 1000;
+  private readonly UPSTREAM_COOLDOWN_MS = 20 * 1000;
+
   getInfo(): MangaSourceInfo {
     return {
       id: this.sourceId,
@@ -78,40 +89,138 @@ export class MangaDexProvider implements IMangaSource {
     };
   }
 
-  private async fetchWithTimeout(url: string, timeoutMs = 7000): Promise<any> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  private setBoundedCache<T>(cache: Map<string, { data: T; timestamp: number }>, key: string, data: T, maxSize = 120): void {
+    if (cache.size >= maxSize) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey) cache.delete(oldestKey);
+    }
+    cache.set(key, { data, timestamp: Date.now() });
+  }
+
+  private logUpstreamUnavailable(scope: string, err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastCooldownLogAt >= this.UPSTREAM_COOLDOWN_MS) {
+      this.lastCooldownLogAt = now;
+      console.info(`[MangaDexProvider] Upstream temporarily unavailable during ${scope} (${(err as Error).message}); serving fallback.`);
+    }
+  }
+
+  private async fetchWithTimeout(url: string, timeoutMs = 8000, maxRetries = 2): Promise<any> {
+    const existing = this.inFlightJson.get(url);
+    if (existing) {
+      return existing;
+    }
+
+    const task = (async () => {
+      let lastError: any;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const reqHeaders: Record<string, string> = {
+            'User-Agent': 'MangaReader-App/1.0.0 (https://github.com/aistudio-build)',
+            'Accept': 'application/json'
+          };
+          if (attempt > 0) {
+            reqHeaders['Connection'] = 'close';
+            reqHeaders['Cache-Control'] = 'no-cache';
+          }
+
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: reqHeaders
+          });
+
+          if (!response.ok) {
+            if (response.status === 404) {
+              throw new HttpError(404, `Recurso não encontrado na API MangaDex (HTTP 404).`);
+            }
+            if (response.status === 429) {
+              throw new HttpError(429, `Limite de requisições excedido na API MangaDex (Rate limit 429). Aguarde alguns instantes.`);
+            }
+            if (response.status === 503) {
+              throw new HttpError(503, `Serviço MangaDex temporariamente indisponível (HTTP 503).`);
+            }
+            if (response.status === 502 || response.status >= 500) {
+              throw new HttpError(502, `Falha no provedor externo MangaDex: HTTP ${response.status} ${response.statusText}`);
+            }
+            throw new HttpError(502, `Falha de comunicação com a API MangaDex: HTTP ${response.status}`);
+          }
+
+          const json = await response.json();
+          this.upstreamCooldownUntil = 0;
+          return json;
+        } catch (err) {
+          lastError = err;
+          if (err instanceof HttpError && err.status === 404) {
+            throw err;
+          }
+
+          const errMsg = ((err as Error)?.message || '').toLowerCase();
+          const errName = (err as Error)?.name || '';
+          const isHttpTransient =
+            err instanceof HttpError && (err.status === 429 || err.status >= 500);
+          const isNetworkTransient =
+            errName === 'AbortError' ||
+            errMsg.includes('terminated') ||
+            errMsg.includes('socket') ||
+            errMsg.includes('econnreset') ||
+            errMsg.includes('etimedout') ||
+            errMsg.includes('enotfound') ||
+            errMsg.includes('fetch failed');
+
+          if (attempt < maxRetries && (isHttpTransient || isNetworkTransient)) {
+            const backoffMs = 350 * (attempt + 1) + Math.floor(Math.random() * 150);
+            await new Promise(r => setTimeout(r, backoffMs));
+            continue;
+          }
+
+          if (residentialRelayService.isRelayReady()) {
+            try {
+              const relayed = await residentialRelayService.fetchThroughRelay(url, {
+                headers: {
+                  'User-Agent': 'MangaReader-App/1.0.0 (https://github.com/aistudio-build)',
+                  'Accept': 'application/json'
+                },
+                responseType: 'text'
+              });
+              if (relayed.ok && relayed.bodyText) {
+                const parsed = JSON.parse(relayed.bodyText);
+                this.upstreamCooldownUntil = 0;
+                return parsed;
+              }
+            } catch {
+              // Ignore relay error and fall through to normalized HttpError
+            }
+          }
+
+          if (err instanceof HttpError) {
+            if (err.status >= 500 || err.status === 429) {
+              this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+            }
+            throw err;
+          }
+
+          this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+          if (errName === 'AbortError') {
+            throw new HttpError(504, 'Tempo limite de comunicação esgotado com a API MangaDex (Gateway Timeout).');
+          }
+          throw new HttpError(502, `Erro ao conectar com a API MangaDex: ${(err as Error).message}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      throw lastError;
+    })();
+
+    this.inFlightJson.set(url, task);
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'MangaReader-App/1.0.0 (https://github.com/aistudio-build)'
-        }
-      });
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new HttpError(404, `Recurso não encontrado na API MangaDex (HTTP 404).`);
-        }
-        if (response.status === 429) {
-          throw new HttpError(429, `Limite de requisições excedido na API MangaDex (Rate limit 429). Aguarde alguns instantes.`);
-        }
-        if (response.status === 503) {
-          throw new HttpError(503, `Serviço MangaDex temporariamente indisponível (HTTP 503).`);
-        }
-        if (response.status === 502 || response.status >= 500) {
-          throw new HttpError(502, `Falha no provedor externo MangaDex: HTTP ${response.status} ${response.statusText}`);
-        }
-        throw new HttpError(502, `Falha de comunicação com a API MangaDex: HTTP ${response.status}`);
-      }
-      return await response.json();
-    } catch (err) {
-      if (err instanceof HttpError) throw err;
-      if ((err as Error).name === 'AbortError') {
-        throw new HttpError(504, 'Tempo limite de comunicação esgotado com a API MangaDex (Gateway Timeout).');
-      }
-      throw new HttpError(502, `Erro ao conectar com a API MangaDex: ${(err as Error).message}`);
+      return await task;
     } finally {
-      clearTimeout(timeout);
+      this.inFlightJson.delete(url);
     }
   }
 
@@ -469,15 +578,36 @@ export class MangaDexProvider implements IMangaSource {
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
-    try {
-      const limit = Math.min(options?.limit || 24, 60);
-      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
-      const orderParam = query.trim() ? 'order[relevance]=desc' : 'order[followedCount]=desc';
+    const limit = Math.min(options?.limit || 24, 60);
+    const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+    const requestedTagList = [
+      ...(options?.genre && options.genre !== 'all' ? [options.genre] : []),
+      ...(Array.isArray(options?.genres) ? options.genres : [])
+    ];
+    const cacheKey = [
+      (query || '').trim().toLowerCase(),
+      requestedTagList.map(g => g.toLowerCase()).sort().join(','),
+      options?.demographic || '',
+      options?.status || '',
+      options?.type || '',
+      options?.language || '',
+      limit,
+      offset,
+      Boolean(options?.includeAdult),
+      Boolean(options?.onlyAvailable)
+    ].join('|');
 
-      const requestedTagList = [
-        ...(options?.genre && options.genre !== 'all' ? [options.genre] : []),
-        ...(Array.isArray(options?.genres) ? options.genres : [])
-      ];
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : { mangaList: [], total: 0, hasMore: false };
+    }
+
+    try {
+      const orderParam = query.trim() ? 'order[relevance]=desc' : 'order[followedCount]=desc';
       const wantsSuggestiveOnly = requestedTagList.some(g => g.toLowerCase() === 'ecchi');
 
       const ratingsQuery = options?.includeAdult
@@ -487,7 +617,7 @@ export class MangaDexProvider implements IMangaSource {
         : 'contentRating[]=safe&contentRating[]=suggestive';
       const availableParam = options?.onlyAvailable !== false ? '&hasAvailableChapters=true' : '';
       let url = `${this.baseUrl}/manga?limit=${limit}&offset=${offset}&includes[]=cover_art&includes[]=author&includes[]=artist&${ratingsQuery}&${orderParam}${availableParam}`;
-      
+
       let effectiveQuery = query.trim();
       if (!effectiveQuery && options?.genres) {
         for (const g of options.genres) {
@@ -525,8 +655,6 @@ export class MangaDexProvider implements IMangaSource {
         if (['shounen', 'shoujo', 'seinen', 'josei'].includes(demo)) {
           url += `&publicationDemographic[]=${encodeURIComponent(demo)}`;
         }
-      } else if (options?.protagonist === 'female' && !effectiveQuery && tagsToInclude.size === 0) {
-        url += '&publicationDemographic[]=shoujo&publicationDemographic[]=josei';
       }
 
       if (options?.status && options.status !== 'all') {
@@ -574,21 +702,32 @@ export class MangaDexProvider implements IMangaSource {
         mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
       }
 
-      return {
+      const result: SourceSearchResult = {
         mangaList,
         total: res.total || mangaList.length,
         hasMore: (offset + limit) < (res.total || 0)
       };
+      this.setBoundedCache(this.searchCache, cacheKey, result);
+      return result;
     } catch (err) {
-      console.warn(`[MangaDexProvider] search failed:`, (err as Error).message);
-      return { mangaList: [], total: 0, hasMore: false };
+      this.logUpstreamUnavailable('search', err);
+      return cached ? cached.data : { mangaList: [], total: 0, hasMore: false };
     }
   }
 
   async getPopular(options?: SourceSearchOptions): Promise<Manga[]> {
+    const limit = Math.min(options?.limit || 24, 60);
+    const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+    const cacheKey = `${options?.genre || 'all'}|${limit}|${offset}|${Boolean(options?.includeAdult)}|${Boolean(options?.onlyAvailable)}`;
+    const cached = this.popularCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.POPULAR_CACHE_TTL_MS) {
+      return cached.data;
+    }
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : [];
+    }
+
     try {
-      const limit = Math.min(options?.limit || 24, 60);
-      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
       const ratingsQuery = options?.includeAdult
         ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
         : 'contentRating[]=safe&contentRating[]=suggestive';
@@ -614,17 +753,27 @@ export class MangaDexProvider implements IMangaSource {
         mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
       }
 
+      this.setBoundedCache(this.popularCache, cacheKey, mangaList, 60);
       return mangaList;
     } catch (err) {
-      console.warn(`[MangaDexProvider] getPopular failed:`, (err as Error).message);
-      return [];
+      this.logUpstreamUnavailable('getPopular', err);
+      return cached ? cached.data : [];
     }
   }
 
   async getLatest(options?: SourceSearchOptions): Promise<Manga[]> {
+    const limit = Math.min(options?.limit || 24, 60);
+    const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
+    const cacheKey = `${options?.genre || 'all'}|${limit}|${offset}|${Boolean(options?.includeAdult)}|${Boolean(options?.onlyAvailable)}`;
+    const cached = this.latestCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL_MS) {
+      return cached.data;
+    }
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : [];
+    }
+
     try {
-      const limit = Math.min(options?.limit || 24, 60);
-      const offset = options?.offset || (options?.page ? (options.page - 1) * limit : 0);
       const ratingsQuery = options?.includeAdult
         ? 'contentRating[]=safe&contentRating[]=suggestive&contentRating[]=erotica&contentRating[]=pornographic'
         : 'contentRating[]=safe&contentRating[]=suggestive';
@@ -650,10 +799,11 @@ export class MangaDexProvider implements IMangaSource {
         mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
       }
 
+      this.setBoundedCache(this.latestCache, cacheKey, mangaList, 60);
       return mangaList;
     } catch (err) {
-      console.warn(`[MangaDexProvider] getLatest failed:`, (err as Error).message);
-      return [];
+      this.logUpstreamUnavailable('getLatest', err);
+      return cached ? cached.data : [];
     }
   }
 

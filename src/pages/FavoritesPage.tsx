@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Bookmark,
   BookOpen,
@@ -57,6 +57,7 @@ import {
 import { ExtensionService, FALLBACK_SOURCES_META } from '../services/extensionService.js';
 
 interface FavoritesPageProps {
+  isActive?: boolean;
   onSelectManga: (mangaId: string) => void;
   onReadChapter?: (mangaId: string, chapterId: string) => void;
   onNavigateToCatalog: () => void;
@@ -71,7 +72,378 @@ const CATEGORY_LABELS: Record<LibraryCategory, { label: string; color: string; b
   dropped: { label: 'Abandonado', color: 'text-zinc-500', badgeBg: 'bg-zinc-800/40 border-zinc-700/30' }
 };
 
+const FAVORITES_PAGE_BATCH = 60;
+
+interface FavoriteListRowProps {
+  fav: FavoriteManga;
+  updateInfo?: MangaUpdateInfo;
+  progress?: ReadingProgress;
+  isBatchMode: boolean;
+  isSelected: boolean;
+  onToggleBatchSelect: (mangaId: string) => void;
+  onSelectManga: (mangaId: string) => void;
+  onChangeCategory: (mangaId: string, category: LibraryCategory) => void;
+  onOpenScoreModal: (e: React.MouseEvent, fav: FavoriteManga) => void;
+  onOpenTrackers: (id?: string, title?: string) => void;
+  onOpenCollections: (fav: FavoriteManga) => void;
+  onQuickRead: (mangaId: string) => void;
+  onRemove: (e: React.MouseEvent, mangaId: string) => void;
+}
+
+const FavoriteListRow = React.memo<FavoriteListRowProps>(({
+  fav,
+  updateInfo,
+  progress,
+  isBatchMode,
+  isSelected,
+  onToggleBatchSelect,
+  onSelectManga,
+  onChangeCategory,
+  onOpenScoreModal,
+  onOpenTrackers,
+  onOpenCollections,
+  onQuickRead,
+  onRemove
+}) => {
+  const currentCat = fav.userCategory || 'reading';
+
+  return (
+    <tr
+      onClick={() => (isBatchMode ? onToggleBatchSelect(fav.mangaId) : onSelectManga(fav.mangaId))}
+      className={`group transition-colors cursor-pointer ${
+        isSelected ? 'bg-rose-950/25 hover:bg-rose-950/35' : 'hover:bg-zinc-850/50'
+      }`}
+    >
+      {isBatchMode && (
+        <td
+          className="py-3 px-3 text-center"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleBatchSelect(fav.mangaId);
+          }}
+        >
+          {isSelected ? (
+            <CheckSquare className="h-4 w-4 text-rose-500 inline-block" />
+          ) : (
+            <Square className="h-4 w-4 text-zinc-600 group-hover:text-zinc-400 inline-block" />
+          )}
+        </td>
+      )}
+      {/* Cover + Title + Authors */}
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
+            <img
+              src={fav.coverUrl}
+              alt={fav.title}
+              className="w-full h-full object-cover"
+              loading="lazy"
+              decoding="async"
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
+                {fav.title}
+              </span>
+              {updateInfo?.hasNew && (
+                <span className="shrink-0 px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[9px] font-bold font-mono">
+                  Novo c.{updateInfo.latestChapterNumber}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
+              {fav.authors?.join(', ') || 'Autor'}
+            </p>
+            {fav.customCollections && fav.customCollections.length > 0 && (
+              <div className="flex items-center gap-1 mt-1">
+                {fav.customCollections.slice(0, 2).map((c) => (
+                  <span
+                    key={c}
+                    className="text-[9px] text-zinc-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.2 rounded font-sans"
+                  >
+                    📁 {c}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </td>
+
+      {/* Status Category */}
+      <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+        <select
+          value={currentCat}
+          onChange={(e) => onChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
+          className="bg-zinc-950/80 border border-zinc-800 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-200 focus:outline-none focus:border-rose-500 cursor-pointer"
+        >
+          <option value="reading">Lendo</option>
+          <option value="plan_to_read">Quero Ler</option>
+          <option value="completed">Completo</option>
+          <option value="on_hold">Pausado</option>
+          <option value="dropped">Abandonado</option>
+        </select>
+      </td>
+
+      {/* Reading Progress */}
+      <td className="py-3 px-3">
+        <div className="font-mono tabular-nums">
+          {progress?.chapterNumber ? (
+            <span className="text-rose-400 font-semibold">Cap. {progress.chapterNumber}</span>
+          ) : (
+            <span className="text-zinc-500">Não iniciado</span>
+          )}
+          {updateInfo?.latestChapterNumber && (
+            <div className="text-[10px] text-zinc-500">Total: {updateInfo.latestChapterNumber}</div>
+          )}
+        </div>
+      </td>
+
+      {/* User Rating Score */}
+      <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+        <button
+          onClick={(e) => onOpenScoreModal(e, fav)}
+          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-950/80 border border-zinc-800 hover:border-amber-500/50 text-xs text-amber-400 font-mono cursor-pointer"
+        >
+          <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+          <span>{fav.userScore ? `${fav.userScore}/10` : 'Avaliar'}</span>
+        </button>
+      </td>
+
+      {/* External Tracker Badge */}
+      <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+        <TrackerStatusBadge
+          mangaId={fav.mangaId}
+          mangaTitle={fav.title}
+          size="sm"
+          showLabel={true}
+          onOpenTrackers={onOpenTrackers}
+        />
+      </td>
+
+      {/* Quick Actions */}
+      <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-1.5">
+          <button
+            onClick={() => onOpenCollections(fav)}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+            title="Gerenciar Categorias (Mihon)"
+          >
+            <Folder className="h-3.5 w-3.5 text-rose-400" />
+          </button>
+
+          <button
+            onClick={() => onQuickRead(fav.mangaId)}
+            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+            title="Continuar leitura"
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Ler</span>
+          </button>
+
+          <button
+            onClick={(e) => onRemove(e, fav.mangaId)}
+            className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
+            title="Remover dos favoritos"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+interface FavoriteGridCardProps {
+  fav: FavoriteManga;
+  cardManga: Manga;
+  updateInfo?: MangaUpdateInfo;
+  progress?: ReadingProgress;
+  isBatchMode: boolean;
+  isSelected: boolean;
+  onToggleBatchSelect: (mangaId: string) => void;
+  onSelectManga: (mangaId: string) => void;
+  onQuickRead: (mangaId: string) => void;
+  onOpenTrackers: (id?: string, title?: string) => void;
+  onReadNewChapter: (mangaId: string, chapterId: string) => void;
+  onChangeCategory: (mangaId: string, category: LibraryCategory) => void;
+  onOpenScoreModal: (e: React.MouseEvent, fav: FavoriteManga) => void;
+  onOpenCollections: (fav: FavoriteManga) => void;
+  onRemove: (e: React.MouseEvent, mangaId: string) => void;
+  onFilterByCollection: (col: string) => void;
+}
+
+const FavoriteGridCard = React.memo<FavoriteGridCardProps>(({
+  fav,
+  cardManga,
+  updateInfo,
+  progress,
+  isBatchMode,
+  isSelected,
+  onToggleBatchSelect,
+  onSelectManga,
+  onQuickRead,
+  onOpenTrackers,
+  onReadNewChapter,
+  onChangeCategory,
+  onOpenScoreModal,
+  onOpenCollections,
+  onRemove,
+  onFilterByCollection
+}) => {
+  const currentCat = fav.userCategory || 'reading';
+  const catMeta = CATEGORY_LABELS[currentCat] || CATEGORY_LABELS.reading;
+
+  return (
+    <div
+      onClick={isBatchMode ? () => onToggleBatchSelect(fav.mangaId) : undefined}
+      className={`manga-card-grid-item group relative flex flex-col min-w-0 rounded-xl transition-colors ${
+        isBatchMode
+          ? isSelected
+            ? 'ring-2 ring-rose-500 shadow-lg shadow-rose-950/40 bg-rose-950/15 p-1 cursor-pointer'
+            : 'hover:ring-1 hover:ring-zinc-650 cursor-pointer p-1'
+          : ''
+      }`}
+    >
+      <div className="relative">
+        {isBatchMode && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleBatchSelect(fav.mangaId);
+            }}
+            className="absolute top-2 left-2 z-30 p-1.5 rounded-lg bg-zinc-950/95 border border-zinc-700 shadow-xl cursor-pointer transition-colors"
+            title={isSelected ? 'Desmarcar obra' : 'Selecionar obra'}
+          >
+            {isSelected ? (
+              <CheckSquare className="h-4 w-4 text-rose-500 fill-rose-500/20" />
+            ) : (
+              <Square className="h-4 w-4 text-zinc-400" />
+            )}
+          </button>
+        )}
+
+        <MangaCard
+          manga={cardManga}
+          onSelect={isBatchMode ? onToggleBatchSelect : onSelectManga}
+          onQuickRead={isBatchMode ? undefined : onQuickRead}
+          hideBookmarkButton={isBatchMode}
+          showTrackerStatus={!isBatchMode}
+          onOpenTrackers={onOpenTrackers}
+        />
+      </div>
+
+      {/* Category Status, Score & Progress underneath card (zero overlay collision) */}
+      <div className="mt-2 flex flex-col gap-1.5 px-0.5 min-w-0">
+        {updateInfo?.hasNew && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onReadNewChapter(fav.mangaId, updateInfo.latestChapterId);
+            }}
+            className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-[10px] font-bold transition-colors cursor-pointer"
+            title={`Novo capítulo disponível: Cap. ${updateInfo.latestChapterNumber}. Clique para ler!`}
+          >
+            <Sparkles className="h-3 w-3 text-rose-400 shrink-0" />
+            <span className="truncate">Novo Cap. {updateInfo.latestChapterNumber}</span>
+          </button>
+        )}
+
+        <div className="flex items-center justify-between gap-1 min-w-0">
+          <select
+            value={currentCat}
+            onChange={(e) => onChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
+            className={`text-[10px] font-semibold px-1.5 sm:px-2 py-1 rounded border ${catMeta.badgeBg} ${catMeta.color} bg-zinc-950 cursor-pointer focus:outline-none min-w-0 truncate`}
+            title="Alterar status de leitura"
+          >
+            <option value="reading" className="bg-zinc-900 text-rose-300">Lendo</option>
+            <option value="plan_to_read" className="bg-zinc-900 text-sky-300">Quero Ler</option>
+            <option value="completed" className="bg-zinc-900 text-emerald-300">Completo</option>
+            <option value="on_hold" className="bg-zinc-900 text-amber-300">Pausado</option>
+            <option value="dropped" className="bg-zinc-900 text-zinc-400">Abandonado</option>
+          </select>
+
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              type="button"
+              onClick={(e) => onOpenScoreModal(e, fav)}
+              title={fav.userScore ? `Minha nota: ${fav.userScore}/10 (clique para editar)` : 'Avaliar esta obra (1-10)'}
+              className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                fav.userScore
+                  ? 'text-amber-400 bg-amber-500/10 border border-amber-500/30 font-bold'
+                  : 'text-zinc-500 hover:text-amber-400 hover:bg-zinc-900'
+              }`}
+            >
+              <Star className={`h-3 w-3 ${fav.userScore ? 'fill-amber-400' : ''}`} />
+              {fav.userScore ? <span>{fav.userScore}</span> : null}
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenCollections(fav);
+              }}
+              title="Gerenciar pastas desta obra"
+              className={`p-1 rounded transition-colors cursor-pointer ${
+                fav.customCollections && fav.customCollections.length > 0
+                  ? 'text-rose-400 hover:text-rose-300 bg-rose-500/10'
+                  : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
+              }`}
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => onRemove(e, fav.mangaId)}
+              title="Remover dos favoritos"
+              className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors cursor-pointer"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {fav.customCollections && fav.customCollections.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            {fav.customCollections.map((col) => (
+              <span
+                key={col}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFilterByCollection(col);
+                }}
+                className="px-1.5 py-0.2 rounded text-[9px] bg-zinc-800 text-rose-300 border border-rose-500/20 font-medium truncate max-w-[100px] cursor-pointer hover:border-rose-500/50"
+                title={`Filtrar pela pasta "${col}"`}
+              >
+                📁 {col}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {progress && (
+          <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono gap-1">
+            <span className="flex items-center gap-1 truncate">
+              <Clock className="h-2.5 w-2.5 text-rose-400/80 shrink-0" />
+              <span>Lido: c.{progress.chapterNumber}</span>
+            </span>
+            {updateInfo?.latestChapterNumber && (
+              <span className="text-zinc-500 shrink-0">/{updateInfo.latestChapterNumber}</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export const FavoritesPage: React.FC<FavoritesPageProps> = ({
+  isActive = true,
   onSelectManga,
   onReadChapter,
   onNavigateToCatalog,
@@ -79,9 +451,17 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 }) => {
   const { user, syncStatus, lastSynced, loginWithGoogle, syncNow } = useAuth();
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
-  const [favorites, setFavorites] = useState<FavoriteManga[]>([]);
+  const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
+  const [historyItems, setHistoryItems] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const dirtyFlagsRef = useRef({
+    history: false,
+    updates: false,
+    offline: false
+  });
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [offlineChaptersCount, setOfflineChaptersCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
+  const [offlineChaptersCount, setOfflineChaptersCount] = useState<number>(() => OfflineCacheService.getSavedChapterIds().length);
   const [pageBookmarksCount, setPageBookmarksCount] = useState<number>(() => HistoryService.getPageBookmarks().length);
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
   const [showTrackersModal, setShowTrackersModal] = useState(false);
@@ -175,21 +555,53 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   };
 
   useEffect(() => {
-    // Initial load
-    setFavorites(HistoryService.getFavorites());
-    setCustomCollections(HistoryService.getCustomCollections());
-    setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
-    setPageBookmarksCount(HistoryService.getPageBookmarks().length);
-    setUpdatesMap(UpdateTrackerService.getStoredUpdates());
+    if (!isActive) return;
+    if (dirtyFlagsRef.current.history) {
+      dirtyFlagsRef.current.history = false;
+      const nextFavs = HistoryService.getFavorites();
+      const nextHist = HistoryService.getHistory();
+      const nextCols = HistoryService.getCustomCollections();
+      const nextBmCount = HistoryService.getPageBookmarks().length;
+      setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
+      setHistoryItems(prev => (prev === nextHist ? prev : nextHist));
+      setCustomCollections(prev => (prev === nextCols ? prev : nextCols));
+      setPageBookmarksCount(prev => (prev === nextBmCount ? prev : nextBmCount));
+    }
+    if (dirtyFlagsRef.current.updates) {
+      dirtyFlagsRef.current.updates = false;
+      setUpdatesMap(UpdateTrackerService.getStoredUpdates());
+      setIsCheckingUpdates(UpdateTrackerService.isChecking());
+      setUpdateCheckProgress(UpdateTrackerService.getProgress());
+      setNotificationsEnabled(UpdateTrackerService.isNotificationsEnabled());
+    }
+    if (dirtyFlagsRef.current.offline) {
+      dirtyFlagsRef.current.offline = false;
+      setOfflineChaptersCount(OfflineCacheService.getSavedChapterIds().length);
+    }
+  }, [isActive]);
 
-    // Subscribe to real-time changes
+  useEffect(() => {
+    // Subscribe to real-time changes (deferring work when hidden in background tab)
     const unsubscribeHistory = HistoryService.subscribe(() => {
-      setFavorites(HistoryService.getFavorites());
-      setCustomCollections(HistoryService.getCustomCollections());
-      setPageBookmarksCount(HistoryService.getPageBookmarks().length);
-    });
+      if (!isActiveRef.current) {
+        dirtyFlagsRef.current.history = true;
+        return;
+      }
+      const nextFavs = HistoryService.getFavorites();
+      const nextHist = HistoryService.getHistory();
+      const nextCols = HistoryService.getCustomCollections();
+      const nextBmCount = HistoryService.getPageBookmarks().length;
+      setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
+      setHistoryItems(prev => (prev === nextHist ? prev : nextHist));
+      setCustomCollections(prev => (prev === nextCols ? prev : nextCols));
+      setPageBookmarksCount(prev => (prev === nextBmCount ? prev : nextBmCount));
+    }, ['favorites', 'collections', 'pageBookmarks', 'history']);
 
     const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
+      if (!isActiveRef.current) {
+        dirtyFlagsRef.current.updates = true;
+        return;
+      }
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
       setIsCheckingUpdates(UpdateTrackerService.isChecking());
       setUpdateCheckProgress(UpdateTrackerService.getProgress());
@@ -197,7 +609,11 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     });
 
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
-      setOfflineChaptersCount(OfflineCacheService.getAllSavedChapters().length);
+      if (!isActiveRef.current) {
+        dirtyFlagsRef.current.offline = true;
+        return;
+      }
+      setOfflineChaptersCount(OfflineCacheService.getSavedChapterIds().length);
     });
 
     let active = true;
@@ -223,36 +639,38 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     };
   }, []);
 
-  // Quietly resolve missing altTitles once per mangaId in session so cross-language duplicates
-  // (including zero-shared-word EN/JP pairs and Firestore-synced items) are surfaced automatically.
+  // Quietly resolve missing altTitles in background chunks so cross-language duplicates
+  // across libraries of any size (e.g. 95+ items) are surfaced automatically when Favorites tab is active.
   const attemptedResolveIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (favorites.length < 2) return;
+    if (!isActive || favorites.length < 2) return;
     const missing = favorites.filter(
       f => (!f.altTitles || f.altTitles.length === 0) && !attemptedResolveIdsRef.current.has(f.mangaId)
     );
     if (missing.length === 0) return;
 
-    const batch = missing.slice(0, 30);
-    batch.forEach(f => attemptedResolveIdsRef.current.add(f.mangaId));
-
     let cancelled = false;
-    MangaApi.resolveLibraryTitles(batch.map(f => ({ mangaId: f.mangaId, title: f.title })))
-      .then(resolved => {
+    (async () => {
+      for (let i = 0; i < missing.length; i += 30) {
         if (cancelled) return;
-        const changed = HistoryService.enrichFavoritesMetadata(resolved);
-        if (changed) {
-          setFavorites(HistoryService.getFavorites());
+        const batch = missing.slice(i, i + 30);
+        batch.forEach(f => attemptedResolveIdsRef.current.add(f.mangaId));
+        try {
+          const resolved = await MangaApi.resolveLibraryTitles(
+            batch.map(f => ({ mangaId: f.mangaId, title: f.title }))
+          );
+          if (cancelled) return;
+          HistoryService.enrichFavoritesMetadata(resolved);
+        } catch {
+          // Non-critical background enrichment
         }
-      })
-      .catch(() => {
-        // Non-critical background enrichment
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [favorites]);
+  }, [isActive, favorites]);
 
   const handleExport = () => {
     HistoryService.downloadBackupFile();
@@ -411,21 +829,38 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     }
   };
 
-  const handleRemove = (e: React.MouseEvent, mangaId: string) => {
+  const handleRemove = useCallback((e: React.MouseEvent, mangaId: string) => {
     e.stopPropagation();
     HistoryService.removeFavorite(mangaId);
-  };
+  }, []);
 
-  const handleChangeCategory = (mangaId: string, category: LibraryCategory) => {
+  const handleChangeCategory = useCallback((mangaId: string, category: LibraryCategory) => {
     HistoryService.updateFavoriteCategory(mangaId, category);
-  };
+  }, []);
 
-  const openScoreModal = (e: React.MouseEvent, fav: FavoriteManga) => {
+  const openScoreModal = useCallback((e: React.MouseEvent, fav: FavoriteManga) => {
     e.stopPropagation();
     setEditingScoreManga(fav);
     setModalScore(fav.userScore || 10);
     setModalNotes(fav.userNotes || '');
-  };
+  }, []);
+
+  const handleOpenCollectionsModal = useCallback((fav: FavoriteManga) => {
+    setManagingCollectionsManga(fav);
+  }, []);
+
+  const handleFilterByCollection = useCallback((col: string) => {
+    setSelectedCustomCollection(col);
+  }, []);
+
+  const handleReadNewChapter = useCallback((mangaId: string, chapterId: string) => {
+    UpdateTrackerService.markMangaUpdateAsSeen(mangaId);
+    if (onReadChapter) {
+      onReadChapter(mangaId, chapterId);
+    } else {
+      onSelectManga(mangaId);
+    }
+  }, [onReadChapter, onSelectManga]);
 
   const handleSaveScoreModal = () => {
     if (!editingScoreManga) return;
@@ -478,14 +913,17 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     HistoryService.toggleMangaInCollection(mangaId, collectionName);
     setFavorites(HistoryService.getFavorites());
     if (managingCollectionsManga && managingCollectionsManga.mangaId === mangaId) {
-      const updated = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+      const updated = HistoryService.getFavoriteById(mangaId) || null;
       setManagingCollectionsManga(updated);
     }
   };
 
-  const handleQuickRead = async (mangaId: string) => {
+  const updatesMapRef = useRef(updatesMap);
+  updatesMapRef.current = updatesMap;
+
+  const handleQuickRead = useCallback(async (mangaId: string) => {
     // If an unread chapter was found via update tracker, prioritize reading it
-    const update = updatesMap[mangaId];
+    const update = updatesMapRef.current[mangaId];
     if (update?.hasNew && update.latestChapterId && onReadChapter) {
       UpdateTrackerService.markMangaUpdateAsSeen(mangaId);
       onReadChapter(mangaId, update.latestChapterId);
@@ -509,7 +947,12 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     } catch {
       onSelectManga(mangaId);
     }
-  };
+  }, [onReadChapter, onSelectManga]);
+
+  const handleOpenTrackers = useCallback((id?: string, title?: string) => {
+    setSelectedTrackerManga({ id, title });
+    setShowTrackersModal(true);
+  }, []);
 
   const handleCheckUpdates = async () => {
     if (isCheckingUpdates || favorites.length === 0) return;
@@ -543,11 +986,11 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   };
 
   // Batch Selection Handlers
-  const handleToggleBatchSelect = (mangaId: string) => {
+  const handleToggleBatchSelect = useCallback((mangaId: string) => {
     setSelectedMangaIds(prev =>
       prev.includes(mangaId) ? prev.filter(id => id !== mangaId) : [...prev, mangaId]
     );
-  };
+  }, []);
 
   const handleSelectAllFiltered = () => {
     const allFilteredIds = filteredFavorites.map(f => f.mangaId);
@@ -600,100 +1043,189 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     setTimeout(() => setNotification(null), 3500);
   };
 
-  // Convert FavoriteManga to lightweight Manga for MangaCard rendering without API calls
-  const mapFavoriteToManga = (fav: FavoriteManga): Manga => {
-    const inferredSourceId = extractFavoriteSourceId(fav);
-    const matchedSource = sourcesList.find(s => s.id === inferredSourceId);
-    return {
-      id: fav.mangaId,
-      title: fav.title,
-      altTitles: fav.altTitles || [],
-      coverUrl: fav.coverUrl,
-      synopsis: '',
-      authors: fav.authors && fav.authors.length > 0 ? fav.authors : ['Coleção'],
-      artists: [],
-      genres: fav.genres && fav.genres.length > 0 ? fav.genres : ['Favorito'],
-      status: fav.status || 'ongoing',
-      publicationInfo: {},
-      sources: [
-        {
-          sourceId: inferredSourceId,
-          externalId: '',
-          sourceName: fav.sourceName || matchedSource?.name || (inferredSourceId !== 'unknown' ? inferredSourceId : 'Manga')
-        }
-      ],
-      rating: fav.rating,
-      updatedAt: new Date(fav.updatedAt).toISOString()
-    };
-  };
+  // Pre-build lightweight Manga objects once per favorites/sources change so filter/sort/hover renders don't allocate new objects per card
+  const mappedFavoritesById = useMemo(() => {
+    const sourcesById = new Map(sourcesList.map(s => [s.id, s]));
+    const result = new Map<string, Manga>();
+    for (const fav of favorites) {
+      const inferredSourceId = extractFavoriteSourceId(fav);
+      const matchedSource = sourcesById.get(inferredSourceId);
+      result.set(fav.mangaId, {
+        id: fav.mangaId,
+        title: fav.title,
+        altTitles: fav.altTitles || [],
+        coverUrl: fav.coverUrl,
+        synopsis: '',
+        authors: fav.authors && fav.authors.length > 0 ? fav.authors : ['Coleção'],
+        artists: [],
+        genres: fav.genres && fav.genres.length > 0 ? fav.genres : ['Favorito'],
+        status: fav.status || 'ongoing',
+        publicationInfo: {},
+        sources: [
+          {
+            sourceId: inferredSourceId,
+            externalId: '',
+            sourceName: fav.sourceName || matchedSource?.name || (inferredSourceId !== 'unknown' ? inferredSourceId : 'Manga')
+          }
+        ],
+        rating: fav.rating,
+        updatedAt: new Date(fav.updatedAt).toISOString()
+      });
+    }
+    return result;
+  }, [favorites, sourcesList]);
 
-  // Category counts
-  const categoryCounts = {
-    all: favorites.length,
-    reading: favorites.filter(f => (f.userCategory || 'reading') === 'reading').length,
-    plan_to_read: favorites.filter(f => f.userCategory === 'plan_to_read').length,
-    completed: favorites.filter(f => f.userCategory === 'completed').length,
-    on_hold: favorites.filter(f => f.userCategory === 'on_hold').length,
-    dropped: favorites.filter(f => f.userCategory === 'dropped').length
-  };
+  const customCollectionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const fav of favorites) {
+      if (!fav.customCollections) continue;
+      for (const col of fav.customCollections) {
+        counts.set(col, (counts.get(col) || 0) + 1);
+      }
+    }
+    return counts;
+  }, [favorites]);
+
+  const dynamicSourceOptions = useMemo(() => {
+    const sourceOptionsMap = new Map<string, string>();
+    for (const s of sourcesList) {
+      sourceOptionsMap.set(s.id, s.name.replace(/\s*\(Ao Vivo\)/i, ''));
+    }
+    for (const fav of favorites) {
+      const sid = extractFavoriteSourceId(fav);
+      if (sid !== 'unknown' && !sourceOptionsMap.has(sid)) {
+        sourceOptionsMap.set(sid, fav.sourceName || sid);
+      }
+    }
+    return [
+      { id: 'all', label: 'Todas' },
+      ...Array.from(sourceOptionsMap.entries()).map(([id, label]) => ({ id, label }))
+    ];
+  }, [favorites, sourcesList]);
+
+  const selectedIdsSet = useMemo(() => new Set(selectedMangaIds), [selectedMangaIds]);
+
+  // Category counts (single pass)
+  const categoryCounts = React.useMemo(() => {
+    const counts = {
+      all: favorites.length,
+      reading: 0,
+      plan_to_read: 0,
+      completed: 0,
+      on_hold: 0,
+      dropped: 0
+    };
+    for (const f of favorites) {
+      const cat = f.userCategory || 'reading';
+      if (cat === 'reading') counts.reading++;
+      else if (cat === 'plan_to_read') counts.plan_to_read++;
+      else if (cat === 'completed') counts.completed++;
+      else if (cat === 'on_hold') counts.on_hold++;
+      else if (cat === 'dropped') counts.dropped++;
+    }
+    return counts;
+  }, [favorites]);
 
   // Filter & sort logic
-  const filteredFavorites = favorites
-    .filter((fav) => {
-      // Category filter
-      if (selectedCategory !== 'all') {
-        const cat = fav.userCategory || 'reading';
-        if (cat !== selectedCategory) return false;
-      }
-      // Custom Collection filter
-      if (selectedCustomCollection) {
-        if (!fav.customCollections || !fav.customCollections.includes(selectedCustomCollection)) {
-          return false;
+  const filteredFavorites = React.useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return favorites
+      .filter((fav) => {
+        if (selectedCategory !== 'all') {
+          const cat = fav.userCategory || 'reading';
+          if (cat !== selectedCategory) return false;
         }
-      }
-      // Search term
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        if (!fav.title.toLowerCase().includes(q)) return false;
-      }
-      // Source filter
-      if (selectedSource !== 'all') {
-        const source = extractFavoriteSourceId(fav);
-        if (source !== selectedSource) return false;
-      }
-      // Unread only filter
-      if (filterOnlyUnread) {
-        if (!updatesMap[fav.mangaId]?.hasNew) return false;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      if (sortBy === 'title-asc') {
-        return a.title.localeCompare(b.title);
-      }
-      if (sortBy === 'title-desc') {
-        return b.title.localeCompare(a.title);
-      }
-      if (sortBy === 'score-desc') {
-        return (b.userScore || 0) - (a.userScore || 0);
-      }
-      return (b.updatedAt || 0) - (a.updatedAt || 0);
-    });
+        if (selectedCustomCollection) {
+          if (!fav.customCollections || !fav.customCollections.includes(selectedCustomCollection)) {
+            return false;
+          }
+        }
+        if (q && !fav.title.toLowerCase().includes(q)) return false;
+        if (selectedSource !== 'all') {
+          const source = extractFavoriteSourceId(fav);
+          if (source !== selectedSource) return false;
+        }
+        if (filterOnlyUnread && !updatesMap[fav.mangaId]?.hasNew) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === 'title-asc') {
+          return a.title.localeCompare(b.title);
+        }
+        if (sortBy === 'title-desc') {
+          return b.title.localeCompare(a.title);
+        }
+        if (sortBy === 'score-desc') {
+          return (b.userScore || 0) - (a.userScore || 0);
+        }
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
+  }, [favorites, selectedCategory, selectedCustomCollection, searchQuery, selectedSource, filterOnlyUnread, updatesMap, sortBy]);
 
-  const unreadCount = Object.values(updatesMap).filter(u => u.hasNew).length;
+  const progressByMangaId = useMemo(() => {
+    const map = new Map<string, ReadingProgress>();
+    for (const h of historyItems) {
+      if (h?.mangaId) map.set(h.mangaId, h);
+    }
+    return map;
+  }, [historyItems]);
+
+  const [visibleCount, setVisibleCount] = useState(FAVORITES_PAGE_BATCH);
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setVisibleCount(FAVORITES_PAGE_BATCH);
+  }, [selectedCategory, selectedCustomCollection, searchQuery, selectedSource, filterOnlyUnread, sortBy, libraryViewMode]);
+
+  const visibleFavorites = useMemo(
+    () => (filteredFavorites.length <= visibleCount ? filteredFavorites : filteredFavorites.slice(0, visibleCount)),
+    [filteredFavorites, visibleCount]
+  );
+  const hasMoreFavorites = visibleCount < filteredFavorites.length;
+
+  useEffect(() => {
+    if (!isActive || !hasMoreFavorites) return;
+    const node = loadMoreSentinelRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some(e => e.isIntersecting)) {
+          setVisibleCount(prev => prev + FAVORITES_PAGE_BATCH);
+        }
+      },
+      { rootMargin: '400px 0px' }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [isActive, hasMoreFavorites, visibleCount, libraryViewMode]);
+
+  const favIdSet = React.useMemo(() => new Set(favorites.map(f => f.mangaId)), [favorites]);
+  const unreadCount = React.useMemo(
+    () => Object.values(updatesMap).filter(u => u?.hasNew && favIdSet.has(u.mangaId)).length,
+    [updatesMap, favIdSet]
+  );
+
+  // Only re-run O(N^2) duplicate detection when titles/IDs/altTitles actually change (not on rating, category, or folder edits)
+  const favoritesRef = useRef(favorites);
+  favoritesRef.current = favorites;
+  const favIdentitySignature = useMemo(
+    () => favorites.map(f => `${f.mangaId}\u0000${f.title}\u0000${f.altTitles?.join('\u0001') || ''}`).join('\u0002'),
+    [favorites]
+  );
 
   const { duplicateGroupsCount, hasSuspectedDuplicates } = React.useMemo(() => {
-    if (favorites.length < 2) {
+    const currentFavorites = favoritesRef.current;
+    if (!isActive || currentFavorites.length < 2) {
       return { duplicateGroupsCount: 0, hasSuspectedDuplicates: false };
     }
-    const confirmed = detectDuplicateFavoriteGroups(favorites);
+    const confirmed = detectDuplicateFavoriteGroups(currentFavorites);
     const groupedIds = new Set(confirmed.flatMap(g => g.items.map(i => i.mangaId)));
-    const suspects = findSuspectedCandidateIds(favorites, groupedIds);
+    const suspects = findSuspectedCandidateIds(currentFavorites, groupedIds);
     return {
       duplicateGroupsCount: confirmed.length,
       hasSuspectedDuplicates: confirmed.length > 0 || suspects.length >= 2
     };
-  }, [favorites]);
+  }, [isActive, favIdentitySignature]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
@@ -731,7 +1263,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               onClick={handleCheckUpdates}
               disabled={isCheckingUpdates || favorites.length === 0}
               title="Consultar os provedores ao vivo para verificar se há novos capítulos disponíveis"
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all disabled:opacity-50 cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-colors disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isCheckingUpdates ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">{isCheckingUpdates ? 'Verificando...' : 'Verificar Atualizações'}</span>
@@ -780,7 +1312,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             <div className="relative" ref={libraryMenuRef}>
               <button
                 onClick={() => setShowLibraryMenu(!showLibraryMenu)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-medium transition-colors cursor-pointer ${
                   showLibraryMenu
                     ? 'bg-zinc-800 text-white border-zinc-700 shadow-lg'
                     : 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-white border-zinc-800'
@@ -794,7 +1326,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
               {/* Dropdown Menu Popover */}
               {showLibraryMenu && (
-                <div className="absolute right-0 top-11 w-64 max-w-[calc(100vw-1.5rem)] rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 top-11 w-64 max-w-[calc(100vw-1.5rem)] rounded-2xl bg-zinc-950/[0.98] border border-zinc-800 shadow-2xl p-2 z-50 text-xs animate-in fade-in zoom-in-95 duration-150">
                   {/* Section: Sincronização & Rastreamento */}
                   <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-850">
                     Integrações & Alertas
@@ -969,7 +1501,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Checking Updates Progress Banner */}
         {isCheckingUpdates && updateCheckProgress && (
-          <div className="mb-6 p-3 rounded-xl bg-zinc-900/90 border border-rose-500/30 flex items-center gap-3 text-xs text-zinc-200 animate-pulse">
+          <div className="mb-6 p-3 rounded-xl bg-zinc-900/90 border border-rose-500/30 flex items-center gap-3 text-xs text-zinc-200">
             <RefreshCw className="h-4 w-4 text-rose-500 animate-spin shrink-0" />
             <span>{updateCheckProgress}</span>
           </div>
@@ -1085,7 +1617,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     setTimeout(() => setNotification(null), 4000);
                   }
                 }}
-                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-all cursor-pointer"
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-md shadow-rose-950/40 transition-colors cursor-pointer"
               >
                 <svg className="h-3.5 w-3.5" viewBox="0 0 24 24">
                   <path
@@ -1146,7 +1678,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
               <button
                 key={tab.id}
                 onClick={() => setSelectedCategory(tab.id as any)}
-                className={`flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer shrink-0 whitespace-nowrap ${
+                className={`flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
                   selectedCategory === tab.id
                     ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40'
                     : 'bg-zinc-900/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80'
@@ -1183,7 +1715,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </button>
 
             {customCollections.map((colName) => {
-              const count = favorites.filter(f => f.customCollections?.includes(colName)).length;
+              const count = customCollectionCounts.get(colName) || 0;
               const isSelected = selectedCustomCollection === colName;
               return (
                 <div key={colName} className="flex items-center shrink-0">
@@ -1301,7 +1833,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                     setIsBatchMode(next);
                     if (!next) setSelectedMangaIds([]);
                   }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
                     isBatchMode
                       ? 'bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-950/40 font-semibold'
                       : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-300 border-zinc-800 hover:text-white'
@@ -1359,42 +1891,26 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-zinc-800/60 text-xs">
               <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0 sm:flex-wrap">
                 <span className="text-[11px] text-zinc-500 font-medium mr-1 shrink-0">Fonte:</span>
-                {(() => {
-                  const sourceOptionsMap = new Map<string, string>();
-                  sourcesList.forEach(s => {
-                    sourceOptionsMap.set(s.id, s.name.replace(/\s*\(Ao Vivo\)/i, ''));
-                  });
-                  favorites.forEach(fav => {
-                    const sid = extractFavoriteSourceId(fav);
-                    if (sid !== 'unknown' && !sourceOptionsMap.has(sid)) {
-                      sourceOptionsMap.set(sid, fav.sourceName || sid);
-                    }
-                  });
-                  const dynamicSources = [
-                    { id: 'all', label: 'Todas' },
-                    ...Array.from(sourceOptionsMap.entries()).map(([id, label]) => ({ id, label }))
-                  ];
-                  return dynamicSources.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setSelectedSource(s.id)}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
-                        selectedSource === s.id
-                          ? 'bg-rose-600 text-white'
-                          : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ));
-                })()}
+                {dynamicSourceOptions.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setSelectedSource(s.id)}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                      selectedSource === s.id
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
               </div>
 
               {/* Unread toggle pill */}
               {unreadCount > 0 && (
                 <button
                   onClick={() => setFilterOnlyUnread(!filterOnlyUnread)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
                     filterOnlyUnread
                       ? 'bg-rose-500/20 text-rose-300 border border-rose-500/50 shadow-sm shadow-rose-950/40'
                       : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 border border-zinc-800'
@@ -1422,7 +1938,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
             </p>
             <button
               onClick={onNavigateToCatalog}
-              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
+              className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-lg shadow-rose-950/50 transition-colors cursor-pointer"
             >
               <BookOpen className="h-4 w-4" />
               <span>Explorar Catálogo de Mangás</span>
@@ -1477,159 +1993,24 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
-                  {filteredFavorites.map((fav) => {
-                    const updateInfo = updatesMap[fav.mangaId];
-                    const progress = HistoryService.getProgress(fav.mangaId);
-                    const currentCat = fav.userCategory || 'reading';
-                    const isSelected = selectedMangaIds.includes(fav.mangaId);
-
-                    return (
-                      <tr
-                        key={fav.mangaId}
-                        onClick={() => isBatchMode ? handleToggleBatchSelect(fav.mangaId) : onSelectManga(fav.mangaId)}
-                        className={`group transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-rose-950/25 hover:bg-rose-950/35'
-                            : 'hover:bg-zinc-850/50'
-                        }`}
-                      >
-                        {isBatchMode && (
-                          <td className="py-3 px-3 text-center" onClick={(e) => { e.stopPropagation(); handleToggleBatchSelect(fav.mangaId); }}>
-                            {isSelected ? (
-                              <CheckSquare className="h-4 w-4 text-rose-500 inline-block" />
-                            ) : (
-                              <Square className="h-4 w-4 text-zinc-600 group-hover:text-zinc-400 inline-block" />
-                            )}
-                          </td>
-                        )}
-                        {/* Cover + Title + Authors */}
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-14 rounded-lg overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
-                              <img
-                                src={fav.coverUrl}
-                                alt={fav.title}
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                                loading="lazy"
-                              />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-zinc-100 group-hover:text-rose-400 transition-colors line-clamp-1">
-                                  {fav.title}
-                                </span>
-                                {updateInfo?.hasNew && (
-                                  <span className="shrink-0 px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[9px] font-bold font-mono">
-                                    Novo c.{updateInfo.latestChapterNumber}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-[11px] text-zinc-400 line-clamp-1 mt-0.5">
-                                {fav.authors?.join(', ') || 'Autor'}
-                              </p>
-                              {fav.customCollections && fav.customCollections.length > 0 && (
-                                <div className="flex items-center gap-1 mt-1">
-                                  {fav.customCollections.slice(0, 2).map(c => (
-                                    <span key={c} className="text-[9px] text-zinc-400 bg-zinc-900 border border-zinc-800 px-1.5 py-0.2 rounded font-sans">
-                                      📁 {c}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Status Category */}
-                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                          <select
-                            value={currentCat}
-                            onChange={(e) => handleChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
-                            className="bg-zinc-950/80 border border-zinc-800 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-200 focus:outline-none focus:border-rose-500 cursor-pointer"
-                          >
-                            <option value="reading">Lendo</option>
-                            <option value="plan_to_read">Quero Ler</option>
-                            <option value="completed">Completo</option>
-                            <option value="on_hold">Pausado</option>
-                            <option value="dropped">Abandonado</option>
-                          </select>
-                        </td>
-
-                        {/* Reading Progress */}
-                        <td className="py-3 px-3">
-                          <div className="font-mono tabular-nums">
-                            {progress?.chapterNumber ? (
-                              <span className="text-rose-400 font-semibold">
-                                Cap. {progress.chapterNumber}
-                              </span>
-                            ) : (
-                              <span className="text-zinc-500">Não iniciado</span>
-                            )}
-                            {updateInfo?.latestChapterNumber && (
-                              <div className="text-[10px] text-zinc-500">
-                                Total: {updateInfo.latestChapterNumber}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* User Rating Score */}
-                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={(e) => openScoreModal(e, fav)}
-                            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-950/80 border border-zinc-800 hover:border-amber-500/50 text-xs text-amber-400 font-mono cursor-pointer"
-                          >
-                            <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
-                            <span>{fav.userScore ? `${fav.userScore}/10` : 'Avaliar'}</span>
-                          </button>
-                        </td>
-
-                        {/* External Tracker Badge */}
-                        <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
-                          <TrackerStatusBadge
-                            mangaId={fav.mangaId}
-                            mangaTitle={fav.title}
-                            size="sm"
-                            showLabel={true}
-                            onOpenTrackers={(id?: string, title?: string) => {
-                              setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
-                              setShowTrackersModal(true);
-                            }}
-                          />
-                        </td>
-
-                        {/* Quick Actions */}
-                        <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              onClick={() => setManagingCollectionsManga(fav)}
-                              className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
-                              title="Gerenciar Categorias (Mihon)"
-                            >
-                              <Folder className="h-3.5 w-3.5 text-rose-400" />
-                            </button>
-
-                            <button
-                              onClick={() => handleQuickRead(fav.mangaId)}
-                              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
-                              title="Continuar leitura"
-                            >
-                              <BookOpen className="h-3.5 w-3.5" />
-                              <span className="hidden sm:inline">Ler</span>
-                            </button>
-
-                            <button
-                              onClick={(e) => handleRemove(e, fav.mangaId)}
-                              className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-zinc-800 transition-colors cursor-pointer"
-                              title="Remover dos favoritos"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {visibleFavorites.map((fav) => (
+                    <FavoriteListRow
+                      key={fav.mangaId}
+                      fav={fav}
+                      updateInfo={updatesMap[fav.mangaId]}
+                      progress={progressByMangaId.get(fav.mangaId)}
+                      isBatchMode={isBatchMode}
+                      isSelected={selectedIdsSet.has(fav.mangaId)}
+                      onToggleBatchSelect={handleToggleBatchSelect}
+                      onSelectManga={onSelectManga}
+                      onChangeCategory={handleChangeCategory}
+                      onOpenScoreModal={openScoreModal}
+                      onOpenTrackers={handleOpenTrackers}
+                      onOpenCollections={handleOpenCollectionsModal}
+                      onQuickRead={handleQuickRead}
+                      onRemove={handleRemove}
+                    />
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1637,184 +2018,66 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         ) : (
           /* Favorites Grid */
           <div className="manga-cover-grid">
-            {filteredFavorites.map((fav) => {
-              const updateInfo = updatesMap[fav.mangaId];
-              const progress = HistoryService.getProgress(fav.mangaId);
-              const currentCat = fav.userCategory || 'reading';
-              const catMeta = CATEGORY_LABELS[currentCat] || CATEGORY_LABELS.reading;
-              const isSelected = selectedMangaIds.includes(fav.mangaId);
-
+            {visibleFavorites.map((fav) => {
+              const cardManga = mappedFavoritesById.get(fav.mangaId);
+              if (!cardManga) return null;
               return (
-                <div
+                <FavoriteGridCard
                   key={fav.mangaId}
-                  onClick={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : undefined}
-                  className={`group relative flex flex-col min-w-0 rounded-xl transition-all ${
-                    isBatchMode
-                      ? isSelected
-                        ? 'ring-2 ring-rose-500 shadow-lg shadow-rose-950/40 bg-rose-950/15 p-1 cursor-pointer'
-                        : 'hover:ring-1 hover:ring-zinc-650 cursor-pointer p-1'
-                      : ''
-                  }`}
-                >
-                  <div className="relative">
-                    {/* Batch Checkbox Indicator */}
-                    {isBatchMode && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleBatchSelect(fav.mangaId);
-                        }}
-                        className="absolute top-2 left-2 z-30 p-1.5 rounded-lg bg-zinc-950/95 border border-zinc-700 shadow-xl backdrop-blur-md cursor-pointer transition-transform hover:scale-110"
-                        title={isSelected ? 'Desmarcar obra' : 'Selecionar obra'}
-                      >
-                        {isSelected ? (
-                          <CheckSquare className="h-4 w-4 text-rose-500 fill-rose-500/20" />
-                        ) : (
-                          <Square className="h-4 w-4 text-zinc-400" />
-                        )}
-                      </button>
-                    )}
-
-                    <MangaCard
-                      manga={mapFavoriteToManga(fav)}
-                      onSelect={isBatchMode ? () => handleToggleBatchSelect(fav.mangaId) : onSelectManga}
-                      onQuickRead={isBatchMode ? undefined : handleQuickRead}
-                      hideBookmarkButton={isBatchMode}
-                      showTrackerStatus={!isBatchMode}
-                      onOpenTrackers={(id, title) => {
-                        setSelectedTrackerManga({ id: id || fav.mangaId, title: title || fav.title });
-                        setShowTrackersModal(true);
-                      }}
-                    />
-                  </div>
-
-                  {/* Category Status, Score & Progress underneath card (zero overlay collision) */}
-                  <div className="mt-2 flex flex-col gap-1.5 px-0.5 min-w-0">
-                    {/* New Chapter Notification Pill */}
-                    {updateInfo?.hasNew && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          UpdateTrackerService.markMangaUpdateAsSeen(fav.mangaId);
-                          if (onReadChapter) {
-                            onReadChapter(fav.mangaId, updateInfo.latestChapterId);
-                          } else {
-                            onSelectManga(fav.mangaId);
-                          }
-                        }}
-                        className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-[10px] font-bold transition-colors cursor-pointer"
-                        title={`Novo capítulo disponível: Cap. ${updateInfo.latestChapterNumber}. Clique para ler!`}
-                      >
-                        <Sparkles className="h-3 w-3 text-rose-400 shrink-0" />
-                        <span className="truncate">Novo Cap. {updateInfo.latestChapterNumber}</span>
-                      </button>
-                    )}
-
-                    <div className="flex items-center justify-between gap-1 min-w-0">
-                      {/* Category Selector Pill */}
-                      <select
-                        value={currentCat}
-                        onChange={(e) => handleChangeCategory(fav.mangaId, e.target.value as LibraryCategory)}
-                        className={`text-[10px] font-semibold px-1.5 sm:px-2 py-1 rounded border ${catMeta.badgeBg} ${catMeta.color} bg-zinc-950 cursor-pointer focus:outline-none min-w-0 truncate`}
-                        title="Alterar status de leitura"
-                      >
-                        <option value="reading" className="bg-zinc-900 text-rose-300">Lendo</option>
-                        <option value="plan_to_read" className="bg-zinc-900 text-sky-300">Quero Ler</option>
-                        <option value="completed" className="bg-zinc-900 text-emerald-300">Completo</option>
-                        <option value="on_hold" className="bg-zinc-900 text-amber-300">Pausado</option>
-                        <option value="dropped" className="bg-zinc-900 text-zinc-400">Abandonado</option>
-                      </select>
-
-                      <div className="flex items-center gap-0.5 shrink-0">
-                        {/* Rate / Score button */}
-                        <button
-                          type="button"
-                          onClick={(e) => openScoreModal(e, fav)}
-                          title={fav.userScore ? `Minha nota: ${fav.userScore}/10 (clique para editar)` : 'Avaliar esta obra (1-10)'}
-                          className={`flex items-center gap-0.5 px-1.5 py-1 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-                            fav.userScore
-                              ? 'text-amber-400 bg-amber-500/10 border border-amber-500/30 font-bold'
-                              : 'text-zinc-500 hover:text-amber-400 hover:bg-zinc-900'
-                          }`}
-                        >
-                          <Star className={`h-3 w-3 ${fav.userScore ? 'fill-amber-400' : ''}`} />
-                          {fav.userScore ? <span>{fav.userScore}</span> : null}
-                        </button>
-
-                        {/* Manage folders icon */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setManagingCollectionsManga(fav);
-                          }}
-                          title="Gerenciar pastas desta obra"
-                          className={`p-1 rounded transition-colors cursor-pointer ${
-                            fav.customCollections && fav.customCollections.length > 0
-                              ? 'text-rose-400 hover:text-rose-300 bg-rose-500/10'
-                              : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900'
-                          }`}
-                        >
-                          <FolderPlus className="h-3.5 w-3.5" />
-                        </button>
-
-                        {/* Remove button */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleRemove(e, fav.mangaId)}
-                          title="Remover dos favoritos"
-                          className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Custom Collection Badges */}
-                    {fav.customCollections && fav.customCollections.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1">
-                        {fav.customCollections.map(col => (
-                          <span
-                            key={col}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedCustomCollection(col);
-                            }}
-                            className="px-1.5 py-0.2 rounded text-[9px] bg-zinc-800 text-rose-300 border border-rose-500/20 font-medium truncate max-w-[100px] cursor-pointer hover:border-rose-500/50"
-                            title={`Filtrar pela pasta "${col}"`}
-                          >
-                            📁 {col}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Reading Progress Chapter */}
-                    {progress && (
-                      <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono gap-1">
-                        <span className="flex items-center gap-1 truncate">
-                          <Clock className="h-2.5 w-2.5 text-rose-400/80 shrink-0" />
-                          <span>Lido: c.{progress.chapterNumber}</span>
-                        </span>
-                        {updateInfo?.latestChapterNumber && (
-                          <span className="text-zinc-500 shrink-0">
-                            /{updateInfo.latestChapterNumber}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                  fav={fav}
+                  cardManga={cardManga}
+                  updateInfo={updatesMap[fav.mangaId]}
+                  progress={progressByMangaId.get(fav.mangaId)}
+                  isBatchMode={isBatchMode}
+                  isSelected={selectedIdsSet.has(fav.mangaId)}
+                  onToggleBatchSelect={handleToggleBatchSelect}
+                  onSelectManga={onSelectManga}
+                  onQuickRead={handleQuickRead}
+                  onOpenTrackers={handleOpenTrackers}
+                  onReadNewChapter={handleReadNewChapter}
+                  onChangeCategory={handleChangeCategory}
+                  onOpenScoreModal={openScoreModal}
+                  onOpenCollections={handleOpenCollectionsModal}
+                  onRemove={handleRemove}
+                  onFilterByCollection={handleFilterByCollection}
+                />
               );
             })}
           </div>
         )}
 
+        {/* Progressive windowing sentinel & manual fallback */}
+        {favorites.length > 0 && hasMoreFavorites && (
+          <div
+            ref={loadMoreSentinelRef}
+            className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3 py-4 text-xs text-zinc-400"
+          >
+            <span>
+              Exibindo <strong className="text-zinc-200 font-mono">{visibleFavorites.length}</strong> de{' '}
+              <strong className="text-zinc-200 font-mono">{filteredFavorites.length}</strong> obras
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setVisibleCount(prev => prev + FAVORITES_PAGE_BATCH)}
+                className="px-3.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 font-medium transition-colors cursor-pointer"
+              >
+                Carregar +{Math.min(FAVORITES_PAGE_BATCH, filteredFavorites.length - visibleFavorites.length)}
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleCount(filteredFavorites.length)}
+                className="px-3 py-1.5 rounded-lg bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-200 font-medium transition-colors cursor-pointer"
+              >
+                Mostrar tudo
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Modal for User Rating & Notes */}
         {editingScoreManga && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4">
             <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
                 <div className="flex items-center gap-2">
@@ -1890,7 +2153,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         )}
         {/* Modal for Creating New Custom Collection */}
         {showNewCollectionModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 animate-in fade-in duration-150">
             <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100">
               <div className="flex items-center justify-between pb-3 border-b border-zinc-850">
                 <div className="flex items-center gap-2">
@@ -1987,10 +2250,10 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
         {isBatchMode && selectedMangaIds.length > 0 && (
           <aside
             aria-label="Ações em lote para obras selecionadas"
-            className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 w-[94%] max-w-2xl bg-zinc-950/95 border border-zinc-700/80 p-3 sm:p-4 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 animate-in slide-in-from-bottom-5 duration-200"
+            className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-40 w-[94%] max-w-2xl bg-zinc-950/[0.98] border border-zinc-700/80 p-3 sm:p-4 rounded-2xl shadow-2xl flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 animate-in slide-in-from-bottom-5 duration-200"
           >
             <div className="flex items-center gap-2">
-              <span className="flex h-2.5 w-2.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="flex h-2.5 w-2.5 rounded-full bg-rose-500" />
               <span className="text-xs text-zinc-200 font-medium">
                 <strong className="text-white font-mono text-sm">{selectedMangaIds.length}</strong> {selectedMangaIds.length === 1 ? 'obra selecionada' : 'obras selecionadas'}
               </span>
@@ -2059,7 +2322,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Modal: Batch Category / Status Change */}
         {showBatchCategoryModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4">
             <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
                 <div className="flex items-center gap-2">
@@ -2088,7 +2351,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                       key={catKey}
                       type="button"
                       onClick={() => handleApplyBatchCategory(catKey)}
-                      className="w-full flex items-center justify-between p-3 rounded-xl bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 transition-all text-xs cursor-pointer text-left group"
+                      className="w-full flex items-center justify-between p-3 rounded-xl bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 transition-colors text-xs cursor-pointer text-left group"
                     >
                       <span className={`font-semibold ${meta.color} group-hover:brightness-110`}>
                         {meta.label}
@@ -2112,7 +2375,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Modal: Batch Custom Collection / Folder Add */}
         {showBatchCollectionModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4">
             <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
                 <div className="flex items-center gap-2">
@@ -2194,7 +2457,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Modal: Confirm Batch Delete */}
         {showBatchDeleteConfirm && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4">
             <div className="w-full max-w-sm rounded-2xl bg-zinc-900 border border-rose-900/40 p-6 shadow-2xl text-zinc-100 animate-in fade-in zoom-in-95 duration-150">
               <div className="flex items-center gap-3 text-rose-400 mb-3">
                 <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">

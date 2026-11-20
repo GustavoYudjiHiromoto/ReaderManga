@@ -66,15 +66,35 @@ function formatDateKey(date: Date): string {
 const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
+let cachedDailyData: Record<string, StoredDayData> | null = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === DAILY_STATS_KEY) {
+      cachedDailyData = null;
+    }
+  });
+}
+
 export const AnalyticsService = {
   getStoredDailyData(): Record<string, StoredDayData> {
+    if (cachedDailyData) return cachedDailyData;
     try {
       const raw = localStorage.getItem(DAILY_STATS_KEY);
-      if (!raw) return {};
+      if (!raw) {
+        const empty: Record<string, StoredDayData> = {};
+        cachedDailyData = empty;
+        return empty;
+      }
       const parsed = JSON.parse(raw);
-      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+      const resolved: Record<string, StoredDayData> =
+        typeof parsed === 'object' && parsed !== null ? parsed : {};
+      cachedDailyData = resolved;
+      return resolved;
     } catch {
-      return {};
+      const empty: Record<string, StoredDayData> = {};
+      cachedDailyData = empty;
+      return empty;
     }
   },
 
@@ -108,6 +128,7 @@ export const AnalyticsService = {
       }
 
       all[todayKey] = current;
+      cachedDailyData = all;
       localStorage.setItem(DAILY_STATS_KEY, JSON.stringify(all));
     } catch (e) {
       console.warn('Failed to record analytics activity', e);
@@ -175,6 +196,7 @@ export const AnalyticsService = {
       }
 
       try {
+        cachedDailyData = stored;
         localStorage.setItem(DAILY_STATS_KEY, JSON.stringify(stored));
       } catch {
         // ignore
@@ -231,9 +253,11 @@ export const AnalyticsService = {
     const history = HistoryService.getHistory();
 
     const genreCounts: Record<string, number> = {};
+    const favMap = new Map<string, FavoriteManga>();
 
     // 1. Tally from Favorites
     favorites.forEach((fav: FavoriteManga) => {
+      favMap.set(fav.mangaId, fav);
       const genres = fav.genres || [];
       genres.forEach(g => {
         const clean = g.trim();
@@ -245,7 +269,7 @@ export const AnalyticsService = {
 
     // 2. Tally from History
     history.forEach((h: ReadingProgress) => {
-      const fav = favorites.find(f => f.mangaId === h.mangaId);
+      const fav = favMap.get(h.mangaId);
       if (fav && fav.genres) {
         fav.genres.forEach(g => {
           const clean = g.trim();
@@ -296,9 +320,12 @@ export const AnalyticsService = {
   /**
    * Computes KPI summary over the 30-day window.
    */
-  getAnalyticsSummary(): AnalyticsSummary {
-    const data30d = this.getLast30DaysData();
-    const genres = this.getGenreDistribution();
+  getAnalyticsSummary(
+    precomputed30d?: DailyReadingRecord[],
+    precomputedGenres?: GenreDistribution[]
+  ): AnalyticsSummary {
+    const data30d = precomputed30d || this.getLast30DaysData();
+    const genres = precomputedGenres || this.getGenreDistribution();
 
     const totalHours30d = Number(data30d.reduce((sum, item) => sum + item.hours, 0).toFixed(1));
     const totalChapters30d = data30d.reduce((sum, item) => sum + item.chaptersRead, 0);

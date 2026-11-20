@@ -126,6 +126,9 @@ export const TrackerBackgroundService = {
 
     const intervalMs = loadStoredInterval() * 60 * 1000;
     bgTimerId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
       this.syncAllPending(false).catch(() => {});
     }, intervalMs);
   },
@@ -252,9 +255,6 @@ export const TrackerBackgroundService = {
           continue;
         }
 
-        currentSyncMangaTitle = item.title;
-        notifyListeners();
-
         // Determine current local chapter
         const progress = HistoryService.getProgress(item.mangaId);
         const rawChapter = progress?.chapterNumber || item.chapterNumber;
@@ -264,6 +264,17 @@ export const TrackerBackgroundService = {
         const hasError = mapping.anilistStatus === 'error' || mapping.malStatus === 'error';
         const isProgressBehind = parsedChapter > 0 && parsedChapter > lastScrobbled;
         const shouldSyncProgress = isProgressBehind || (force && parsedChapter > 0) || (hasError && parsedChapter > 0);
+        const fav = favorites.find(f => f.mangaId === item.mangaId);
+        const shouldUpdateStatus = Boolean(fav && (force || hasError));
+
+        // Skip notifications and API sleeps completely when this item is already up to date
+        if (!shouldSyncProgress && !shouldUpdateStatus) {
+          stats.alreadySyncedCount++;
+          continue;
+        }
+
+        currentSyncMangaTitle = item.title;
+        notifyListeners();
 
         let didWork = false;
 
@@ -294,7 +305,6 @@ export const TrackerBackgroundService = {
         }
 
         // Sync status/score if favorite exists
-        const fav = favorites.find(f => f.mangaId === item.mangaId);
         if (fav && (force || hasError || didWork)) {
           try {
             await TrackerService.updateTrackerStatus(
@@ -380,7 +390,7 @@ export const TrackerBackgroundService = {
       debounceTimerId = setTimeout(() => {
         this.syncAllPending(false).catch(() => {});
       }, 10000);
-    });
+    }, ['favorites', 'history', 'readChapters']);
 
     return () => {
       clearTimeout(initialTimer);

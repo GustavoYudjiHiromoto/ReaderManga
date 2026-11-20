@@ -2,6 +2,7 @@ import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { Manga } from '../../src/types/manga.js';
 import { sourceRegistry } from '../sources/SourceRegistry.js';
 import { globalCache } from '../cache/CacheService.js';
+import { decodeHtmlEntities } from '../../src/utils/htmlEntities.js';
 
 export type SimilarityCategory = 'twin_premise' | 'same_dynamic' | 'same_vibe';
 
@@ -196,14 +197,10 @@ function cleanTitle(t?: string): string {
 
 function stripHtml(html?: string): string {
   if (!html) return '';
-  return html
+  const stripped = html
     .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/<[^>]+>/g, '');
+  return decodeHtmlEntities(stripped).replace(/\s+/g, ' ').trim();
 }
 
 const UMBRELLA_GENRES = new Set([

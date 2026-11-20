@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Navbar } from './components/Navbar.js';
 import { Footer } from './components/Footer.js';
 import { HistoryDrawer } from './components/HistoryDrawer.js';
@@ -22,6 +22,20 @@ import { ExtensionsModal } from './components/ExtensionsModal.js';
 import { FeedbackModal } from './components/FeedbackModal.js';
 import { ExtensionService } from './services/extensionService.js';
 import { ReadingProgress, FavoriteManga } from './types/manga.js';
+
+function areKeepAlivePropsEqual<T extends { isActive?: boolean }>(prev: T, next: T): boolean {
+  if (!prev.isActive && !next.isActive) return true;
+  const keys = Object.keys(prev) as Array<keyof T>;
+  if (keys.length !== Object.keys(next).length) return false;
+  for (const k of keys) {
+    if (!Object.is(prev[k], next[k])) return false;
+  }
+  return true;
+}
+
+const MemoHomePage = React.memo(HomePage, areKeepAlivePropsEqual);
+const MemoSearchPage = React.memo(SearchPage, areKeepAlivePropsEqual);
+const MemoFavoritesPage = React.memo(FavoritesPage, areKeepAlivePropsEqual);
 
 type TabType = 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
 type OriginType = 'search' | 'catalog' | 'updates' | 'favorites' | 'home' | 'profile';
@@ -113,6 +127,16 @@ export default function App() {
   const [mangaDetailOrigin, setMangaDetailOrigin] = useState<OriginType>('home');
   const [inAppHistoryDepth, setInAppHistoryDepth] = useState<number>(0);
 
+  const inAppHistoryDepthRef = useRef<number>(0);
+  inAppHistoryDepthRef.current = inAppHistoryDepth;
+  const mangaDetailOriginRef = useRef<OriginType>('home');
+  mangaDetailOriginRef.current = mangaDetailOrigin;
+  const selectedMangaIdRef = useRef<string | null>(selectedMangaId);
+  selectedMangaIdRef.current = selectedMangaId;
+  const searchInitialQueryRef = useRef<string>(searchInitialQuery);
+  searchInitialQueryRef.current = searchInitialQuery;
+  const backNavigationLockRef = useRef<number>(0);
+
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
   const [isTrackersOpen, setIsTrackersOpen] = useState(false);
@@ -124,7 +148,7 @@ export default function App() {
   const [trackersModalManga, setTrackersModalManga] = useState<{ id?: string; title?: string } | null>(null);
   const [history, setHistory] = useState<ReadingProgress[]>(() => HistoryService.getHistory());
   const [favorites, setFavorites] = useState<FavoriteManga[]>(() => HistoryService.getFavorites());
-  const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getAllSavedChapters().length);
+  const [offlineCount, setOfflineCount] = useState<number>(() => OfflineCacheService.getSavedChapterIds().length);
   const [unreadUpdatesCount, setUnreadUpdatesCount] = useState<number>(() => UpdateTrackerService.getUnseenBadgeCount());
   const [trackersCount, setTrackersCount] = useState<number>(() => {
     const ani = TrackerService.getAniListAccount().connected ? 1 : 0;
@@ -144,8 +168,6 @@ export default function App() {
 
   // Initial setup & popstate listener for browser back/forward buttons
   useEffect(() => {
-    refreshHistory();
-
     // Initialize silent background radar for new chapters
     const cleanupRadar = UpdateTrackerService.initBackgroundRadar();
 
@@ -154,10 +176,13 @@ export default function App() {
 
     // Subscribe to reactive HistoryService changes (reading progress, bookmarks added/removed)
     const unsubscribeHistory = HistoryService.subscribe(() => {
-      setHistory(HistoryService.getHistory());
-      setFavorites(HistoryService.getFavorites());
-      setUnreadUpdatesCount(UpdateTrackerService.getUnseenBadgeCount());
-    });
+      const nextHist = HistoryService.getHistory();
+      const nextFavs = HistoryService.getFavorites();
+      const nextUnread = UpdateTrackerService.getUnseenBadgeCount();
+      setHistory(prev => (prev === nextHist ? prev : nextHist));
+      setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
+      setUnreadUpdatesCount(prev => (prev === nextUnread ? prev : nextUnread));
+    }, ['history', 'favorites', 'readChapters']);
 
     // Subscribe to update tracker changes
     const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
@@ -166,7 +191,7 @@ export default function App() {
 
     // Subscribe to offline cache changes
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
-      setOfflineCount(OfflineCacheService.getAllSavedChapters().length);
+      setOfflineCount(OfflineCacheService.getSavedChapterIds().length);
     });
 
     // Subscribe to tracker changes
@@ -208,13 +233,14 @@ export default function App() {
     }
 
     const handlePopState = (event: PopStateEvent) => {
+      backNavigationLockRef.current = 0;
       const route = parseLocation();
       const state = event.state;
 
       setCurrentTab(route.tab === 'catalog' ? 'home' : route.tab);
       if (route.mangaId) setSelectedMangaId(route.mangaId);
       if (route.chapterId) setSelectedChapterId(route.chapterId);
-      if (route.query) setSearchInitialQuery(route.query);
+      if (route.tab === 'search' && route.query) setSearchInitialQuery(route.query);
 
       if (state && typeof state.depth === 'number') {
         setInAppHistoryDepth(state.depth);
@@ -273,12 +299,13 @@ export default function App() {
     setFavorites(HistoryService.getFavorites());
   };
 
-  const handleSelectManga = (mangaId: string, origin: OriginType = 'home') => {
+  const handleSelectManga = useCallback((mangaId: string, origin: OriginType = 'home') => {
     setSelectedMangaId(mangaId);
     setMangaDetailOrigin(origin);
     setCurrentTab('detail');
 
-    const nextDepth = inAppHistoryDepth + 1;
+    const nextDepth = inAppHistoryDepthRef.current + 1;
+    inAppHistoryDepthRef.current = nextDepth;
     setInAppHistoryDepth(nextDepth);
 
     const url = `/manga/${encodeURIComponent(mangaId)}`;
@@ -287,63 +314,30 @@ export default function App() {
       '',
       url
     );
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    window.scrollTo(0, 0);
+  }, []);
 
-  const handleReadChapter = (mangaId: string, chapterId: string) => {
+  const handleReadChapter = useCallback((mangaId: string, chapterId: string) => {
     setSelectedMangaId(mangaId);
     setSelectedChapterId(chapterId);
     setCurrentTab('reader');
 
-    const nextDepth = inAppHistoryDepth + 1;
+    const nextDepth = inAppHistoryDepthRef.current + 1;
+    inAppHistoryDepthRef.current = nextDepth;
     setInAppHistoryDepth(nextDepth);
 
     const url = `/read/${encodeURIComponent(mangaId)}/${encodeURIComponent(chapterId)}`;
     window.history.pushState(
-      { tab: 'reader', mangaId, chapterId, origin: mangaDetailOrigin, depth: nextDepth },
+      { tab: 'reader', mangaId, chapterId, origin: mangaDetailOriginRef.current, depth: nextDepth },
       '',
       url
     );
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    window.scrollTo(0, 0);
+  }, []);
 
-  const handleBackFromDetail = () => {
-    // If there is prior in-app history, use natural browser back
-    if (inAppHistoryDepth > 0) {
-      window.history.back();
-      return;
-    }
-
-    // Otherwise, use fallback based on origin or home
-    if (mangaDetailOrigin === 'search') {
-      handleNavigate('search');
-    } else if (mangaDetailOrigin === 'catalog') {
-      handleNavigate('catalog');
-    } else if (mangaDetailOrigin === 'updates') {
-      handleNavigate('updates');
-    } else if (mangaDetailOrigin === 'favorites') {
-      handleNavigate('favorites');
-    } else {
-      handleNavigate('home');
-    }
-  };
-
-  const handleBackFromReader = () => {
-    // From reader, return to details of the current manga
-    if (inAppHistoryDepth > 0 && window.history.state?.tab === 'reader') {
-      window.history.back();
-      return;
-    }
-
-    if (selectedMangaId) {
-      handleSelectManga(selectedMangaId, mangaDetailOrigin);
-    } else {
-      handleNavigate('home');
-    }
-  };
-
-  const handleNavigate = (tab: 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'profile') => {
-    const nextDepth = inAppHistoryDepth + 1;
+  const handleNavigate = useCallback((tab: 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'profile') => {
+    const nextDepth = inAppHistoryDepthRef.current + 1;
+    inAppHistoryDepthRef.current = nextDepth;
     setInAppHistoryDepth(nextDepth);
 
     if (tab === 'catalog') {
@@ -356,58 +350,152 @@ export default function App() {
     if (tab === 'home') {
       setCurrentTab('home');
       window.history.pushState({ tab: 'home', depth: nextDepth }, '', '/');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
 
     if (tab === 'search') {
       setCurrentTab('search');
-      const searchUrl = searchInitialQuery ? `/search?q=${encodeURIComponent(searchInitialQuery)}` : '/search';
+      const curSearchQ = searchInitialQueryRef.current;
+      const searchUrl = curSearchQ ? `/search?q=${encodeURIComponent(curSearchQ)}` : '/search';
       window.history.pushState({ tab: 'search', depth: nextDepth }, '', searchUrl);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
 
     if (tab === 'updates') {
       setCurrentTab('updates');
       window.history.pushState({ tab: 'updates', depth: nextDepth }, '', '/updates');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
 
     if (tab === 'favorites') {
       setCurrentTab('favorites');
       window.history.pushState({ tab: 'favorites', depth: nextDepth }, '', '/favorites');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
 
     if (tab === 'profile') {
       setCurrentTab('profile');
       window.history.pushState({ tab: 'profile', depth: nextDepth }, '', '/profile');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
 
     if (tab === 'api') {
       setCurrentTab('api');
       window.history.pushState({ tab: 'api', depth: nextDepth }, '', '/api-docs');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       return;
     }
-  };
+  }, []);
 
-  const handleResumeProgress = (item: ReadingProgress) => {
+  const handleBackFromDetail = useCallback(() => {
+    const now = Date.now();
+    if (backNavigationLockRef.current && now - backNavigationLockRef.current < 700) {
+      return;
+    }
+
+    const currentState = window.history.state;
+    const currentDepth = typeof currentState?.depth === 'number' ? currentState.depth : inAppHistoryDepthRef.current;
+
+    // Only pop browser history when the active entry actually belongs to 'detail' inside this app session
+    if (currentDepth > 0 && currentState?.tab === 'detail') {
+      backNavigationLockRef.current = now;
+      window.history.back();
+      return;
+    }
+
+    // Fallback based on origin or home without overshooting past depth 0
+    const origin = mangaDetailOriginRef.current;
+    if (origin === 'search') {
+      handleNavigate('search');
+    } else if (origin === 'catalog') {
+      handleNavigate('catalog');
+    } else if (origin === 'updates') {
+      handleNavigate('updates');
+    } else if (origin === 'favorites') {
+      handleNavigate('favorites');
+    } else {
+      handleNavigate('home');
+    }
+  }, [handleNavigate]);
+
+  const handleBackFromReader = useCallback(() => {
+    const now = Date.now();
+    if (backNavigationLockRef.current && now - backNavigationLockRef.current < 700) {
+      return;
+    }
+
+    const currentState = window.history.state;
+    const currentDepth = typeof currentState?.depth === 'number' ? currentState.depth : inAppHistoryDepthRef.current;
+
+    // Only pop browser history ONCE when the active entry actually belongs to 'reader'
+    if (currentDepth > 0 && currentState?.tab === 'reader') {
+      backNavigationLockRef.current = now;
+      window.history.back();
+      return;
+    }
+
+    if (selectedMangaIdRef.current) {
+      handleSelectManga(selectedMangaIdRef.current, mangaDetailOriginRef.current);
+    } else {
+      handleNavigate('home');
+    }
+  }, [handleSelectManga, handleNavigate]);
+
+  const handleOpenHistory = useCallback(() => setIsHistoryOpen(true), []);
+  const handleOpenDownloads = useCallback(() => setIsDownloadsOpen(true), []);
+  const handleOpenTrackers = useCallback(() => setIsTrackersOpen(true), []);
+  const handleOpenExtensions = useCallback(() => setIsExtensionsOpen(true), []);
+  const handleOpenFeedback = useCallback(() => {
+    setFeedbackContext(null);
+    setIsFeedbackOpen(true);
+  }, []);
+  const handleSelectMangaFromHome = useCallback(
+    (mangaId: string, fromCatalog?: boolean) => handleSelectManga(mangaId, fromCatalog ? 'catalog' : 'home'),
+    [handleSelectManga]
+  );
+  const handleSelectMangaFromSearch = useCallback(
+    (mangaId: string) => handleSelectManga(mangaId, 'search'),
+    [handleSelectManga]
+  );
+  const handleSelectMangaFromFavorites = useCallback(
+    (mangaId: string) => handleSelectManga(mangaId, 'favorites'),
+    [handleSelectManga]
+  );
+  const handleNavigateToSearchFromHome = useCallback(
+    (query?: string) => {
+      setSearchInitialQuery(query || '');
+      handleNavigate('search');
+    },
+    [handleNavigate]
+  );
+  const handleNavigateToCatalogFromFavorites = useCallback(() => handleNavigate('catalog'), [handleNavigate]);
+
+  const handleCloseHistory = useCallback(() => setIsHistoryOpen(false), []);
+  const handleCloseDownloads = useCallback(() => setIsDownloadsOpen(false), []);
+  const handleCloseExtensions = useCallback(() => setIsExtensionsOpen(false), []);
+  const handleSelectMangaFromDrawer = useCallback(
+    (mangaId: string) => handleSelectManga(mangaId, 'home'),
+    [handleSelectManga]
+  );
+
+  const handleResumeProgress = useCallback((item: ReadingProgress) => {
     handleReadChapter(item.mangaId, item.chapterId);
-  };
+  }, [handleReadChapter]);
 
-  const handleRemoveHistory = (mangaId: string) => {
+  const handleRemoveHistory = useCallback((mangaId: string) => {
     HistoryService.removeHistory(mangaId);
-    refreshHistory();
-  };
+    setHistory(HistoryService.getHistory());
+    setFavorites(HistoryService.getFavorites());
+  }, []);
 
-  const handleExploreSource = (sourceId: string) => {
-    const nextDepth = inAppHistoryDepth + 1;
+  const handleExploreSource = useCallback((sourceId: string) => {
+    const nextDepth = inAppHistoryDepthRef.current + 1;
+    inAppHistoryDepthRef.current = nextDepth;
     setInAppHistoryDepth(nextDepth);
     setSearchInitialQuery('');
     setSearchBrowseSignal({ sourceId, mode: 'popular', nonce: Date.now() });
@@ -417,8 +505,8 @@ export default function App() {
       '',
       `/search?source=${encodeURIComponent(sourceId)}&mode=popular`
     );
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    window.scrollTo(0, 0);
+  }, []);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans">
@@ -427,14 +515,11 @@ export default function App() {
         <Navbar
           currentTab={currentTab}
           onNavigate={handleNavigate}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-          onOpenDownloads={() => setIsDownloadsOpen(true)}
-          onOpenTrackers={() => setIsTrackersOpen(true)}
-          onOpenExtensions={() => setIsExtensionsOpen(true)}
-          onOpenFeedback={() => {
-            setFeedbackContext(null);
-            setIsFeedbackOpen(true);
-          }}
+          onOpenHistory={handleOpenHistory}
+          onOpenDownloads={handleOpenDownloads}
+          onOpenTrackers={handleOpenTrackers}
+          onOpenExtensions={handleOpenExtensions}
+          onOpenFeedback={handleOpenFeedback}
           historyCount={history.length}
           favoritesCount={favorites.length}
           offlineCount={offlineCount}
@@ -449,24 +534,23 @@ export default function App() {
       <main className={`flex-1 min-w-0 ${currentTab !== 'reader' ? 'pb-16 md:pb-0' : ''}`}>
         {/* Home & Catalog: Preserved in DOM to retain scroll & state */}
         <div className={currentTab === 'home' || currentTab === 'catalog' ? 'block' : 'hidden'}>
-          <HomePage
+          <MemoHomePage
+            isActive={currentTab === 'home' || currentTab === 'catalog'}
             history={history}
-            onOpenHistory={() => setIsHistoryOpen(true)}
-            onSelectManga={(mangaId, fromCatalog) => handleSelectManga(mangaId, fromCatalog ? 'catalog' : 'home')}
+            onOpenHistory={handleOpenHistory}
+            onSelectManga={handleSelectMangaFromHome}
             onReadChapter={handleReadChapter}
-            onNavigateToSearch={(query) => {
-              setSearchInitialQuery(query || '');
-              handleNavigate('search');
-            }}
+            onNavigateToSearch={handleNavigateToSearchFromHome}
           />
         </div>
 
         {/* Search View: Preserved in DOM so query, filters, pagination and scroll are never lost */}
         <div className={currentTab === 'search' ? 'block' : 'hidden'}>
-          <SearchPage
+          <MemoSearchPage
+            isActive={currentTab === 'search'}
             initialQuery={searchInitialQuery}
             browseSignal={searchBrowseSignal}
-            onSelectManga={(mangaId) => handleSelectManga(mangaId, 'search')}
+            onSelectManga={handleSelectMangaFromSearch}
             onReadChapter={handleReadChapter}
           />
         </div>
@@ -483,11 +567,12 @@ export default function App() {
 
         {/* Favorites View: Preserved in DOM to retain scroll & fast view */}
         <div className={currentTab === 'favorites' ? 'block' : 'hidden'}>
-          <FavoritesPage
-            onSelectManga={(mangaId) => handleSelectManga(mangaId, 'favorites')}
+          <MemoFavoritesPage
+            isActive={currentTab === 'favorites'}
+            onSelectManga={handleSelectMangaFromFavorites}
             onReadChapter={handleReadChapter}
-            onNavigateToCatalog={() => handleNavigate('catalog')}
-            onOpenDownloads={() => setIsDownloadsOpen(true)}
+            onNavigateToCatalog={handleNavigateToCatalogFromFavorites}
+            onOpenDownloads={handleOpenDownloads}
           />
         </div>
 
@@ -530,7 +615,7 @@ export default function App() {
                 '',
                 newUrl
               );
-              window.scrollTo({ top: 0, behavior: 'smooth' });
+              window.scrollTo(0, 0);
             }}
           />
         )}
@@ -579,22 +664,24 @@ export default function App() {
         />
       )}
 
-      {/* Slide-over Reading History Drawer */}
-      <HistoryDrawer
-        isOpen={isHistoryOpen}
-        onClose={() => setIsHistoryOpen(false)}
-        history={history}
-        onResume={handleResumeProgress}
-        onSelectManga={(mangaId) => handleSelectManga(mangaId, 'home')}
-        onRemove={handleRemoveHistory}
-      />
+      {/* Slide-over Reading History Drawer (only mounted when opened to skip idle grouping) */}
+      {isHistoryOpen && (
+        <HistoryDrawer
+          isOpen={isHistoryOpen}
+          onClose={handleCloseHistory}
+          history={history}
+          onResume={handleResumeProgress}
+          onSelectManga={handleSelectMangaFromDrawer}
+          onRemove={handleRemoveHistory}
+        />
+      )}
 
       {/* Offline Downloads & Cache Storage Modal */}
       <DownloadsModal
         isOpen={isDownloadsOpen}
-        onClose={() => setIsDownloadsOpen(false)}
+        onClose={handleCloseDownloads}
         onReadChapter={handleReadChapter}
-        onNavigateToCatalog={() => handleNavigate('catalog')}
+        onNavigateToCatalog={handleNavigateToCatalogFromFavorites}
       />
 
       {/* External Trackers (AniList & MyAnimeList) Modal */}
@@ -611,7 +698,7 @@ export default function App() {
       {/* Extensions & Repositories Manager Modal */}
       <ExtensionsModal
         isOpen={isExtensionsOpen}
-        onClose={() => setIsExtensionsOpen(false)}
+        onClose={handleCloseExtensions}
         onExploreSource={handleExploreSource}
       />
 

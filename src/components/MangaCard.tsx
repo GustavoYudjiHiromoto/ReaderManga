@@ -45,7 +45,7 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
     setIsSaved(HistoryService.isBookmarked(manga.id));
     setIsIgnored(HistoryService.isIgnored(manga.id));
 
-    const unsub = HistoryService.subscribe(() => {
+    const unsub = HistoryService.subscribeManga(manga.id, () => {
       const nextProg = HistoryService.getProgress(manga.id);
       const nextSaved = HistoryService.isBookmarked(manga.id);
       const nextIgnored = HistoryService.isIgnored(manga.id);
@@ -133,7 +133,7 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
     return (
       <div
         onClick={() => onSelect(manga.id)}
-        className="manga-card-interactive group relative flex flex-row items-stretch gap-3 sm:gap-4 p-2.5 sm:p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700/80 rounded-2xl cursor-pointer transition-all duration-200 shadow-sm hover:shadow-lg min-w-0"
+        className="manga-card-interactive manga-list-row-item group relative flex flex-row items-stretch gap-3 sm:gap-4 p-2.5 sm:p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700/80 rounded-2xl cursor-pointer transition-[border-color,background-color] duration-150 shadow-sm min-w-0"
       >
         {/* Cover Left Thumbnail */}
         <div className="relative w-20 xs:w-24 sm:w-28 aspect-[3/4] rounded-xl overflow-hidden bg-zinc-950 shrink-0 border border-zinc-800">
@@ -142,8 +142,9 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
               src={currentCover}
               alt={manga.title}
               referrerPolicy="no-referrer"
+              decoding="async"
               onError={handleImageError}
-              className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+              className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-150"
               loading="lazy"
             />
           ) : (
@@ -279,7 +280,11 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
   return (
     <div
       onClick={() => onSelect(manga.id)}
-      className={`manga-card-interactive group relative flex flex-col min-w-0 cursor-pointer bg-zinc-900/65 hover:bg-zinc-900 border rounded-xl overflow-hidden transition-all duration-200 hover:-translate-y-1 shadow-sm hover:shadow-xl ${
+      className={`manga-card-interactive manga-card-grid-item group relative flex flex-col min-w-0 cursor-pointer bg-zinc-900/80 hover:bg-zinc-900 border rounded-xl overflow-hidden shadow-sm ${
+        isCompact
+          ? 'transition-colors duration-150'
+          : 'transition-[transform,border-color,background-color] duration-150 hover:-translate-y-1'
+      } ${
         isAvailable
           ? 'border-zinc-800/80 hover:border-zinc-700/80'
           : 'border-zinc-800/40 opacity-85 hover:opacity-100 hover:border-amber-500/40'
@@ -292,8 +297,11 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
             src={currentCover}
             alt={`Capa de ${manga.title}`}
             referrerPolicy="no-referrer"
+            decoding="async"
             onError={handleImageError}
-            className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${
+            className={`h-full w-full object-cover ${
+              isCompact ? '' : 'transition-transform duration-150 group-hover:scale-105'
+            } ${
               !isAvailable ? 'grayscale-[0.25]' : ''
             }`}
             loading="lazy"
@@ -326,7 +334,7 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
         {/* Source and Badges Overlay */}
         <div className="absolute top-1.5 sm:top-2 left-1.5 sm:left-2 right-1.5 sm:right-2 flex items-start justify-between gap-1 text-xs z-10 pointer-events-none">
           <span
-            className={`backdrop-blur-md px-1.5 py-0.5 rounded font-semibold uppercase tracking-wider border bg-zinc-950/85 text-emerald-300 border-emerald-500/40 pointer-events-auto truncate shadow-sm ${
+            className={`px-1.5 py-0.5 rounded font-semibold uppercase tracking-wider border bg-zinc-950/90 text-emerald-300 border-emerald-500/40 pointer-events-auto truncate shadow-sm ${
               isCompact
                 ? (showDismissAction ? 'text-[8px] sm:text-[9px] max-w-[calc(100%-4rem)]' : 'text-[8px] sm:text-[9px] max-w-[calc(100%-2.25rem)]')
                 : (showDismissAction ? 'text-[9px] sm:text-[10px] max-w-[calc(100%-4.75rem)]' : 'text-[9px] sm:text-[10px] max-w-[calc(100%-2.75rem)]')
@@ -337,7 +345,7 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
 
           <div className="flex items-center gap-1 shrink-0 pointer-events-auto">
             {isAdult && !isCompact && (
-              <span className="bg-rose-950/90 backdrop-blur-md px-1.5 py-0.5 rounded text-[9px] font-bold text-rose-300 border border-rose-600/50 shadow-sm">
+              <span className="bg-rose-950/95 px-1.5 py-0.5 rounded text-[9px] font-bold text-rose-300 border border-rose-600/50 shadow-sm">
                 +18
               </span>
             )}
@@ -347,12 +355,12 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
               <button
                 type="button"
                 onClick={handleDismissClick}
-                className={`flex items-center justify-center rounded-lg backdrop-blur-md border transition-all cursor-pointer shadow-md ${
+                className={`flex items-center justify-center rounded-lg border transition-colors cursor-pointer shadow-md ${
                   isCompact ? 'h-7 w-7' : 'h-8 w-8 sm:h-8 sm:w-8'
                 } ${
                   isIgnored
-                    ? 'bg-amber-600/90 border-amber-400 text-white'
-                    : 'bg-zinc-950/85 hover:bg-zinc-900 border-zinc-700/80 text-zinc-300 hover:text-amber-300'
+                    ? 'bg-amber-600 border-amber-400 text-white'
+                    : 'bg-zinc-950/90 hover:bg-zinc-900 border-zinc-700/80 text-zinc-300 hover:text-amber-300'
                 }`}
                 title={isIgnored ? 'Dispensado (clique para restaurar nas buscas)' : 'Não vou ler (ocultar das buscas sem favoritar)'}
                 aria-label={isIgnored ? `Restaurar ${manga.title} nas buscas` : `Dispensar ${manga.title} das buscas`}
@@ -370,12 +378,12 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
               <button
                 type="button"
                 onClick={handleToggleFavorite}
-                className={`flex items-center justify-center rounded-lg backdrop-blur-md border transition-all cursor-pointer shadow-md ${
+                className={`flex items-center justify-center rounded-lg border transition-colors cursor-pointer shadow-md ${
                   isCompact ? 'h-7 w-7' : 'h-8 w-8 sm:h-8 sm:w-8'
                 } ${
                   isSaved
                     ? 'bg-rose-600 border-rose-500 text-white shadow-rose-950/60'
-                    : 'bg-zinc-950/85 hover:bg-zinc-900 border-zinc-700/80 text-zinc-300 hover:text-white'
+                    : 'bg-zinc-950/90 hover:bg-zinc-900 border-zinc-700/80 text-zinc-300 hover:text-white'
                 }`}
                 title={isSaved ? 'Salvo na Biblioteca (clique para remover)' : 'Favoritar este mangá'}
                 aria-label={isSaved ? `Remover ${manga.title} da biblioteca` : `Salvar ${manga.title} na biblioteca`}
@@ -391,7 +399,7 @@ const MangaCardComponent: React.FC<MangaCardProps> = ({
           <div className="absolute inset-x-0 bottom-0 z-10 pointer-events-none">
             <div className="h-1 w-full bg-zinc-950/80 overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-rose-500 to-rose-400 transition-all duration-300"
+                className="h-full bg-gradient-to-r from-rose-500 to-rose-400 transition-[width] duration-300"
                 style={{
                   width: `${Math.min(100, Math.max(15, Math.round(((parseFloat(progress.chapterNumber) || 1) / (parseFloat(manga.latestChapter || '100') || 100)) * 100)))}%`
                 }}

@@ -11,6 +11,7 @@ import {
   MirrorProbeCandidate
 } from '../types/manga.js';
 import { MangaApi } from './api.js';
+import { decodeHtmlEntities } from '../utils/htmlEntities.js';
 
 const STORAGE_KEY = 'mr_extensions_config';
 const PING_CACHE_KEY = 'mr_extensions_ping_cache';
@@ -63,7 +64,7 @@ export interface RawMangaBallItem {
  */
 export function parseMangaBallItem(raw: RawMangaBallItem): Manga {
   const extId = String(raw.id || raw.slug || raw._id || 'unknown');
-  const title = (raw.title || raw.name || 'Sem título').trim();
+  const title = decodeHtmlEntities(raw.title || raw.name || 'Sem título') || 'Sem título';
   const cover = raw.cover || raw.cover_url || raw.thumbnail || '';
   const coverUrl = cover.startsWith('http') ? cover : (cover ? `https://mangaball.net${cover}` : '');
   const isAdult = Boolean(raw.is_nsfw || raw.is_adult);
@@ -73,7 +74,7 @@ export function parseMangaBallItem(raw: RawMangaBallItem): Manga {
     title,
     altTitles: [],
     coverUrl,
-    synopsis: raw.synopsis || raw.description || 'Disponível no acervo MangaBall.',
+    synopsis: decodeHtmlEntities(raw.synopsis || raw.description) || 'Disponível no acervo MangaBall.',
     authors: Array.isArray(raw.authors) && raw.authors.length > 0 ? raw.authors : [raw.author || 'MangaBall'],
     artists: [],
     genres: Array.isArray(raw.genres) && raw.genres.length > 0 ? raw.genres : ['Webtoon', 'Manhwa'],
@@ -128,13 +129,7 @@ export function parseMangaFireHtml(html: string): { mangaList: Manga[]; total: n
   while ((match = itemRegex.exec(html)) !== null) {
     const slug = match[1];
     const cover = match[2];
-    const title = match[3]
-      .replace(/&#39;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .trim();
+    const title = decodeHtmlEntities(match[3]);
 
     if (slug && title) {
       mangaList.push({

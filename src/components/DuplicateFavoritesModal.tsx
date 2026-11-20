@@ -14,7 +14,9 @@ import {
 import { Chapter, FavoriteManga, Manga } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
+import { UpdateTrackerService } from '../services/updateTracker.js';
 import { extractFavoriteSourceId } from './BatchMigrationModal.js';
+import { normalizeLibraryTitle, normalizeSpacedLibraryTitle } from '../utils/libraryFilters.js';
 
 interface DuplicateFavoritesModalProps {
   isOpen: boolean;
@@ -60,30 +62,12 @@ const SOURCE_PRIORITY: Record<string, number> = {
   mangapill: 3
 };
 
-function stripFavEditionTags(t: string): string {
-  return (t || '')
-    .replace(/\((?:official|colored|full\s*color|digital|webtoon|manga|uncensored|simulpub|pt-br|en)\)/gi, '')
-    .replace(/\[(?:official|colored|pt-br|en|br|eng)\]/gi, '')
-    .trim();
-}
-
 export function normalizeFavTitle(t: string): string {
-  if (!t) return '';
-  return stripFavEditionTags(t)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/g, '');
+  return normalizeLibraryTitle(t);
 }
 
 function normalizeSpacedWords(t: string): string {
-  if (!t) return '';
-  return stripFavEditionTags(t)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
+  return normalizeSpacedLibraryTitle(t);
 }
 
 function getAllTitles(fav: FavoriteManga, enriched?: EnrichedFavMeta): string[] {
@@ -227,17 +211,22 @@ export function findSuspectedCandidateIds(
   return Array.from(candidateIds);
 }
 
-function pickRecommendedPrimaryId(items: FavoriteManga[]): string {
-  const historyMap = new Map(
-    HistoryService.getHistory().map(h => [h.mangaId, parseFloat(h.chapterNumber || '0') || 0])
-  );
+function pickRecommendedPrimaryId(
+  items: FavoriteManga[],
+  historyMap?: Map<string, number>
+): string {
+  const resolvedHistoryMap =
+    historyMap ||
+    new Map(
+      HistoryService.getHistory().map(h => [h.mangaId, parseFloat(h.chapterNumber || '0') || 0])
+    );
 
   let best = items[0];
   let bestScore = -Infinity;
 
   for (const item of items) {
     let score = 0;
-    const chProgress = historyMap.get(item.mangaId) || 0;
+    const chProgress = resolvedHistoryMap.get(item.mangaId) || 0;
     if (chProgress > 0) score += 50 + Math.min(chProgress / 100, 20);
     if (typeof item.userScore === 'number') score += 20;
     if (item.userNotes?.trim()) score += 15;
@@ -254,6 +243,8 @@ function pickRecommendedPrimaryId(items: FavoriteManga[]): string {
   return best.mangaId;
 }
 
+const romajiLoose = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
+
 export function detectDuplicateFavoriteGroups(
   favorites: FavoriteManga[],
   enrichedMap?: Record<string, EnrichedFavMeta>
@@ -261,7 +252,8 @@ export function detectDuplicateFavoriteGroups(
   const n = favorites.length;
   if (n < 2) return [];
 
-  const parent = Array.from({ length: n }, (_, i) => i);
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
   const reasonByRoot = new Map<number, { reason: DuplicateGroup['reason']; reasonLabel: string }>();
 
   const find = (i: number): number => {
@@ -283,11 +275,200 @@ export function detectDuplicateFavoriteGroups(
     }
   };
 
+  interface PrecomputedSpaced {
+    spaced: string;
+    padded: string;
+    compactLen: number;
+    words: string[];
+  }
+
+  interface PrecomputedFav {
+    normPrimary: string;
+    altNorms: string[];
+    looseNorms: string[];
+    hasEnriched: boolean;
+    spacedEntries: PrecomputedSpaced[];
+  }
+
+  const precomputed: PrecomputedFav[] = new Array(n);
+  const exactPrimaryOwner = new Map<string, number>();
+  const altOwners = new Map<string, number[]>();
+  const looseOwner = new Map<string, number>();
+  const wordIndex = new Map<string, number[]>();
+
   for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      const m = matchFavoritesPair(favorites[i], favorites[j], enrichedMap);
-      if (m.matched) {
-        union(i, j, m.reason, m.reasonLabel);
+    const fav = favorites[i];
+    const enriched = enrichedMap?.[fav.mangaId];
+    const hasEnriched = Boolean(enriched);
+    const normPrimary = normalizeFavTitle(fav.title);
+
+    const altSet = new Set<string>();
+    if (Array.isArray(fav.altTitles)) {
+      for (const alt of fav.altTitles) {
+        const clean = normalizeFavTitle(alt);
+        if (clean.length >= 3) altSet.add(clean);
+      }
+    }
+    if (enriched?.altTitles) {
+      for (const alt of enriched.altTitles) {
+        const clean = normalizeFavTitle(alt);
+        if (clean.length >= 3) altSet.add(clean);
+      }
+    }
+    const altNorms = Array.from(altSet);
+
+    const looseSet = new Set<string>();
+    if (normPrimary.length >= 12) looseSet.add(romajiLoose(normPrimary));
+    for (const a of altNorms) {
+      if (a.length >= 12) looseSet.add(romajiLoose(a));
+    }
+    const looseNorms = Array.from(looseSet);
+
+    const rawTitles = getAllTitles(fav, enriched);
+    const spacedEntries: PrecomputedSpaced[] = [];
+    const seenSpaced = new Set<string>();
+    const itemWords = new Set<string>();
+
+    for (const rawTitle of rawTitles) {
+      const spaced = normalizeSpacedWords(rawTitle);
+      if (!spaced || seenSpaced.has(spaced)) continue;
+      seenSpaced.add(spaced);
+      const words = spaced.split(' ').filter(Boolean);
+      const compactLen = spaced.replace(/\s+/g, '').length;
+      spacedEntries.push({
+        spaced,
+        padded: ` ${spaced} `,
+        compactLen,
+        words
+      });
+      for (const w of words) {
+        itemWords.add(w);
+      }
+    }
+
+    itemWords.forEach(w => {
+      let arr = wordIndex.get(w);
+      if (!arr) {
+        arr = [i];
+        wordIndex.set(w, arr);
+      } else {
+        arr.push(i);
+      }
+    });
+
+    precomputed[i] = {
+      normPrimary,
+      altNorms,
+      looseNorms,
+      hasEnriched,
+      spacedEntries
+    };
+
+    // Pass 1: Exact primary title index
+    if (normPrimary.length >= 3) {
+      const owner = exactPrimaryOwner.get(normPrimary);
+      if (owner !== undefined) {
+        if (favorites[owner].mangaId !== fav.mangaId) {
+          union(owner, i, 'exact_title', 'Título idêntico em fontes diferentes');
+        }
+      } else {
+        exactPrimaryOwner.set(normPrimary, i);
+      }
+    }
+
+    // Index alt norms
+    for (const alt of altNorms) {
+      let owners = altOwners.get(alt);
+      if (!owners) {
+        owners = [i];
+        altOwners.set(alt, owners);
+      } else {
+        owners.push(i);
+      }
+    }
+  }
+
+  // Pass 2: Alt-title matches & shared alt-titles (O(N))
+  for (let i = 0; i < n; i++) {
+    const p = precomputed[i];
+    if (p.normPrimary.length >= 4) {
+      const matchingAltOwners = altOwners.get(p.normPrimary);
+      if (matchingAltOwners) {
+        for (const j of matchingAltOwners) {
+          if (j === i || favorites[j].mangaId === favorites[i].mangaId) continue;
+          if (find(i) === find(j)) continue;
+          const verified = p.hasEnriched || precomputed[j].hasEnriched;
+          union(
+            j,
+            i,
+            verified ? 'verified_source' : 'alt_title',
+            'Título alternativo confirmado entre fontes'
+          );
+        }
+      }
+    }
+  }
+
+  altOwners.forEach((owners, alt) => {
+    if (alt.length < 5 || owners.length < 2) return;
+    const first = owners[0];
+    for (let k = 1; k < owners.length; k++) {
+      const idx = owners[k];
+      if (favorites[first].mangaId === favorites[idx].mangaId) continue;
+      if (find(first) === find(idx)) continue;
+      const verified = precomputed[first].hasEnriched || precomputed[idx].hasEnriched;
+      union(
+        first,
+        idx,
+        verified ? 'verified_source' : 'alt_title',
+        'Mesma obra por título alternativo em comum'
+      );
+    }
+  });
+
+  // Pass 3: Romaji particle tolerance (O(N))
+  for (let i = 0; i < n; i++) {
+    for (const r of precomputed[i].looseNorms) {
+      const owner = looseOwner.get(r);
+      if (owner !== undefined) {
+        if (favorites[owner].mangaId !== favorites[i].mangaId && find(owner) !== find(i)) {
+          union(owner, i, 'alt_title', 'Título idêntico (variação de romanização)');
+        }
+      } else {
+        looseOwner.set(r, i);
+      }
+    }
+  }
+
+  // Pass 4: Word-boundary multi-word containment via rarest-word inverted index
+  for (let i = 0; i < n; i++) {
+    const p = precomputed[i];
+    for (const entry of p.spacedEntries) {
+      if (entry.words.length < 2 || entry.compactLen < 9) continue;
+
+      let rarestList: number[] | undefined;
+      for (const w of entry.words) {
+        const list = wordIndex.get(w);
+        if (!list) {
+          rarestList = undefined;
+          break;
+        }
+        if (!rarestList || list.length < rarestList.length) {
+          rarestList = list;
+        }
+      }
+      if (!rarestList || rarestList.length < 2) continue;
+
+      for (const j of rarestList) {
+        if (j === i || favorites[j].mangaId === favorites[i].mangaId) continue;
+        if (find(i) === find(j)) continue;
+        const targetEntries = precomputed[j].spacedEntries;
+        for (const target of targetEntries) {
+          if (target.spaced.length >= entry.spaced.length && target.padded.includes(entry.padded)) {
+            union(i, j, 'substring_match', 'Mesmo subtítulo/nome em inglês e japonês');
+            break;
+          }
+        }
       }
     }
   }
@@ -295,10 +476,18 @@ export function detectDuplicateFavoriteGroups(
   const buckets = new Map<number, FavoriteManga[]>();
   for (let i = 0; i < n; i++) {
     const root = find(i);
-    const list = buckets.get(root) || [];
-    list.push(favorites[i]);
-    buckets.set(root, list);
+    let list = buckets.get(root);
+    if (!list) {
+      list = [favorites[i]];
+      buckets.set(root, list);
+    } else {
+      list.push(favorites[i]);
+    }
   }
+
+  const historyProgressMap = new Map(
+    HistoryService.getHistory().map(h => [h.mangaId, parseFloat(h.chapterNumber || '0') || 0])
+  );
 
   const groups: DuplicateGroup[] = [];
   buckets.forEach((items, root) => {
@@ -312,7 +501,7 @@ export function detectDuplicateFavoriteGroups(
         reason: meta.reason,
         reasonLabel: meta.reasonLabel,
         items,
-        recommendedPrimaryId: pickRecommendedPrimaryId(items)
+        recommendedPrimaryId: pickRecommendedPrimaryId(items, historyProgressMap)
       });
     }
   });
@@ -347,12 +536,13 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
   const autoCheckedSuspectsRef = useRef(false);
 
   const groups = useMemo(
-    () => detectDuplicateFavoriteGroups(favorites, enrichedMap),
-    [favorites, enrichedMap]
+    () => (isOpen ? detectDuplicateFavoriteGroups(favorites, enrichedMap) : []),
+    [isOpen, favorites, enrichedMap]
   );
 
   // Keep selected primary & checkbox map synced with discovered groups
   useEffect(() => {
+    if (!isOpen || groups.length === 0) return;
     setSelectedPrimaryMap(prev => {
       const next = { ...prev };
       for (const g of groups) {
@@ -371,7 +561,7 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
       }
       return next;
     });
-  }, [groups]);
+  }, [isOpen, groups]);
 
   const runSourceVerification = async (targetFavs: FavoriteManga[], markDeep = false) => {
     if (targetFavs.length === 0) return;
@@ -548,24 +738,17 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
               genres: currentPrimary.genres?.length ? currentPrimary.genres : dup.genres,
               status: currentPrimary.status || dup.status,
               synopsis: currentPrimary.synopsis || primaryEnriched?.synopsis || dup.synopsis,
-              altTitles: combinedAlts
+              altTitles: combinedAlts,
+              userCategory: preservedCategory,
+              userScore: typeof preservedScore === 'number' ? preservedScore : undefined,
+              userNotes: preservedNotes
             },
             targetChapters,
             dupChapters,
             { removeOldSource: true }
           );
 
-          // Ensure chosen primary's category, score and notes stay authoritative
-          if (preservedCategory) {
-            HistoryService.updateFavoriteCategory(currentPrimary.mangaId, preservedCategory);
-          }
-          if (typeof preservedScore === 'number' || preservedNotes) {
-            HistoryService.updateFavoriteScore(
-              currentPrimary.mangaId,
-              typeof preservedScore === 'number' ? preservedScore : 10,
-              preservedNotes
-            );
-          }
+          UpdateTrackerService.migrateMangaUpdate(dup.mangaId, currentPrimary.mangaId);
 
           // If primary already had strictly further reading progress, restore primary's progress over dup's lower one
           if (primaryProg && bestProgNum > dupProgNum && dupProg) {

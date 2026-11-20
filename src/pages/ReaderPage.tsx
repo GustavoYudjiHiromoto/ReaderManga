@@ -89,7 +89,7 @@ interface ReaderPageImageProps {
   onLoad?: () => void;
 }
 
-const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
+const ReaderPageImage = React.memo<ReaderPageImageProps>(({
   pageNumber,
   imageUrl,
   className = '',
@@ -209,7 +209,7 @@ const ReaderPageImage: React.FC<ReaderPageImageProps> = ({
       )}
     </div>
   );
-};
+});
 
 export const ReaderPage: React.FC<ReaderPageProps> = ({
   mangaId,
@@ -383,6 +383,23 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const [isLoadingNextChapter, setIsLoadingNextChapter] = useState(false);
   const isLoadingNextChapterRef = useRef(false);
   const [nextChapterError, setNextChapterError] = useState<{ chapter: Chapter; error: string } | null>(null);
+  const nextChapterErrorRef = useRef<{ chapter: Chapter; error: string } | null>(null);
+  nextChapterErrorRef.current = nextChapterError;
+  const failedNextChapterIdsRef = useRef<Set<string>>(new Set());
+  const lastAutoLoadAtRef = useRef<number>(0);
+  const currentPageIndexRef = useRef<number>(currentPageIndex);
+  currentPageIndexRef.current = currentPageIndex;
+  const lastScrollSpyAtRef = useRef<number>(0);
+  const accumulatedAutoScrollRef = useRef<number>(0);
+  const backClickLockRef = useRef<number>(0);
+
+  const handleSafeBack = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const now = Date.now();
+    if (now - backClickLockRef.current < 600) return;
+    backClickLockRef.current = now;
+    onBackToManga();
+  };
 
   const toggleContinuousScroll = () => {
     setContinuousScroll(prev => {
@@ -630,25 +647,39 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const pagesContainerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Autoscroll continuous animation loop
+  // Autoscroll continuous animation loop (with fractional pixel accumulator & bottom-loading awareness)
   useEffect(() => {
-    if (!isAutoScrolling || readerMode !== 'webtoon') return;
+    if (!isAutoScrolling || readerMode !== 'webtoon') {
+      accumulatedAutoScrollRef.current = 0;
+      return;
+    }
 
     let animationFrameId: number;
     const scrollStep = () => {
-      const step = autoScrollSpeed * 0.75;
-      window.scrollBy({ top: step, behavior: 'instant' as any });
-
-      if ((window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 50)) {
+      const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      if (window.scrollY >= maxScrollY - 12) {
+        if (continuousScroll && isLoadingNextChapterRef.current) {
+          // Wait quietly while next chapter section finishes loading
+          animationFrameId = requestAnimationFrame(scrollStep);
+          return;
+        }
         setIsAutoScrolling(false);
         return;
+      }
+
+      const step = autoScrollSpeed * 0.75;
+      accumulatedAutoScrollRef.current += step;
+      const wholePx = Math.trunc(accumulatedAutoScrollRef.current);
+      if (wholePx >= 1) {
+        accumulatedAutoScrollRef.current -= wholePx;
+        window.scrollBy({ top: wholePx, behavior: 'instant' as any });
       }
       animationFrameId = requestAnimationFrame(scrollStep);
     };
 
     animationFrameId = requestAnimationFrame(scrollStep);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isAutoScrolling, autoScrollSpeed, readerMode]);
+  }, [isAutoScrolling, autoScrollSpeed, readerMode, continuousScroll]);
 
   // Pause autoscroll on manual user interaction
   useEffect(() => {
@@ -666,22 +697,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     };
   }, [isAutoScrolling]);
 
-  // Intelligent prefetching: pre-load upcoming 3 pages into browser cache
-  useEffect(() => {
-    if (!pages || pages.length === 0) return;
-    const prefetchLimit = 3;
-    for (let i = 1; i <= prefetchLimit; i++) {
-      const idx = currentPageIndex + i;
-      if (idx < pages.length && pages[idx]?.imageUrl) {
-        const img = new Image();
-        img.src = pages[idx].imageUrl;
-      }
-    }
-  }, [currentPageIndex, pages]);
-
   // Load Manga, Chapter list, and Pages
   useEffect(() => {
     setIsOfflineSaved(OfflineCacheService.isChapterSaved(chapterId));
+    failedNextChapterIdsRef.current.clear();
+    lastAutoLoadAtRef.current = 0;
     loadReaderData();
   }, [mangaId, chapterId]);
 
@@ -869,9 +889,10 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }).catch(() => {});
   }, [manga?.id]);
 
-  // Save progress on page change and scroll
+  // Debounced progress saving on page change so auto-scroll / quick flips never block main thread
   useEffect(() => {
-    if (manga && currentChapter && pages.length > 0) {
+    if (!manga || !currentChapter || pages.length === 0) return;
+    const timer = setTimeout(() => {
       const maxScroll = typeof window !== 'undefined' ? document.documentElement.scrollHeight - window.innerHeight : 0;
       const scrollRatio = maxScroll > 0 ? window.scrollY / maxScroll : undefined;
       HistoryService.saveProgress({
@@ -886,7 +907,8 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         scrollRatio: typeof scrollRatio === 'number' && !isNaN(scrollRatio) ? Math.min(1, Math.max(0, scrollRatio)) : undefined,
         scrollOffset: typeof window !== 'undefined' ? window.scrollY : undefined
       });
-    }
+    }, 450);
+    return () => clearTimeout(timer);
   }, [currentPageIndex, manga, currentChapter, pages]);
 
   // Debounced scroll listener in webtoon mode for exact position saving
@@ -907,7 +929,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             chapterId: currentChapter.id,
             chapterNumber: currentChapter.chapterNumber,
             chapterTitle: currentChapter.title,
-            pageNumber: currentPageIndex + 1,
+            pageNumber: currentPageIndexRef.current + 1,
             totalPages: pages.length,
             scrollRatio: ratio,
             scrollOffset: window.scrollY
@@ -921,28 +943,28 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       window.removeEventListener('scroll', handleScrollSave);
       clearTimeout(timeoutId);
     };
-  }, [readerMode, manga, currentChapter, pages, currentPageIndex]);
+  }, [readerMode, manga, currentChapter, pages]);
 
-  // Active reading time tracking while reader tab is in focus
+  // Active reading time tracking while reader tab is in focus (batched every 15s to minimize churn)
   useEffect(() => {
     let lastTick = Date.now();
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         const now = Date.now();
         const diffSeconds = Math.round((now - lastTick) / 1000);
-        if (diffSeconds > 0 && diffSeconds <= 30) {
+        if (diffSeconds > 0 && diffSeconds <= 45) {
           HistoryService.addReadingTime(diffSeconds);
         }
         lastTick = now;
       } else {
         lastTick = Date.now();
       }
-    }, 5000);
+    }, 15000);
 
     return () => clearInterval(interval);
   }, []);
 
-  // Track if current page has bookmark
+  // Track if current page has bookmark (scoped to pageBookmarks topic only)
   useEffect(() => {
     if (!currentChapter) return;
     const pageNum = currentPageIndex + 1;
@@ -950,7 +972,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
     const unsubscribe = HistoryService.subscribe(() => {
       setIsCurrentPageBookmarked(HistoryService.isPageBookmarked(currentChapter.id, pageNum));
-    });
+    }, ['pageBookmarks']);
     return unsubscribe;
   }, [currentChapter, currentPageIndex]);
 
@@ -1091,9 +1113,16 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   }, [currentPageIndex, pages.length, readerMode, readingDirection, volumeNav]);
 
   // Load next chapter section for continuous vertical scroll
-  const loadNextChapterSection = async (nextChap: Chapter) => {
+  const loadNextChapterSection = async (nextChap: Chapter, isManualRetry = false) => {
     if (isLoadingNextChapterRef.current) return;
+    if (isManualRetry) {
+      failedNextChapterIdsRef.current.delete(nextChap.id);
+    } else if (failedNextChapterIdsRef.current.has(nextChap.id)) {
+      return;
+    }
+
     isLoadingNextChapterRef.current = true;
+    lastAutoLoadAtRef.current = Date.now();
     setIsLoadingNextChapter(true);
     setNextChapterError(null);
 
@@ -1119,6 +1148,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       }
 
       if (nextPages.length === 0) {
+        failedNextChapterIdsRef.current.add(nextChap.id);
         setNextChapterError({
           chapter: nextChap,
           error: `O Capítulo ${nextChap.chapterNumber} não retornou páginas no momento.`
@@ -1133,6 +1163,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       showToast(`Capítulo ${nextChap.chapterNumber} carregado na rolagem contínua!`);
     } catch (err: any) {
       console.error('Failed to load next chapter section:', err);
+      failedNextChapterIdsRef.current.add(nextChap.id);
       setNextChapterError({
         chapter: nextChap,
         error: err.message || `Erro ao carregar Capítulo ${nextChap.chapterNumber}`
@@ -1213,7 +1244,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     }
   };
 
-  // Scroll spy for webtoon mode & infinite vertical scroll trigger
+  // Scroll spy for webtoon mode & throttled infinite vertical scroll trigger
   useEffect(() => {
     if (readerMode !== 'webtoon') return;
 
@@ -1224,38 +1255,69 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       ticking = true;
 
       window.requestAnimationFrame(() => {
-        const scrollPosition = window.scrollY + window.innerHeight * 0.35;
-        const pageElements = document.querySelectorAll<HTMLElement>('.webtoon-page-item');
+        const now = Date.now();
+        if (now - lastScrollSpyAtRef.current >= 120) {
+          lastScrollSpyAtRef.current = now;
+          const scrollPosition = window.scrollY + window.innerHeight * 0.35;
 
-        for (let i = 0; i < pageElements.length; i++) {
-          const el = pageElements[i];
-          const top = el.offsetTop;
-          const height = el.offsetHeight;
-          if (scrollPosition >= top && scrollPosition < top + height) {
-            const chId = el.getAttribute('data-chapter-id');
-            const pIdx = parseInt(el.getAttribute('data-page-index') || '0', 10);
-            if (chId && currentChapter?.id !== chId) {
-              const matchedSec = loadedSections.find(s => s.chapter.id === chId);
-              if (matchedSec) {
-                setCurrentChapter(matchedSec.chapter);
-                setPages(matchedSec.pages);
-                // Sync URL quietly without reloading
-                window.history.replaceState(
-                  { ...window.history.state, chapterId: matchedSec.chapter.id },
-                  '',
-                  `/read/${encodeURIComponent(mangaId)}/${encodeURIComponent(matchedSec.chapter.id)}`
-                );
+          if (loadedSections.length <= 1) {
+            const refs = pageRefs.current;
+            for (let i = 0; i < refs.length; i++) {
+              const el = refs[i];
+              if (!el) continue;
+              const top = el.offsetTop;
+              const height = el.offsetHeight;
+              if (scrollPosition >= top && scrollPosition < top + height) {
+                if (i !== currentPageIndexRef.current) {
+                  setCurrentPageIndex(i);
+                }
+                break;
               }
             }
-            setCurrentPageIndex(pIdx);
-            break;
+          } else {
+            const pageElements = document.querySelectorAll<HTMLElement>('.webtoon-page-item');
+
+            for (let i = 0; i < pageElements.length; i++) {
+              const el = pageElements[i];
+              const top = el.offsetTop;
+              const height = el.offsetHeight;
+              if (scrollPosition >= top && scrollPosition < top + height) {
+                const chId = el.getAttribute('data-chapter-id');
+                const pIdx = parseInt(el.getAttribute('data-page-index') || '0', 10);
+                if (chId && currentChapter?.id !== chId) {
+                  const matchedSec = loadedSections.find(s => s.chapter.id === chId);
+                  if (matchedSec) {
+                    setCurrentChapter(matchedSec.chapter);
+                    setPages(matchedSec.pages);
+                    // Sync URL quietly without reloading
+                    window.history.replaceState(
+                      { ...window.history.state, chapterId: matchedSec.chapter.id },
+                      '',
+                      `/read/${encodeURIComponent(mangaId)}/${encodeURIComponent(matchedSec.chapter.id)}`
+                    );
+                  }
+                }
+                if (pIdx !== currentPageIndexRef.current) {
+                  setCurrentPageIndex(pIdx);
+                }
+                break;
+              }
+            }
           }
         }
 
-        // Automatic loading of next chapter in continuous scroll mode
-        if (continuousScroll && !isLoadingNextChapterRef.current && loadedSections.length > 0) {
-          const scrollDistanceToEnd = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY);
-          if (scrollDistanceToEnd < 1400) {
+        // Automatic loading of next chapter in continuous scroll mode (throttled & guarded against retries/cascades)
+        if (
+          continuousScroll &&
+          !isLoadingNextChapterRef.current &&
+          !nextChapterErrorRef.current &&
+          loadedSections.length > 0 &&
+          now - lastAutoLoadAtRef.current > 900
+        ) {
+          const scrollHeight = document.documentElement.scrollHeight;
+          const scrollDistanceToEnd = scrollHeight - (window.innerHeight + window.scrollY);
+          const hasScrolledOrFitsViewport = window.scrollY > 20 || scrollHeight <= window.innerHeight + 120;
+          if (hasScrolledOrFitsViewport && scrollDistanceToEnd < 700) {
             const lastSec = loadedSections[loadedSections.length - 1];
             if (lastSec) {
               const lastIdx = navigableChapters.findIndex(
@@ -1263,7 +1325,9 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               );
               if (lastIdx !== -1 && lastIdx < navigableChapters.length - 1) {
                 const nextToLoad = navigableChapters[lastIdx + 1];
-                loadNextChapterSection(nextToLoad);
+                if (!failedNextChapterIdsRef.current.has(nextToLoad.id)) {
+                  loadNextChapterSection(nextToLoad, false);
+                }
               }
             }
           }
@@ -1286,10 +1350,10 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   };
 
   const toolbarThemeClasses: Record<ReaderTheme, string> = {
-    dark: 'bg-zinc-900/90 border-zinc-800 text-zinc-200',
-    black: 'bg-zinc-950/90 border-zinc-900 text-zinc-200',
-    sepia: 'bg-[#282521]/90 border-[#38332c] text-[#e8dfcf]',
-    light: 'bg-white/90 border-zinc-200 text-zinc-800'
+    dark: 'bg-zinc-900/[0.97] border-zinc-800 text-zinc-200',
+    black: 'bg-zinc-950/[0.97] border-zinc-900 text-zinc-200',
+    sepia: 'bg-[#282521]/[0.97] border-[#38332c] text-[#e8dfcf]',
+    light: 'bg-white/[0.97] border-zinc-200 text-zinc-800'
   };
 
   if (loading) {
@@ -1316,7 +1380,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         </p>
         <div className="flex gap-3">
           <button
-            onClick={onBackToManga}
+            onClick={handleSafeBack}
             className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors cursor-pointer"
           >
             Voltar ao Mangá
@@ -1338,7 +1402,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       {isZenMode && (
         <button
           onClick={toggleZenMode}
-          className="fixed top-4 right-4 z-50 px-3 py-1.5 rounded-full bg-zinc-950/85 border border-amber-500/30 text-zinc-300 hover:text-white backdrop-blur-md text-xs font-medium flex items-center gap-1.5 shadow-2xl opacity-40 hover:opacity-100 transition-opacity cursor-pointer group"
+          className="fixed top-4 right-4 z-50 px-3 py-1.5 rounded-full bg-zinc-950/95 border border-amber-500/30 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 shadow-2xl opacity-45 hover:opacity-100 transition-opacity cursor-pointer group"
           title="Sair do Modo Zen (Tecla Z ou duplo clique)"
         >
           <Eye className="h-3.5 w-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
@@ -1348,7 +1412,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
       {/* 1. Top Reading Toolbar */}
       <header
-        className={`sticky top-0 z-50 transition-transform duration-200 border-b backdrop-blur-md ${toolbarThemeClasses[readerTheme]} ${
+        className={`sticky top-0 z-50 transition-transform duration-200 border-b ${toolbarThemeClasses[readerTheme]} ${
           !isZenMode && showUi ? 'translate-y-0' : '-translate-y-full'
         }`}
       >
@@ -1357,7 +1421,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           {/* Back button & Manga Title (clickable to open Manga Detail page) */}
           <div className="flex items-center gap-2 sm:gap-3 overflow-hidden min-w-0">
             <button
-              onClick={onBackToManga}
+              onClick={handleSafeBack}
               className="p-1.5 hover:bg-zinc-800/60 rounded-lg transition-colors cursor-pointer shrink-0"
               title="Voltar à tela anterior"
             >
@@ -1366,7 +1430,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
             <button
               type="button"
-              onClick={() => (onOpenMangaDetail ? onOpenMangaDetail() : onBackToManga())}
+              onClick={() => (onOpenMangaDetail ? onOpenMangaDetail() : handleSafeBack())}
               className="group text-left overflow-hidden min-w-0 cursor-pointer rounded-lg px-1.5 py-1 hover:bg-zinc-800/50 transition-colors"
               title="Ir para a página do mangá (sinopse, capítulos e similares)"
             >
@@ -1394,7 +1458,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setShowChapterDrawer(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-rose-500/40 rounded-lg text-xs font-medium text-zinc-200 hover:text-white transition-all cursor-pointer shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-rose-500/40 rounded-lg text-xs font-medium text-zinc-200 hover:text-white transition-colors cursor-pointer shadow-sm"
               title="Abrir gaveta de capítulos (navegação rápida)"
             >
               <ListFilter className="h-3.5 w-3.5 text-rose-400" />
@@ -2039,13 +2103,10 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       {isAutoScrolling && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-zinc-900/95 border border-rose-500/50 shadow-2xl backdrop-blur-md text-xs"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-3.5 py-2 rounded-full bg-zinc-900/[0.98] border border-rose-500/50 shadow-2xl text-xs"
         >
           <div className="flex items-center gap-1.5 font-semibold text-white">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-            </span>
+            <span className="inline-flex h-2 w-2 rounded-full bg-rose-500 shrink-0" />
             <span className="text-[11px]">Rolagem</span>
             <span className="font-mono text-rose-300 font-bold">{autoScrollSpeed}x</span>
           </div>
@@ -2117,7 +2178,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
               >
                 {/* Chapter Boundary Divider between chapters */}
                 {secIdx > 0 && (
-                  <div className="w-full max-w-2xl my-10 px-5 py-4 rounded-2xl bg-zinc-900/90 border border-zinc-800 backdrop-blur-md shadow-2xl flex items-center justify-between">
+                  <div className="w-full max-w-2xl my-10 px-5 py-4 rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
                         <InfinityIcon className="h-5 w-5" />
@@ -2161,7 +2222,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                       <ReaderPageImage
                         pageNumber={page.pageNumber}
                         imageUrl={page.imageUrl}
-                        className={`block object-contain transition-all ${
+                        className={`block object-contain ${
                           pageFit === 'width' ? 'w-full' : pageFit === 'height' ? 'h-screen' : 'max-w-full'
                         }`}
                         loading={secIdx === 0 && idx < 3 ? 'eager' : 'lazy'}
@@ -2174,7 +2235,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
             {/* Infinite Scroll Next Chapter Loading State */}
             {isLoadingNextChapter && (
-              <div className="w-full max-w-md my-10 p-5 rounded-2xl bg-zinc-900/90 border border-zinc-800 flex flex-col items-center justify-center text-center shadow-xl animate-pulse">
+              <div className="w-full max-w-md my-10 p-5 rounded-2xl bg-zinc-900/95 border border-zinc-800 flex flex-col items-center justify-center text-center shadow-xl">
                 <RefreshCw className="h-6 w-6 animate-spin text-rose-500 mb-2" />
                 <h4 className="text-xs font-semibold text-zinc-200">
                   Carregando próximo capítulo automaticamente...
@@ -2191,7 +2252,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                 <AlertCircle className="h-6 w-6 text-rose-400 mx-auto mb-2" />
                 <p className="text-xs text-zinc-300 mb-3">{nextChapterError.error}</p>
                 <button
-                  onClick={() => loadNextChapterSection(nextChapterError.chapter)}
+                  onClick={() => loadNextChapterSection(nextChapterError.chapter, true)}
                   className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
                 >
                   Tentar carregar Capítulo {nextChapterError.chapter.chapterNumber} novamente
@@ -2218,7 +2279,9 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
             >
               {/* Horizontal Sliding Track */}
               <div
-                className="flex w-full h-full will-change-transform motion-reduce:transition-none"
+                className={`flex w-full h-full motion-reduce:transition-none ${
+                  isDraggingCarousel && pageTransition === 'slide' ? 'will-change-transform' : ''
+                }`}
                 style={{
                   transform: `translate3d(calc(${-activeVisualIdx * 100}% + ${
                     pageTransition === 'slide' ? dragOffsetPx : 0
@@ -2366,7 +2429,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      loadNextChapterSection(subsequentChapter);
+                      loadNextChapterSection(subsequentChapter, true);
                     }}
                     disabled={isLoadingNextChapter}
                     className="w-full sm:w-auto px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-rose-950/50"
@@ -2427,7 +2490,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                             e.stopPropagation();
                             window.location.href = `/manga/${encodeURIComponent(rec.id)}`;
                           }}
-                          className="group cursor-pointer rounded-lg bg-zinc-950/80 border border-zinc-800/80 p-2 hover:border-rose-500/50 transition-all text-center"
+                          className="group cursor-pointer rounded-lg bg-zinc-950/80 border border-zinc-800/80 p-2 hover:border-rose-500/50 transition-colors text-center"
                         >
                           <div className="aspect-[3/4] w-full rounded overflow-hidden mb-1.5 bg-zinc-800">
                             <img
@@ -2516,7 +2579,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           !isZenMode && showUi ? 'translate-y-0 opacity-100 pointer-events-auto' : 'translate-y-16 opacity-0 pointer-events-none'
         }`}
       >
-        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-full bg-zinc-950/90 border border-zinc-800 shadow-2xl backdrop-blur-md text-xs">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-full bg-zinc-950/[0.97] border border-zinc-800 shadow-2xl text-xs">
           {/* Prev Chapter */}
           <button
             onClick={goToPrevPage}
@@ -2706,7 +2769,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
 
           {/* Drawer Panel */}
           <div className="absolute inset-y-0 right-0 max-w-full flex">
-            <div className="w-screen max-w-sm sm:max-w-md bg-zinc-950/95 border-l border-zinc-800 backdrop-blur-xl shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+            <div className="w-screen max-w-sm sm:max-w-md bg-zinc-950/[0.98] border-l border-zinc-800 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
               {/* Drawer Header */}
               <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -2772,7 +2835,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
                           onChangeChapter(ch.id);
                           setShowChapterDrawer(false);
                         }}
-                        className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left text-xs transition-all cursor-pointer border ${
+                        className={`w-full flex items-center justify-between p-2.5 rounded-xl text-left text-xs transition-colors cursor-pointer border ${
                           isCurrent
                             ? 'bg-rose-950/40 border-rose-500/80 text-white font-semibold shadow-md'
                             : isRead
@@ -2811,7 +2874,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       )}
 
       {/* Ambient Subtle Reader Status (Clock & Progress percentage) */}
-      <div className="fixed bottom-2 right-3 z-40 pointer-events-none select-none opacity-40 hover:opacity-100 transition-opacity flex items-center gap-2 text-[10px] font-mono text-zinc-400 bg-zinc-950/70 px-2.5 py-1 rounded-full backdrop-blur-md border border-zinc-800/60 shadow-lg">
+      <div className="fixed bottom-2 right-3 z-40 pointer-events-none select-none opacity-45 hover:opacity-100 transition-opacity flex items-center gap-2 text-[10px] font-mono text-zinc-400 bg-zinc-950/90 px-2.5 py-1 rounded-full border border-zinc-800/60 shadow-lg">
         <Clock className="h-3 w-3 text-zinc-400" />
         <span>{currentTime}</span>
         <span>·</span>

@@ -21,7 +21,22 @@ interface TrackerStatusBadgeProps {
   className?: string;
 }
 
-export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
+function areTrackerStatusesEqual(a: MangaTrackerStatusInfo, b: MangaTrackerStatusInfo): boolean {
+  return (
+    a.overallStatus === b.overallStatus &&
+    a.hasTrackersConnected === b.hasTrackersConnected &&
+    a.isLinked === b.isLinked &&
+    a.lastScrobbledChapter === b.lastScrobbledChapter &&
+    a.anilist.status === b.anilist.status &&
+    a.anilist.id === b.anilist.id &&
+    a.anilist.error === b.anilist.error &&
+    a.mal.status === b.mal.status &&
+    a.mal.id === b.mal.id &&
+    a.mal.error === b.mal.error
+  );
+}
+
+const TrackerStatusBadgeComponent: React.FC<TrackerStatusBadgeProps> = ({
   mangaId,
   mangaTitle,
   size = 'md',
@@ -36,11 +51,12 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
   const [showTooltip, setShowTooltip] = useState(false);
 
   useEffect(() => {
-    setStatusInfo(TrackerService.getMangaSyncStatus(mangaId));
-    const unsub = TrackerService.subscribe(() => {
-      setStatusInfo(TrackerService.getMangaSyncStatus(mangaId));
-    });
-    return () => unsub();
+    const syncIfChanged = () => {
+      const next = TrackerService.getMangaSyncStatus(mangaId);
+      setStatusInfo(prev => (areTrackerStatusesEqual(prev, next) ? prev : next));
+    };
+    syncIfChanged();
+    return TrackerService.subscribeManga(mangaId, syncIfChanged);
   }, [mangaId]);
 
   const handleBadgeClick = (e: React.MouseEvent) => {
@@ -88,7 +104,7 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
     statusText = 'Sincronizado';
   } else if (overallStatus === 'error') {
     containerStyle =
-      'bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/40 animate-pulse';
+      'bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/45';
     iconElement = isRetrying ? (
       <RefreshCw className={`${iconSizeClass} text-rose-400 animate-spin shrink-0`} />
     ) : (
@@ -124,7 +140,7 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
         type="button"
         onClick={handleBadgeClick}
         title={statusInfo.tooltip}
-        className={`inline-flex items-center justify-center font-medium rounded-md transition-all cursor-pointer backdrop-blur-sm shadow-sm select-none ${badgePaddingClass} ${containerStyle}`}
+        className={`inline-flex items-center justify-center font-medium rounded-md transition-colors cursor-pointer shadow-sm select-none ${badgePaddingClass} ${containerStyle}`}
         aria-label={`Status de rastreamento: ${statusInfo.label}`}
       >
         {iconElement}
@@ -135,7 +151,7 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
       {showTooltip && (
         <div
           role="tooltip"
-          className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-zinc-900/95 backdrop-blur-md border border-zinc-700/80 rounded-xl shadow-2xl text-left text-xs pointer-events-none animate-in fade-in zoom-in-95 duration-150"
+          className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-zinc-900/[0.98] border border-zinc-700/80 rounded-xl shadow-2xl text-left text-xs pointer-events-none animate-in fade-in zoom-in-95 duration-150"
         >
           {/* Arrow */}
           <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-4 border-transparent border-t-zinc-700" />
@@ -225,3 +241,5 @@ export const TrackerStatusBadge: React.FC<TrackerStatusBadgeProps> = ({
     </div>
   );
 };
+
+export const TrackerStatusBadge = React.memo(TrackerStatusBadgeComponent);

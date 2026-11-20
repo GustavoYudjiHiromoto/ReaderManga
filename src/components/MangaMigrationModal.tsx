@@ -13,6 +13,7 @@ import { Chapter, Manga, MangaSourceInfo } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { ExtensionService } from '../services/extensionService.js';
 import { HistoryService } from '../services/history.js';
+import { UpdateTrackerService } from '../services/updateTracker.js';
 
 interface MangaMigrationModalProps {
   isOpen: boolean;
@@ -140,6 +141,10 @@ export const MangaMigrationModal: React.FC<MangaMigrationModalProps> = ({
         sourceChapters,
         { removeOldSource: removeOldFavorite }
       );
+
+      if (removeOldFavorite) {
+        UpdateTrackerService.migrateMangaUpdate(sourceManga.id, selectedCandidate.id);
+      }
 
       onClose();
       onMigrated(selectedCandidate.id);

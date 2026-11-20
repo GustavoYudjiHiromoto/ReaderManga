@@ -78,12 +78,89 @@ export interface HybridPersonalizedApiResponse {
   profileSummary?: string;
 }
 
+const MAX_API_CACHE = 80;
+
+interface ApiCacheEntry {
+  expiresAt: number;
+  value: unknown;
+}
+
+const apiResponseCache = new Map<string, ApiCacheEntry>();
+const apiInFlight = new Map<string, Promise<unknown>>();
+
+function getCachedValue<T>(key: string): T | undefined {
+  const hit = apiResponseCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() > hit.expiresAt) {
+    apiResponseCache.delete(key);
+    return undefined;
+  }
+  return hit.value as T;
+}
+
+function setCachedValue<T>(key: string, value: T, ttlMs: number): T {
+  if (ttlMs <= 0) return value;
+  if (apiResponseCache.size >= MAX_API_CACHE) {
+    const oldestKey = apiResponseCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      apiResponseCache.delete(oldestKey);
+    }
+  }
+  apiResponseCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+  return value;
+}
+
+function coalesceGet<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
+  if (ttlMs > 0) {
+    const cached = getCachedValue<T>(key);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+  }
+
+  const pending = apiInFlight.get(key) as Promise<T> | undefined;
+  if (pending) {
+    return pending;
+  }
+
+  const promise = fetcher()
+    .then(result => {
+      if (ttlMs > 0) {
+        setCachedValue(key, result, ttlMs);
+      }
+      return result;
+    })
+    .finally(() => {
+      if (apiInFlight.get(key) === promise) {
+        apiInFlight.delete(key);
+      }
+    });
+
+  apiInFlight.set(key, promise);
+  return promise;
+}
+
+function invalidateSourcesCache() {
+  apiResponseCache.delete('sources');
+  for (const key of apiResponseCache.keys()) {
+    if (
+      key.startsWith('featured:') ||
+      key.startsWith('search:') ||
+      key.startsWith('catalog:')
+    ) {
+      apiResponseCache.delete(key);
+    }
+  }
+}
+
 export const MangaApi = {
   async getSources(): Promise<MangaSourceInfo[]> {
-    const res = await fetch('/api/sources');
-    if (!res.ok) throw new Error('Falha ao obter fontes de mangá');
-    const json = await res.json();
-    return json.data || [];
+    return coalesceGet('sources', 60_000, async () => {
+      const res = await fetch('/api/sources');
+      if (!res.ok) throw new Error('Falha ao obter fontes de mangá');
+      const json = await res.json();
+      return json.data || [];
+    });
   },
 
   async pingSource(sourceId: string): Promise<import('../types/manga.js').SourcePingResult> {
@@ -94,10 +171,12 @@ export const MangaApi = {
   },
 
   async pingAllSources(): Promise<import('../types/manga.js').SourcePingResult[]> {
-    const res = await fetch('/api/sources/ping/all');
-    if (!res.ok) throw new Error('Falha ao sondar fontes');
-    const json = await res.json();
-    return json.data || [];
+    return coalesceGet('ping:all', 0, async () => {
+      const res = await fetch('/api/sources/ping/all');
+      if (!res.ok) throw new Error('Falha ao sondar fontes');
+      const json = await res.json();
+      return json.data || [];
+    });
   },
 
   async getSourceCatalog(
@@ -126,12 +205,16 @@ export const MangaApi = {
     if (options?.onlyAvailable === false) params.set('onlyAvailable', 'false');
     if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
 
-    const res = await fetch(`/api/sources/${encodeURIComponent(sourceId)}/catalog?${params.toString()}`);
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => null);
-      throw new Error(errJson?.error || `Falha ao explorar catálogo de ${sourceId}`);
-    }
-    return await res.json();
+    const qs = params.toString();
+    const url = `/api/sources/${encodeURIComponent(sourceId)}/catalog?${qs}`;
+    return coalesceGet(`catalog:${url}`, 20_000, async () => {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || `Falha ao explorar catálogo de ${sourceId}`);
+      }
+      return await res.json();
+    });
   },
 
   async getExtensionRepos(): Promise<ExtensionRepo[]> {
@@ -178,6 +261,7 @@ export const MangaApi = {
     if (!res.ok) {
       throw new Error(json?.error || `Falha ao instalar extensão (${res.status})`);
     }
+    invalidateSourcesCache();
     return json.data;
   },
 
@@ -191,6 +275,7 @@ export const MangaApi = {
     if (!res.ok) {
       throw new Error(json?.error || `Falha ao atualizar espelho (${res.status})`);
     }
+    invalidateSourcesCache();
     return json.data;
   },
 
@@ -202,6 +287,7 @@ export const MangaApi = {
     if (!res.ok) {
       throw new Error(json?.error || `Falha ao desinstalar extensão (${res.status})`);
     }
+    invalidateSourcesCache();
   },
 
   async detectExtensionSite(payload: {
@@ -249,11 +335,14 @@ export const MangaApi = {
     if (options?.sources && options.sources.length > 0) {
       params.set('sources', options.sources.join(','));
     }
-    const url = params.toString() ? `/api/manga/featured?${params.toString()}` : '/api/manga/featured';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Falha ao obter destaques');
-    const json = await res.json();
-    return json.data || [];
+    const qs = params.toString();
+    const url = qs ? `/api/manga/featured?${qs}` : '/api/manga/featured';
+    return coalesceGet(`featured:${qs}`, 30_000, async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Falha ao obter destaques');
+      const json = await res.json();
+      return json.data || [];
+    });
   },
 
   async search(query: string, options?: {
@@ -262,7 +351,6 @@ export const MangaApi = {
     genre?: string;
     genres?: string[];
     demographic?: string;
-    protagonist?: 'female' | 'male';
     type?: string;
     status?: string;
     language?: string;
@@ -278,7 +366,6 @@ export const MangaApi = {
     if (options?.sources && options.sources.length > 0) params.set('sources', options.sources.join(','));
     if (options?.genre && options.genre !== 'all') params.set('genre', options.genre);
     if (options?.demographic && options.demographic !== 'all') params.set('demographic', options.demographic);
-    if (options?.protagonist) params.set('protagonist', options.protagonist);
     if (options?.type && options.type !== 'all') params.set('type', options.type);
     if (options?.status && options.status !== 'all') params.set('status', options.status);
     if (options?.language && options.language !== 'all') params.set('language', options.language);
@@ -292,19 +379,24 @@ export const MangaApi = {
     if (options?.includeAdult) params.set('includeAdult', 'true');
     if (options?.onlyAvailable) params.set('onlyAvailable', 'true');
 
-    const res = await fetch(`/api/search?${params.toString()}`);
-    if (!res.ok) throw new Error('Falha ao pesquisar mangás');
-    return await res.json();
+    const qs = params.toString();
+    return coalesceGet(`search:${qs}`, 20_000, async () => {
+      const res = await fetch(`/api/search?${qs}`);
+      if (!res.ok) throw new Error('Falha ao pesquisar mangás');
+      return await res.json();
+    });
   },
 
   async getMangaDetails(internalId: string): Promise<Manga> {
-    const res = await fetch(`/api/manga/${encodeURIComponent(internalId)}`);
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => null);
-      throw new Error(errJson?.error || (res.status === 404 ? 'Mangá não encontrado' : `Falha ao carregar detalhes (código ${res.status})`));
-    }
-    const json = await res.json();
-    return json.data;
+    return coalesceGet(`details:${internalId}`, 45_000, async () => {
+      const res = await fetch(`/api/manga/${encodeURIComponent(internalId)}`);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || (res.status === 404 ? 'Mangá não encontrado' : `Falha ao carregar detalhes (código ${res.status})`));
+      }
+      const json = await res.json();
+      return json.data;
+    });
   },
 
   async getChapters(
@@ -328,23 +420,30 @@ export const MangaApi = {
     }
     if (options?.forceFederate) params.set('forceFederate', 'true');
 
-    const res = await fetch(`/api/manga/${encodeURIComponent(internalMangaId)}/chapters?${params.toString()}`);
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => null);
-      throw new Error(errJson?.error || `Falha ao carregar capítulos (código ${res.status})`);
-    }
-    const json = await res.json();
-    return json.data || [];
+    const qs = params.toString();
+    const url = `/api/manga/${encodeURIComponent(internalMangaId)}/chapters?${qs}`;
+    const ttlMs = options?.forceFederate ? 0 : 30_000;
+    return coalesceGet(`chapters:${internalMangaId}:${qs}`, ttlMs, async () => {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || `Falha ao carregar capítulos (código ${res.status})`);
+      }
+      const json = await res.json();
+      return json.data || [];
+    });
   },
 
   async getChapterPages(internalChapterId: string): Promise<MangaPage[]> {
-    const res = await fetch(`/api/chapters/${encodeURIComponent(internalChapterId)}/pages`);
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => null);
-      throw new Error(errJson?.error || `Falha ao carregar páginas do capítulo (código ${res.status})`);
-    }
-    const json = await res.json();
-    return json.data || [];
+    return coalesceGet(`pages:${internalChapterId}`, 60_000, async () => {
+      const res = await fetch(`/api/chapters/${encodeURIComponent(internalChapterId)}/pages`);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || `Falha ao carregar páginas do capítulo (código ${res.status})`);
+      }
+      const json = await res.json();
+      return json.data || [];
+    });
   },
 
   async getRecommendationFeed(): Promise<RecommendationFeedResponse> {

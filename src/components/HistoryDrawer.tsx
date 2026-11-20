@@ -13,20 +13,20 @@ interface HistoryDrawerProps {
   onRemove: (mangaId: string) => void;
 }
 
-function getDayLabel(timestamp: number): string {
+function getDayLabel(
+  timestamp: number,
+  nowMs: number,
+  todayStr: string,
+  yesterdayStr: string
+): string {
   if (!timestamp) return 'Anteriores';
   const itemDate = new Date(timestamp);
-  const now = new Date();
+  const itemDateStr = itemDate.toDateString();
 
-  const isToday = itemDate.toDateString() === now.toDateString();
-  if (isToday) return 'Hoje';
+  if (itemDateStr === todayStr) return 'Hoje';
+  if (itemDateStr === yesterdayStr) return 'Ontem';
 
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  const isYesterday = itemDate.toDateString() === yesterday.toDateString();
-  if (isYesterday) return 'Ontem';
-
-  const diffDays = Math.floor((now.getTime() - itemDate.getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.floor((nowMs - itemDate.getTime()) / (1000 * 60 * 60 * 24));
   if (diffDays < 7) {
     return 'Esta Semana';
   }
@@ -34,7 +34,7 @@ function getDayLabel(timestamp: number): string {
   return itemDate.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' });
 }
 
-export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
+const HistoryDrawerComponent: React.FC<HistoryDrawerProps> = ({
   isOpen,
   onClose,
   history,
@@ -43,24 +43,33 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   onRemove
 }) => {
   const groupedHistory = useMemo(() => {
+    if (!isOpen || history.length === 0) return [];
+    const now = new Date();
+    const nowMs = now.getTime();
+    const todayStr = now.toDateString();
+    const yesterday = new Date(nowMs - 86400000);
+    const yesterdayStr = yesterday.toDateString();
+
     const groups: { label: string; items: ReadingProgress[] }[] = [];
     const map = new Map<string, ReadingProgress[]>();
 
     for (const item of history) {
-      const label = getDayLabel(item.updatedAt);
-      if (!map.has(label)) {
-        map.set(label, []);
-        groups.push({ label, items: map.get(label)! });
+      const label = getDayLabel(item.updatedAt, nowMs, todayStr, yesterdayStr);
+      let bucket = map.get(label);
+      if (!bucket) {
+        bucket = [];
+        map.set(label, bucket);
+        groups.push({ label, items: bucket });
       }
-      map.get(label)!.push(item);
+      bucket.push(item);
     }
     return groups;
-  }, [history]);
+  }, [isOpen, history]);
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm transition-opacity">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 transition-opacity">
       <div className="w-full max-w-md bg-zinc-900 border-l border-zinc-800 flex flex-col h-full shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-800">
@@ -101,12 +110,13 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                     return (
                       <div
                         key={item.mangaId}
-                        className="group relative flex gap-3.5 p-3 bg-zinc-950/60 hover:bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700/80 rounded-xl transition-all shadow-sm"
+                        className="group relative flex gap-3.5 p-3 bg-zinc-950/60 hover:bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700/80 rounded-xl transition-colors shadow-sm"
                       >
                         <img
                           src={item.mangaCover}
                           alt={item.mangaTitle}
                           referrerPolicy="no-referrer"
+                          decoding="async"
                           className="w-14 h-20 object-cover rounded-lg shrink-0 bg-zinc-900 border border-zinc-800"
                         />
                         <div className="flex flex-1 flex-col justify-between overflow-hidden">
@@ -159,7 +169,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                           <div className="mt-2.5">
                             <div className="w-full bg-zinc-800/80 rounded-full h-1 overflow-hidden">
                               <div
-                                className="bg-rose-500 h-1 rounded-full transition-all"
+                                className="bg-rose-500 h-1 rounded-full transition-[width]"
                                 style={{ width: `${percent}%` }}
                               />
                             </div>
@@ -216,3 +226,5 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
     </div>
   );
 };
+
+export const HistoryDrawer = React.memo(HistoryDrawerComponent);

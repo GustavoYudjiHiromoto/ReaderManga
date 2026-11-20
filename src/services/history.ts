@@ -1,4 +1,5 @@
 import { ReadingProgress, FavoriteManga, LibraryBackup, ReadingStats, LibraryCategory, PageBookmark, Chapter, IgnoredManga } from '../types/manga.js';
+import { decodeHtmlEntities } from '../utils/htmlEntities.js';
 
 const STORAGE_KEY = 'manga_reader_history_v1';
 const BOOKMARKS_KEY = 'manga_reader_bookmarks_v1';
@@ -8,8 +9,19 @@ const PAGE_BOOKMARKS_KEY = 'manga_reader_page_bookmarks_v1';
 const CUSTOM_COLLECTIONS_KEY = 'manga_reader_custom_collections_v1';
 const IGNORED_KEY = 'manga_reader_ignored_v1';
 
+export type HistoryTopic =
+  | 'history'
+  | 'favorites'
+  | 'readChapters'
+  | 'ignored'
+  | 'collections'
+  | 'pageBookmarks'
+  | 'stats'
+  | 'all';
+
 type HistoryListener = () => void;
-const listeners = new Set<HistoryListener>();
+const listenerSubscriptions = new Map<HistoryListener, Set<HistoryTopic> | null>();
+const mangaListeners = new Map<string, Set<HistoryListener>>();
 
 export interface HistorySyncBridge {
   onProgressSaved?: (progress: ReadingProgress) => void;
@@ -26,6 +38,7 @@ let cachedHistory: ReadingProgress[] | null = null;
 let cachedHistoryMap: Map<string, ReadingProgress> | null = null;
 let cachedFavorites: FavoriteManga[] | null = null;
 let cachedFavoritesSet: Set<string> | null = null;
+let cachedFavoritesMap: Map<string, FavoriteManga> | null = null;
 let cachedReadChapters: string[] | null = null;
 let cachedReadChaptersSet: Set<string> | null = null;
 let cachedIgnored: IgnoredManga[] | null = null;
@@ -33,6 +46,58 @@ let cachedIgnoredSet: Set<string> | null = null;
 let cachedCustomCollections: string[] | null = null;
 let cachedPageBookmarks: PageBookmark[] | null = null;
 let cachedStats: { totalSeconds: number; lastReadDate?: string } | null = null;
+
+function compactStringList(list: unknown, maxItems: number, maxLen = 120): string[] | undefined {
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const decoded = raw.includes('&') ? decodeHtmlEntities(raw) : raw.trim();
+    const trimmed = decoded.slice(0, maxLen).trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+    if (out.length >= maxItems) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function hasArrayEntityOrOverflow(list: unknown, maxItems: number): boolean {
+  if (!Array.isArray(list)) return false;
+  if (list.length > maxItems) return true;
+  return list.some(item => typeof item === 'string' && item.includes('&') && decodeHtmlEntities(item) !== item.trim());
+}
+
+function compactFavoriteForStorage(fav: FavoriteManga): FavoriteManga {
+  const cleanTitle = typeof fav.title === 'string' && fav.title.includes('&') ? decodeHtmlEntities(fav.title) : fav.title;
+  const rawSynopsis = typeof fav.synopsis === 'string'
+    ? (fav.synopsis.includes('&') ? decodeHtmlEntities(fav.synopsis) : fav.synopsis.trim())
+    : undefined;
+  const trimmedSynopsis =
+    rawSynopsis && rawSynopsis.length > 280 ? `${rawSynopsis.slice(0, 277).trimEnd()}...` : rawSynopsis;
+  const compactAlts = compactStringList(fav.altTitles, 12, 160);
+  const compactGenres = compactStringList(fav.genres, 12, 64);
+  const compactAuthors = compactStringList(fav.authors, 5, 100);
+
+  const needsCompact =
+    cleanTitle !== fav.title ||
+    (typeof fav.synopsis === 'string' && fav.synopsis !== trimmedSynopsis) ||
+    hasArrayEntityOrOverflow(fav.altTitles, 12) ||
+    hasArrayEntityOrOverflow(fav.genres, 12) ||
+    hasArrayEntityOrOverflow(fav.authors, 5);
+
+  if (!needsCompact) return fav;
+
+  return {
+    ...fav,
+    title: cleanTitle,
+    synopsis: trimmedSynopsis,
+    altTitles: compactAlts,
+    genres: compactGenres || [],
+    authors: compactAuthors || []
+  };
+}
 
 function setHistoryCache(list: ReadingProgress[]) {
   cachedHistory = list;
@@ -46,10 +111,15 @@ function setHistoryCache(list: ReadingProgress[]) {
 function setFavoritesCache(list: FavoriteManga[]) {
   cachedFavorites = list;
   const set = new Set<string>();
+  const map = new Map<string, FavoriteManga>();
   for (const item of list) {
-    if (item?.mangaId) set.add(item.mangaId);
+    if (item?.mangaId) {
+      set.add(item.mangaId);
+      map.set(item.mangaId, item);
+    }
   }
   cachedFavoritesSet = set;
+  cachedFavoritesMap = map;
 }
 
 function setReadChaptersCache(list: string[]) {
@@ -74,6 +144,7 @@ function invalidateCacheForKey(key: string | null) {
   if (!key || key === BOOKMARKS_KEY) {
     cachedFavorites = null;
     cachedFavoritesSet = null;
+    cachedFavoritesMap = null;
   }
   if (!key || key === READ_CHAPTERS_KEY) {
     cachedReadChapters = null;
@@ -119,14 +190,58 @@ function loadStatsFromStorage(): { totalSeconds: number; lastReadDate?: string }
   }
 }
 
-function notifyListeners() {
-  listeners.forEach(fn => {
+function notifyListeners(
+  topics: HistoryTopic | HistoryTopic[] = 'all',
+  targetMangaIds: string | string[] = '*'
+) {
+  const topicList = Array.isArray(topics) ? topics : [topics];
+  const isAllTopics = topicList.includes('all');
+
+  listenerSubscriptions.forEach((subTopics, fn) => {
+    if (!isAllTopics && subTopics !== null) {
+      let matches = false;
+      for (const t of topicList) {
+        if (subTopics.has(t)) {
+          matches = true;
+          break;
+        }
+      }
+      if (!matches) return;
+    }
     try {
       fn();
     } catch (e) {
       console.warn('History listener error', e);
     }
   });
+
+  if (mangaListeners.size > 0) {
+    if (targetMangaIds === '*') {
+      mangaListeners.forEach(set => {
+        set.forEach(fn => {
+          try {
+            fn();
+          } catch (e) {
+            console.warn('Manga history listener error', e);
+          }
+        });
+      });
+    } else {
+      const ids = Array.isArray(targetMangaIds) ? targetMangaIds : [targetMangaIds];
+      for (const id of ids) {
+        const set = mangaListeners.get(id);
+        if (set) {
+          set.forEach(fn => {
+            try {
+              fn();
+            } catch (e) {
+              console.warn('Manga history listener error', e);
+            }
+          });
+        }
+      }
+    }
+  }
 }
 
 function formatReadingTime(totalSeconds: number): string {
@@ -160,7 +275,15 @@ if (typeof window !== 'undefined') {
       event.key === IGNORED_KEY
     ) {
       invalidateCacheForKey(event.key);
-      notifyListeners();
+      const topic: HistoryTopic =
+        event.key === STORAGE_KEY ? 'history' :
+        event.key === BOOKMARKS_KEY ? 'favorites' :
+        event.key === READ_CHAPTERS_KEY ? 'readChapters' :
+        event.key === IGNORED_KEY ? 'ignored' :
+        event.key === CUSTOM_COLLECTIONS_KEY ? 'collections' :
+        event.key === PAGE_BOOKMARKS_KEY ? 'pageBookmarks' :
+        event.key === STATS_KEY ? 'stats' : 'all';
+      notifyListeners(topic, topic === 'all' || topic === 'favorites' || topic === 'history' || topic === 'ignored' ? '*' : []);
     }
   });
 }
@@ -170,15 +293,54 @@ export const HistoryService = {
     syncBridge = bridge;
   },
 
-  notifyExternalSync(): void {
-    invalidateCacheForKey(null);
-    notifyListeners();
+  notifyExternalSync(
+    topics: HistoryTopic | HistoryTopic[] = 'all',
+    targetMangaIds: string | string[] = '*'
+  ): void {
+    const topicList = Array.isArray(topics) ? topics : [topics];
+    if (topicList.includes('all')) {
+      invalidateCacheForKey(null);
+      notifyListeners('all', targetMangaIds);
+      return;
+    }
+
+    for (const topic of topicList) {
+      if (topic === 'history') invalidateCacheForKey(STORAGE_KEY);
+      else if (topic === 'favorites') invalidateCacheForKey(BOOKMARKS_KEY);
+      else if (topic === 'readChapters') invalidateCacheForKey(READ_CHAPTERS_KEY);
+      else if (topic === 'ignored') invalidateCacheForKey(IGNORED_KEY);
+      else if (topic === 'collections') invalidateCacheForKey(CUSTOM_COLLECTIONS_KEY);
+      else if (topic === 'pageBookmarks') invalidateCacheForKey(PAGE_BOOKMARKS_KEY);
+      else if (topic === 'stats') invalidateCacheForKey(STATS_KEY);
+    }
+    notifyListeners(topicList, targetMangaIds);
   },
 
-  subscribe(listener: HistoryListener): () => void {
-    listeners.add(listener);
+  subscribe(listener: HistoryListener, topics?: HistoryTopic[]): () => void {
+    const topicSet =
+      !topics || topics.length === 0 || topics.includes('all') ? null : new Set<HistoryTopic>(topics);
+    listenerSubscriptions.set(listener, topicSet);
     return () => {
-      listeners.delete(listener);
+      listenerSubscriptions.delete(listener);
+    };
+  },
+
+  subscribeManga(mangaId: string, listener: HistoryListener): () => void {
+    if (!mangaId) return () => {};
+    let set = mangaListeners.get(mangaId);
+    if (!set) {
+      set = new Set();
+      mangaListeners.set(mangaId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = mangaListeners.get(mangaId);
+      if (current) {
+        current.delete(listener);
+        if (current.size === 0) {
+          mangaListeners.delete(mangaId);
+        }
+      }
     };
   },
 
@@ -191,7 +353,29 @@ export const HistoryService = {
         return cachedHistory!;
       }
       const parsed = JSON.parse(data);
-      const list = Array.isArray(parsed) ? parsed : [];
+      const rawList = Array.isArray(parsed) ? parsed : [];
+      let historyNeedsRewrite = false;
+      const list: ReadingProgress[] = rawList.map((item: ReadingProgress) => {
+        if (!item) return item;
+        const cleanMangaTitle = typeof item.mangaTitle === 'string' && item.mangaTitle.includes('&')
+          ? decodeHtmlEntities(item.mangaTitle)
+          : item.mangaTitle;
+        const cleanChapterTitle = typeof item.chapterTitle === 'string' && item.chapterTitle.includes('&')
+          ? decodeHtmlEntities(item.chapterTitle)
+          : item.chapterTitle;
+        if (cleanMangaTitle !== item.mangaTitle || cleanChapterTitle !== item.chapterTitle) {
+          historyNeedsRewrite = true;
+          return { ...item, mangaTitle: cleanMangaTitle, chapterTitle: cleanChapterTitle };
+        }
+        return item;
+      });
+      if (historyNeedsRewrite) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+        } catch {
+          // ignore quota warnings on passive read cleanup
+        }
+      }
       setHistoryCache(list);
       return cachedHistory!;
     } catch {
@@ -232,7 +416,7 @@ export const HistoryService = {
         const next = [...list, chapterId];
         localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(next));
         setReadChaptersCache(next);
-        notifyListeners();
+        notifyListeners('readChapters', []);
         syncBridge?.onLibraryStateChanged?.();
       }
     } catch (e) {
@@ -248,7 +432,7 @@ export const HistoryService = {
       const list = current.filter(id => id !== chapterId);
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
       setReadChaptersCache(list);
-      notifyListeners();
+      notifyListeners('readChapters', []);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to unmark chapter as read', e);
@@ -264,7 +448,7 @@ export const HistoryService = {
       const next = Array.from(set);
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(next));
       setReadChaptersCache(next);
-      notifyListeners();
+      notifyListeners('readChapters', []);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to mark multiple chapters as read', e);
@@ -280,7 +464,7 @@ export const HistoryService = {
       if (list.length === current.length) return;
       localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(list));
       setReadChaptersCache(list);
-      notifyListeners();
+      notifyListeners('readChapters', []);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to unmark multiple chapters as read', e);
@@ -346,7 +530,7 @@ export const HistoryService = {
       };
       localStorage.setItem(STATS_KEY, JSON.stringify(payload));
       cachedStats = payload;
-      notifyListeners();
+      notifyListeners('stats', []);
     } catch (e) {
       console.warn('Failed to add reading time', e);
     }
@@ -374,7 +558,8 @@ export const HistoryService = {
     const totalPagesRead = history.reduce((sum, h) => sum + (h.pageNumber || 0), 0);
 
     // Stored active time (in seconds)
-    const trackedSeconds = this.getStoredSeconds();
+    const statsData = loadStatsFromStorage();
+    const trackedSeconds = statsData.totalSeconds;
 
     // Baseline estimation if user has history records but tracked active seconds is still 0
     // (e.g. ~45 seconds per page read or ~4 minutes per chapter)
@@ -386,19 +571,14 @@ export const HistoryService = {
     const effectiveSeconds = Math.max(trackedSeconds, estimatedSeconds);
     const totalMinutesSpent = Math.round(effectiveSeconds / 60);
 
-    let lastReadDate: string | undefined;
-    try {
-      const data = localStorage.getItem(STATS_KEY);
-      if (data) {
-        const parsed = JSON.parse(data);
-        lastReadDate = parsed?.lastReadDate;
-      }
-    } catch {
-      // ignore
-    }
+    let lastReadDate = statsData.lastReadDate;
 
     if (!lastReadDate && history.length > 0) {
-      lastReadDate = new Date(Math.max(...history.map(h => h.updatedAt || 0))).toISOString();
+      let maxUpdated = 0;
+      for (const h of history) {
+        if ((h.updatedAt || 0) > maxUpdated) maxUpdated = h.updatedAt || 0;
+      }
+      lastReadDate = new Date(maxUpdated).toISOString();
     }
 
     return {
@@ -418,6 +598,12 @@ export const HistoryService = {
       const filtered = list.filter(item => item.mangaId !== progress.mangaId);
       const updated: ReadingProgress = {
         ...progress,
+        mangaTitle: typeof progress.mangaTitle === 'string' && progress.mangaTitle.includes('&')
+          ? decodeHtmlEntities(progress.mangaTitle)
+          : progress.mangaTitle,
+        chapterTitle: typeof progress.chapterTitle === 'string' && progress.chapterTitle.includes('&')
+          ? decodeHtmlEntities(progress.chapterTitle)
+          : progress.chapterTitle,
         updatedAt: Date.now()
       };
       // Keep most recent 50 items
@@ -426,16 +612,18 @@ export const HistoryService = {
       setHistoryCache(newList);
 
       // Mark chapter in read set cleanly without double-notifying listeners
+      let addedReadChapter = false;
       if (progress.chapterId) {
         const readList = this.getReadChapters();
         if (!cachedReadChaptersSet?.has(progress.chapterId)) {
           const nextRead = [...readList, progress.chapterId];
           localStorage.setItem(READ_CHAPTERS_KEY, JSON.stringify(nextRead));
           setReadChaptersCache(nextRead);
+          addedReadChapter = true;
         }
       }
 
-      notifyListeners();
+      notifyListeners(addedReadChapter ? ['history', 'readChapters'] : 'history', progress.mangaId);
       syncBridge?.onProgressSaved?.(updated);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -448,7 +636,7 @@ export const HistoryService = {
       const list = this.getHistory().filter(item => item.mangaId !== mangaId);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
       setHistoryCache(list);
-      notifyListeners();
+      notifyListeners('history', mangaId);
     } catch (e) {
       console.warn('Failed to remove reading history', e);
     }
@@ -472,12 +660,12 @@ export const HistoryService = {
         return cachedFavorites!;
       }
 
-      let hasLegacyStrings = false;
+      let needsRewrite = false;
       let historyMap: Map<string, ReadingProgress> | null = null;
 
       const normalized: FavoriteManga[] = parsed.map((item: any) => {
         if (typeof item === 'string') {
-          hasLegacyStrings = true;
+          needsRewrite = true;
           if (!historyMap) {
             this.getHistory();
             historyMap = cachedHistoryMap;
@@ -495,7 +683,7 @@ export const HistoryService = {
             updatedAt: Date.now()
           };
         }
-        return {
+        const rawEntry: FavoriteManga = {
           mangaId: item.mangaId || item.id,
           title: item.title || 'Mangá Salvo',
           coverUrl: item.coverUrl || '',
@@ -513,13 +701,22 @@ export const HistoryService = {
           altTitles: Array.isArray(item.altTitles) ? item.altTitles : undefined,
           updatedAt: item.updatedAt || Date.now()
         };
+        const compacted = compactFavoriteForStorage(rawEntry);
+        if (compacted !== rawEntry) {
+          needsRewrite = true;
+        }
+        return compacted;
       });
 
       const valid = normalized.filter(f => Boolean(f.mangaId));
 
-      // Rewrite localStorage if legacy strings were migrated
-      if (hasLegacyStrings) {
-        localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(valid));
+      // Rewrite localStorage once if legacy strings or oversized synopses/lists were compacted
+      if (needsRewrite) {
+        try {
+          localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(valid));
+        } catch {
+          // ignore quota warnings on passive read compaction
+        }
       }
 
       setFavoritesCache(valid);
@@ -527,6 +724,14 @@ export const HistoryService = {
     } catch {
       return [];
     }
+  },
+
+  getFavoriteById(mangaId: string): FavoriteManga | undefined {
+    if (!mangaId) return undefined;
+    if (!cachedFavoritesMap) {
+      this.getFavorites();
+    }
+    return cachedFavoritesMap?.get(mangaId);
   },
 
   /**
@@ -547,7 +752,7 @@ export const HistoryService = {
       if (exists) {
         updated = favorites.filter(f => f.mangaId !== mangaId);
       } else {
-        const newFav: FavoriteManga = typeof mangaOrId === 'string' ? {
+        const rawFav: FavoriteManga = typeof mangaOrId === 'string' ? {
           mangaId,
           title: 'Mangá Salvo',
           coverUrl: '',
@@ -571,13 +776,14 @@ export const HistoryService = {
           altTitles: mangaOrId.altTitles,
           updatedAt: Date.now()
         };
+        const newFav = compactFavoriteForStorage(rawFav);
         createdFav = newFav;
         updated = [newFav, ...favorites];
       }
 
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       setFavoritesCache(updated);
-      notifyListeners();
+      notifyListeners('favorites', mangaId);
 
       if (exists) {
         syncBridge?.onFavoriteRemoved?.(mangaId);
@@ -593,14 +799,19 @@ export const HistoryService = {
   updateFavoriteCategory(mangaId: string, category: LibraryCategory): void {
     try {
       const favorites = this.getFavorites();
-      const updated = favorites.map(fav =>
-        fav.mangaId === mangaId ? { ...fav, userCategory: category, updatedAt: Date.now() } : fav
-      );
+      let updatedFav: FavoriteManga | undefined;
+      const updated = favorites.map(fav => {
+        if (fav.mangaId === mangaId) {
+          updatedFav = { ...fav, userCategory: category, updatedAt: Date.now() };
+          return updatedFav;
+        }
+        return fav;
+      });
+      if (!updatedFav) return;
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       setFavoritesCache(updated);
-      notifyListeners();
-      const found = updated.find(f => f.mangaId === mangaId);
-      if (found) syncBridge?.onFavoriteUpdated?.(found);
+      notifyListeners('favorites', mangaId);
+      syncBridge?.onFavoriteUpdated?.(updatedFav);
     } catch (e) {
       console.warn('Failed to update favorite category', e);
     }
@@ -609,19 +820,24 @@ export const HistoryService = {
   updateFavoriteScore(mangaId: string, score?: number, notes?: string): void {
     try {
       const favorites = this.getFavorites();
-      const updated = favorites.map(fav =>
-        fav.mangaId === mangaId ? {
-          ...fav,
-          userScore: score,
-          userNotes: notes !== undefined ? notes : fav.userNotes,
-          updatedAt: Date.now()
-        } : fav
-      );
+      let updatedFav: FavoriteManga | undefined;
+      const updated = favorites.map(fav => {
+        if (fav.mangaId === mangaId) {
+          updatedFav = {
+            ...fav,
+            userScore: score,
+            userNotes: notes !== undefined ? notes : fav.userNotes,
+            updatedAt: Date.now()
+          };
+          return updatedFav;
+        }
+        return fav;
+      });
+      if (!updatedFav) return;
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       setFavoritesCache(updated);
-      notifyListeners();
-      const found = updated.find(f => f.mangaId === mangaId);
-      if (found) syncBridge?.onFavoriteUpdated?.(found);
+      notifyListeners('favorites', mangaId);
+      syncBridge?.onFavoriteUpdated?.(updatedFav);
     } catch (e) {
       console.warn('Failed to update favorite score', e);
     }
@@ -632,7 +848,7 @@ export const HistoryService = {
       const favorites = this.getFavorites().filter(f => f.mangaId !== mangaId);
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
       setFavoritesCache(favorites);
-      notifyListeners();
+      notifyListeners('favorites', mangaId);
       syncBridge?.onFavoriteRemoved?.(mangaId);
     } catch (e) {
       console.warn('Failed to remove favorite', e);
@@ -645,6 +861,7 @@ export const HistoryService = {
     try {
       const favorites = this.getFavorites();
       let changed = false;
+      const changedIds: string[] = [];
       const updated = favorites.map(fav => {
         const extra = resolvedMap[fav.mangaId];
         if (!extra) return fav;
@@ -661,6 +878,7 @@ export const HistoryService = {
           (nextAuthors && nextAuthors !== fav.authors)
         ) {
           changed = true;
+          changedIds.push(fav.mangaId);
           return {
             ...fav,
             altTitles: mergedAlts.length > 0 ? mergedAlts : fav.altTitles,
@@ -672,7 +890,7 @@ export const HistoryService = {
       if (changed) {
         localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
         setFavoritesCache(updated);
-        notifyListeners();
+        notifyListeners('favorites', changedIds);
       }
       return changed;
     } catch {
@@ -706,6 +924,9 @@ export const HistoryService = {
       status?: FavoriteManga['status'];
       synopsis?: string;
       altTitles?: string[];
+      userCategory?: LibraryCategory;
+      userScore?: number;
+      userNotes?: string;
     },
     targetChapters: Chapter[],
     sourceChapters: Chapter[] = [],
@@ -731,24 +952,54 @@ export const HistoryService = {
           ])
         );
 
-        const nextFav: FavoriteManga = {
+        const resolvedTitle = targetManga.title || existingTargetFav?.title || oldFav?.title || 'Mangá Salvo';
+        const mergedAltTitles = Array.from(
+          new Set(
+            [
+              ...(targetManga.altTitles || []),
+              ...(existingTargetFav?.altTitles || []),
+              ...(oldFav?.altTitles || []),
+              oldFav?.title && oldFav.title !== resolvedTitle ? oldFav.title : ''
+            ].filter(Boolean)
+          )
+        )
+          .filter(t => t !== resolvedTitle)
+          .slice(0, 20);
+
+        const nextFav: FavoriteManga = compactFavoriteForStorage({
           mangaId: targetManga.mangaId,
-          title: targetManga.title || oldFav?.title || 'Mangá Salvo',
-          coverUrl: targetManga.coverUrl || oldFav?.coverUrl || '',
-          sourceName: targetManga.sourceName || oldFav?.sourceName || 'MangaReader',
-          sourceId: targetManga.sourceId || oldFav?.sourceId,
-          rating: targetManga.rating ?? oldFav?.rating,
-          authors: targetManga.authors?.length ? targetManga.authors : oldFav?.authors,
-          genres: targetManga.genres?.length ? targetManga.genres : oldFav?.genres,
-          status: targetManga.status || oldFav?.status,
-          userCategory: oldFav?.userCategory || existingTargetFav?.userCategory || 'reading',
-          userScore: oldFav?.userScore ?? existingTargetFav?.userScore,
-          userNotes: oldFav?.userNotes ?? existingTargetFav?.userNotes,
+          title: resolvedTitle,
+          coverUrl: targetManga.coverUrl || existingTargetFav?.coverUrl || oldFav?.coverUrl || '',
+          sourceName: targetManga.sourceName || existingTargetFav?.sourceName || oldFav?.sourceName || 'MangaReader',
+          sourceId: targetManga.sourceId || existingTargetFav?.sourceId || oldFav?.sourceId,
+          rating: targetManga.rating ?? existingTargetFav?.rating ?? oldFav?.rating,
+          authors: targetManga.authors?.length
+            ? targetManga.authors
+            : existingTargetFav?.authors?.length
+            ? existingTargetFav.authors
+            : oldFav?.authors,
+          genres: targetManga.genres?.length
+            ? targetManga.genres
+            : existingTargetFav?.genres?.length
+            ? existingTargetFav.genres
+            : oldFav?.genres,
+          status: targetManga.status || existingTargetFav?.status || oldFav?.status,
+          userCategory: targetManga.userCategory || existingTargetFav?.userCategory || oldFav?.userCategory || 'reading',
+          userScore:
+            typeof targetManga.userScore === 'number'
+              ? targetManga.userScore
+              : existingTargetFav?.userScore ?? oldFav?.userScore,
+          userNotes:
+            targetManga.userNotes !== undefined
+              ? targetManga.userNotes
+              : existingTargetFav?.userNotes?.trim()
+              ? existingTargetFav.userNotes
+              : oldFav?.userNotes,
           customCollections: mergedCollections.length > 0 ? mergedCollections : undefined,
-          synopsis: targetManga.synopsis || oldFav?.synopsis,
-          altTitles: targetManga.altTitles?.length ? targetManga.altTitles : oldFav?.altTitles,
+          synopsis: targetManga.synopsis || existingTargetFav?.synopsis || oldFav?.synopsis,
+          altTitles: mergedAltTitles.length > 0 ? mergedAltTitles : undefined,
           updatedAt: now
-        };
+        });
 
         const filteredFavs = favorites.filter(
           f => f.mangaId !== targetManga.mangaId && (!removeOld || f.mangaId !== sourceMangaId)
@@ -757,7 +1008,7 @@ export const HistoryService = {
         localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
         setFavoritesCache(nextFavs);
         syncBridge?.onFavoriteUpdated?.(nextFav);
-        if (removeOld && oldFav && sourceMangaId !== targetManga.mangaId) {
+        if (removeOld && sourceMangaId !== targetManga.mangaId) {
           syncBridge?.onFavoriteRemoved?.(sourceMangaId);
         }
         migratedFavorite = true;
@@ -783,6 +1034,7 @@ export const HistoryService = {
 
       const historyList = this.getHistory();
       const oldProgress = historyList.find(h => h.mangaId === sourceMangaId);
+      const existingTargetProgress = historyList.find(h => h.mangaId === targetManga.mangaId);
       if (oldProgress?.chapterNumber) {
         const pFloat = parseFloat(oldProgress.chapterNumber);
         if (!isNaN(pFloat)) {
@@ -812,45 +1064,66 @@ export const HistoryService = {
         setReadChaptersCache(nextReadList);
       }
 
-      // 3. Migrate ReadingProgress
+      // 3. Migrate ReadingProgress (also clean up orphaned source history when removeOld=true)
       if (oldProgress && targetChapters.length > 0) {
         const oldNum = parseFloat(oldProgress.chapterNumber);
-        const matchedTargetCh =
-          targetChapters.find(c => {
-            const cNum = parseFloat(c.chapterNumber);
-            return !isNaN(oldNum) && !isNaN(cNum)
-              ? cNum === oldNum
-              : c.chapterNumber === oldProgress.chapterNumber;
-          }) ||
-          targetChapters.find(c => !isNaN(oldNum) && parseFloat(c.chapterNumber) >= oldNum) ||
-          targetChapters[targetChapters.length - 1];
+        const existingTargetNum = existingTargetProgress?.chapterNumber
+          ? parseFloat(existingTargetProgress.chapterNumber)
+          : -1;
+        const shouldKeepExistingTarget =
+          Boolean(existingTargetProgress) &&
+          !isNaN(existingTargetNum) &&
+          (isNaN(oldNum) || existingTargetNum > oldNum);
 
-        if (matchedTargetCh) {
-          const nextProgress: ReadingProgress = {
-            mangaId: targetManga.mangaId,
-            mangaTitle: targetManga.title,
-            mangaCover: targetManga.coverUrl,
-            chapterId: matchedTargetCh.id,
-            chapterNumber: matchedTargetCh.chapterNumber,
-            chapterTitle: matchedTargetCh.title,
-            pageNumber: matchedTargetCh.chapterNumber === oldProgress.chapterNumber ? oldProgress.pageNumber : 1,
-            totalPages: matchedTargetCh.pagesCount || oldProgress.totalPages || 1,
-            sourceId: targetManga.sourceId || matchedTargetCh.sourceId,
-            updatedAt: now
-          };
+        if (shouldKeepExistingTarget && removeOld && sourceMangaId !== targetManga.mangaId) {
+          const cleanedHistory = historyList.filter(h => h.mangaId !== sourceMangaId).slice(0, 50);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanedHistory));
+          setHistoryCache(cleanedHistory);
+        } else {
+          const matchedTargetCh =
+            targetChapters.find(c => {
+              const cNum = parseFloat(c.chapterNumber);
+              return !isNaN(oldNum) && !isNaN(cNum)
+                ? cNum === oldNum
+                : c.chapterNumber === oldProgress.chapterNumber;
+            }) ||
+            targetChapters.find(c => !isNaN(oldNum) && parseFloat(c.chapterNumber) >= oldNum) ||
+            targetChapters[targetChapters.length - 1];
 
-          const filteredHistory = historyList.filter(
-            h => h.mangaId !== targetManga.mangaId && (!removeOld || h.mangaId !== sourceMangaId)
-          );
-          const nextHistory = [nextProgress, ...filteredHistory].slice(0, 50);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(nextHistory));
-          setHistoryCache(nextHistory);
-          syncBridge?.onProgressSaved?.(nextProgress);
-          migratedProgress = true;
+          if (matchedTargetCh) {
+            const nextProgress: ReadingProgress = {
+              mangaId: targetManga.mangaId,
+              mangaTitle: targetManga.title,
+              mangaCover: targetManga.coverUrl,
+              chapterId: matchedTargetCh.id,
+              chapterNumber: matchedTargetCh.chapterNumber,
+              chapterTitle: matchedTargetCh.title,
+              pageNumber: matchedTargetCh.chapterNumber === oldProgress.chapterNumber ? oldProgress.pageNumber : 1,
+              totalPages: matchedTargetCh.pagesCount || oldProgress.totalPages || 1,
+              sourceId: targetManga.sourceId || matchedTargetCh.sourceId,
+              updatedAt: now
+            };
+
+            const filteredHistory = historyList.filter(
+              h => h.mangaId !== targetManga.mangaId && (!removeOld || h.mangaId !== sourceMangaId)
+            );
+            const nextHistory = [nextProgress, ...filteredHistory].slice(0, 50);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(nextHistory));
+            setHistoryCache(nextHistory);
+            syncBridge?.onProgressSaved?.(nextProgress);
+            migratedProgress = true;
+          }
+        }
+      } else if (oldProgress && removeOld && sourceMangaId !== targetManga.mangaId) {
+        // Fallback when targetChapters could not be fetched: ensure duplicate source history is removed cleanly
+        const cleanedHistory = historyList.filter(h => h.mangaId !== sourceMangaId).slice(0, 50);
+        if (cleanedHistory.length !== historyList.length) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanedHistory));
+          setHistoryCache(cleanedHistory);
         }
       }
 
-      notifyListeners();
+      notifyListeners(['favorites', 'history', 'readChapters'], [sourceMangaId, targetManga.mangaId]);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to migrate manga data:', e);
@@ -910,7 +1183,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(updatedList));
       cachedPageBookmarks = updatedList;
-      notifyListeners();
+      notifyListeners('pageBookmarks', []);
     } catch (e) {
       console.warn('Failed to save page bookmark', e);
     }
@@ -922,7 +1195,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
       cachedPageBookmarks = list;
-      notifyListeners();
+      notifyListeners('pageBookmarks', []);
     } catch (e) {
       console.warn('Failed to remove page bookmark', e);
     }
@@ -933,7 +1206,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(PAGE_BOOKMARKS_KEY, JSON.stringify(list));
       cachedPageBookmarks = list;
-      notifyListeners();
+      notifyListeners('pageBookmarks', []);
     } catch (e) {
       console.warn('Failed to remove page bookmark', e);
     }
@@ -967,7 +1240,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(CUSTOM_COLLECTIONS_KEY, JSON.stringify(next));
       cachedCustomCollections = next;
-      notifyListeners();
+      notifyListeners('collections', []);
       syncBridge?.onLibraryStateChanged?.();
       return true;
     } catch {
@@ -983,9 +1256,11 @@ export const HistoryService = {
       // Remove from favorites that reference this collection without mutating cached objects in-place
       const favorites = this.getFavorites();
       let changed = false;
+      const changedIds: string[] = [];
       const nextFavs = favorites.map(f => {
         if (f.customCollections && f.customCollections.includes(name)) {
           changed = true;
+          changedIds.push(f.mangaId);
           return {
             ...f,
             customCollections: f.customCollections.filter(c => c !== name)
@@ -997,7 +1272,7 @@ export const HistoryService = {
         localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
         setFavoritesCache(nextFavs);
       }
-      notifyListeners();
+      notifyListeners(changed ? ['collections', 'favorites'] : 'collections', changedIds);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to delete custom collection', e);
@@ -1006,7 +1281,7 @@ export const HistoryService = {
 
   toggleMangaInCollection(mangaId: string, collectionName: string): boolean {
     const favorites = this.getFavorites();
-    const target = favorites.find(f => f.mangaId === mangaId);
+    const target = this.getFavoriteById(mangaId);
     if (!target) return false;
     const currentCols = target.customCollections || [];
     let isNowIn = false;
@@ -1018,7 +1293,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
       setFavoritesCache(nextFavs);
-      notifyListeners();
+      notifyListeners('favorites', mangaId);
       syncBridge?.onFavoriteUpdated?.(updatedFav);
       syncBridge?.onLibraryStateChanged?.();
       return isNowIn;
@@ -1029,7 +1304,7 @@ export const HistoryService = {
 
   setMangaCollections(mangaId: string, collections: string[]): boolean {
     const favorites = this.getFavorites();
-    const target = favorites.find(f => f.mangaId === mangaId);
+    const target = this.getFavoriteById(mangaId);
     if (!target) return false;
     const updatedFav: FavoriteManga = {
       ...target,
@@ -1039,7 +1314,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(nextFavs));
       setFavoritesCache(nextFavs);
-      notifyListeners();
+      notifyListeners('favorites', mangaId);
       syncBridge?.onFavoriteUpdated?.(updatedFav);
       syncBridge?.onLibraryStateChanged?.();
       return true;
@@ -1057,7 +1332,7 @@ export const HistoryService = {
       );
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       setFavoritesCache(updated);
-      notifyListeners();
+      notifyListeners('favorites', mangaIds);
       updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -1077,7 +1352,7 @@ export const HistoryService = {
       });
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
       setFavoritesCache(updated);
-      notifyListeners();
+      notifyListeners('favorites', mangaIds);
       updated.filter(f => idSet.has(f.mangaId)).forEach(f => syncBridge?.onFavoriteUpdated?.(f));
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -1091,7 +1366,7 @@ export const HistoryService = {
       const favorites = this.getFavorites().filter(f => !idSet.has(f.mangaId));
       localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(favorites));
       setFavoritesCache(favorites);
-      notifyListeners();
+      notifyListeners('favorites', mangaIds);
       mangaIds.forEach(id => syncBridge?.onFavoriteRemoved?.(id));
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
@@ -1115,19 +1390,42 @@ export const HistoryService = {
         setIgnoredCache([]);
         return cachedIgnored!;
       }
+      let ignoredNeedsRewrite = false;
       const normalized: IgnoredManga[] = parsed
         .filter((item: any) => item && typeof item.mangaId === 'string' && item.mangaId)
-        .map((item: any) => ({
-          mangaId: item.mangaId,
-          title: item.title || 'Obra Dispensada',
-          altTitles: Array.isArray(item.altTitles)
-            ? item.altTitles.filter((t: any) => typeof t === 'string' && t.trim().length > 0).slice(0, 10)
-            : undefined,
-          coverUrl: item.coverUrl || undefined,
-          sourceId: item.sourceId || undefined,
-          sourceName: item.sourceName || undefined,
-          dismissedAt: typeof item.dismissedAt === 'number' ? item.dismissedAt : Date.now()
-        }));
+        .map((item: any) => {
+          const rawTitle = item.title || 'Obra Dispensada';
+          const cleanTitle = typeof rawTitle === 'string' && rawTitle.includes('&')
+            ? decodeHtmlEntities(rawTitle)
+            : rawTitle;
+          if (cleanTitle !== rawTitle) ignoredNeedsRewrite = true;
+          const cleanAlts = Array.isArray(item.altTitles)
+            ? item.altTitles
+                .filter((t: any) => typeof t === 'string' && t.trim().length > 0)
+                .slice(0, 10)
+                .map((t: string) => {
+                  const decoded = t.includes('&') ? decodeHtmlEntities(t) : t;
+                  if (decoded !== t) ignoredNeedsRewrite = true;
+                  return decoded;
+                })
+            : undefined;
+          return {
+            mangaId: item.mangaId,
+            title: cleanTitle,
+            altTitles: cleanAlts,
+            coverUrl: item.coverUrl || undefined,
+            sourceId: item.sourceId || undefined,
+            sourceName: item.sourceName || undefined,
+            dismissedAt: typeof item.dismissedAt === 'number' ? item.dismissedAt : Date.now()
+          };
+        });
+      if (ignoredNeedsRewrite) {
+        try {
+          localStorage.setItem(IGNORED_KEY, JSON.stringify(normalized));
+        } catch {
+          // ignore quota warnings on passive cleanup
+        }
+      }
       setIgnoredCache(normalized);
       return cachedIgnored!;
     } catch {
@@ -1147,11 +1445,15 @@ export const HistoryService = {
     if (!manga?.mangaId) return;
     try {
       const current = this.getIgnoredMangas().filter(item => item.mangaId !== manga.mangaId);
+      const rawTitle = manga.title || 'Obra Dispensada';
       const entry: IgnoredManga = {
         mangaId: manga.mangaId,
-        title: manga.title || 'Obra Dispensada',
+        title: typeof rawTitle === 'string' && rawTitle.includes('&') ? decodeHtmlEntities(rawTitle) : rawTitle,
         altTitles: Array.isArray(manga.altTitles)
-          ? manga.altTitles.filter(t => typeof t === 'string' && t.trim().length > 0).slice(0, 10)
+          ? manga.altTitles
+              .filter(t => typeof t === 'string' && t.trim().length > 0)
+              .slice(0, 10)
+              .map(t => (t.includes('&') ? decodeHtmlEntities(t) : t))
           : undefined,
         coverUrl: manga.coverUrl,
         sourceId: manga.sourceId,
@@ -1161,7 +1463,7 @@ export const HistoryService = {
       const updated = [entry, ...current].slice(0, 3000);
       localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
       setIgnoredCache(updated);
-      notifyListeners();
+      notifyListeners('ignored', manga.mangaId);
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to ignore manga', e);
@@ -1177,7 +1479,7 @@ export const HistoryService = {
       if (updated.length !== current.length) {
         localStorage.setItem(IGNORED_KEY, JSON.stringify(updated));
         setIgnoredCache(updated);
-        notifyListeners();
+        notifyListeners('ignored', mangaId);
         syncBridge?.onLibraryStateChanged?.();
       }
     } catch (e) {
@@ -1199,7 +1501,7 @@ export const HistoryService = {
     try {
       localStorage.setItem(IGNORED_KEY, JSON.stringify([]));
       setIgnoredCache([]);
-      notifyListeners();
+      notifyListeners('ignored', '*');
       syncBridge?.onLibraryStateChanged?.();
     } catch (e) {
       console.warn('Failed to clear ignored mangas', e);
@@ -1417,7 +1719,7 @@ export const HistoryService = {
         }
         // Preserve richest info or latest
         const existing = favMap.get(f.mangaId);
-        favMap.set(f.mangaId, {
+        favMap.set(f.mangaId, compactFavoriteForStorage({
           mangaId: f.mangaId,
           title: f.title || existing?.title || 'Mangá Salvo',
           coverUrl: f.coverUrl || existing?.coverUrl || '',
@@ -1433,7 +1735,7 @@ export const HistoryService = {
           synopsis: typeof f.synopsis === 'string' ? f.synopsis : existing?.synopsis,
           altTitles: Array.isArray(f.altTitles) ? f.altTitles : existing?.altTitles,
           updatedAt: Math.max(f.updatedAt || 0, existing?.updatedAt || 0) || Date.now()
-        });
+        }));
       });
 
       const mergedFavorites = Array.from(favMap.values());
@@ -1535,7 +1837,7 @@ export const HistoryService = {
         setIgnoredCache(nextIgnored);
       }
 
-      notifyListeners();
+      notifyListeners('all', '*');
       syncBridge?.onBulkImported?.();
 
       return {

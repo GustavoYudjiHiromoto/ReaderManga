@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   BookOpen,
   Sparkles,
@@ -30,12 +30,15 @@ import { RecommendationService, ReaderDNA, RecommendationMatch } from '../servic
 import { subscribePreferredLanguage } from '../utils/languagePreference.js';
 import { RecommendationLoadingState } from '../components/RecommendationLoadingState.js';
 import {
+  buildLibraryIndex,
   isMangaInFavorites,
   isMangaInIgnored,
+  isMangaInLibraryIndex,
   pickOracleCandidate
 } from '../utils/libraryFilters.js';
 
 interface HomePageProps {
+  isActive?: boolean;
   onSelectManga: (mangaId: string, fromCatalog?: boolean) => void;
   onReadChapter: (mangaId: string, chapterId: string) => void;
   onNavigateToSearch: (initialQuery?: string) => void;
@@ -93,6 +96,7 @@ const VIBE_OPTIONS: Array<{ id: VibeCategory; label: string; icon: any; query: s
 ];
 
 export const HomePage: React.FC<HomePageProps> = ({
+  isActive = true,
   onSelectManga,
   onReadChapter,
   onNavigateToSearch,
@@ -120,11 +124,57 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [loadingPersonalized, setLoadingPersonalized] = useState(false);
   const [hideLibraryPersonalized, setHideLibraryPersonalized] = useState(true);
 
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const homeDirtyRef = useRef(false);
+  const homeReloadDirtyRef = useRef(false);
+  const homeRecsDirtyRef = useRef(false);
+  const hideLibraryPersonalizedRef = useRef(hideLibraryPersonalized);
+  hideLibraryPersonalizedRef.current = hideLibraryPersonalized;
+  const collectionCacheRef = useRef<Map<string, Manga[]>>(new Map());
+  const lastDnaRefsRef = useRef<{ favs: FavoriteManga[]; hist: ReadingProgress[] }>({
+    favs: HistoryService.getFavorites(),
+    hist: HistoryService.getHistory()
+  });
+
+  const syncHomeLibraryState = () => {
+    const nextHist = HistoryService.getHistory();
+    const nextFavs = HistoryService.getFavorites();
+    const nextIgnored = HistoryService.getIgnoredMangas();
+    setLocalHistory(prev => (prev === nextHist ? prev : nextHist));
+    setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
+    setIgnoredList(prev => (prev === nextIgnored ? prev : nextIgnored));
+    setVibeResult(prev => (prev && isMangaInIgnored(prev, nextIgnored) ? null : prev));
+    if (nextFavs !== lastDnaRefsRef.current.favs || nextHist !== lastDnaRefsRef.current.hist) {
+      lastDnaRefsRef.current = { favs: nextFavs, hist: nextHist };
+      setReaderDNA(RecommendationService.calculateReaderDNA());
+    }
+    setUpdatesMap(UpdateTrackerService.getStoredUpdates());
+  };
+
+  useEffect(() => {
+    if (!isActive) return;
+    if (homeDirtyRef.current) {
+      homeDirtyRef.current = false;
+      syncHomeLibraryState();
+    }
+    if (homeReloadDirtyRef.current) {
+      homeReloadDirtyRef.current = false;
+      homeRecsDirtyRef.current = false;
+      loadInitialData();
+    } else if (homeRecsDirtyRef.current) {
+      homeRecsDirtyRef.current = false;
+      loadPersonalizedRecommendations(hideLibraryPersonalizedRef.current);
+    }
+  }, [isActive]);
+
   useEffect(() => {
     loadInitialData();
-    let lastFavsRef = HistoryService.getFavorites();
-    let lastHistRef = HistoryService.getHistory();
     const unsubHistory = HistoryService.subscribe(() => {
+      if (!isActiveRef.current) {
+        homeDirtyRef.current = true;
+        return;
+      }
       const nextHist = HistoryService.getHistory();
       const nextFavs = HistoryService.getFavorites();
       const nextIgnored = HistoryService.getIgnoredMangas();
@@ -132,20 +182,31 @@ export const HomePage: React.FC<HomePageProps> = ({
       setFavorites(prev => (prev === nextFavs ? prev : nextFavs));
       setIgnoredList(prev => (prev === nextIgnored ? prev : nextIgnored));
       setVibeResult(prev => (prev && isMangaInIgnored(prev, nextIgnored) ? null : prev));
-      if (nextFavs !== lastFavsRef || nextHist !== lastHistRef) {
-        lastFavsRef = nextFavs;
-        lastHistRef = nextHist;
+      if (nextFavs !== lastDnaRefsRef.current.favs || nextHist !== lastDnaRefsRef.current.hist) {
+        lastDnaRefsRef.current = { favs: nextFavs, hist: nextHist };
         setReaderDNA(RecommendationService.calculateReaderDNA());
       }
-    });
+    }, ['history', 'favorites', 'ignored']);
     const unsubUpdates = UpdateTrackerService.subscribe(() => {
+      if (!isActiveRef.current) {
+        homeDirtyRef.current = true;
+        return;
+      }
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
     });
     const unsubExtensions = ExtensionService.subscribe(() => {
+      if (!isActiveRef.current) {
+        homeReloadDirtyRef.current = true;
+        return;
+      }
       loadInitialData();
     });
     const unsubLang = subscribePreferredLanguage(() => {
-      loadPersonalizedRecommendations(hideLibraryPersonalized);
+      if (!isActiveRef.current) {
+        homeRecsDirtyRef.current = true;
+        return;
+      }
+      loadPersonalizedRecommendations(hideLibraryPersonalizedRef.current);
     });
     return () => {
       unsubHistory();
@@ -179,6 +240,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const loadInitialData = async () => {
     setLoading(true);
+    collectionCacheRef.current.clear();
     try {
       const activeSources = ExtensionService.getEnabledSourceIds();
       const [featured, sourcesList] = await Promise.all([
@@ -192,7 +254,7 @@ export const HomePage: React.FC<HomePageProps> = ({
       loadCollection('seinen', featured);
 
       // Load personalized recommendations
-      loadPersonalizedRecommendations(hideLibraryPersonalized);
+      loadPersonalizedRecommendations(hideLibraryPersonalizedRef.current);
     } catch (err) {
       console.error('Failed to load home page data:', err);
     } finally {
@@ -205,9 +267,20 @@ export const HomePage: React.FC<HomePageProps> = ({
     const targetColl = COLLECTIONS.find(c => c.id === collectionId);
     if (!targetColl) return;
 
+    const currentIgnored = HistoryService.getIgnoredMangas();
+    const cached = collectionCacheRef.current.get(collectionId);
+    if (cached && cached.length > 0 && currentFeatured === featuredManga) {
+      const visibleCached = currentIgnored.length > 0
+        ? cached.filter(m => !isMangaInIgnored(m, currentIgnored))
+        : cached;
+      if (visibleCached.length > 0) {
+        setCollectionItems(visibleCached);
+        return;
+      }
+    }
+
     setLoadingCollection(true);
     try {
-      const currentIgnored = HistoryService.getIgnoredMangas();
       // First check if current featured has matches (excluding hidden/ignored works)
       const matchedFromFeatured = currentFeatured.filter(
         m =>
@@ -215,8 +288,9 @@ export const HomePage: React.FC<HomePageProps> = ({
           m.genres.some(g => targetColl.genres.some(tg => g.toLowerCase().includes(tg.toLowerCase())))
       );
 
+      let result: Manga[];
       if (matchedFromFeatured.length >= 6) {
-        setCollectionItems(matchedFromFeatured.slice(0, 8));
+        result = matchedFromFeatured.slice(0, 8);
       } else {
         // Query live search for this collection theme
         const searchRes = await MangaApi.search('', { genre: targetColl.genres[0], limit: 14, onlyAvailable: true });
@@ -224,9 +298,10 @@ export const HomePage: React.FC<HomePageProps> = ({
           ...matchedFromFeatured,
           ...(searchRes.data || []).filter(m => !isMangaInIgnored(m, currentIgnored))
         ];
-        const deduplicated = Array.from(new Map(combined.map(m => [m.id, m])).values());
-        setCollectionItems(deduplicated.slice(0, 8));
+        result = Array.from(new Map(combined.map(m => [m.id, m])).values()).slice(0, 8);
       }
+      collectionCacheRef.current.set(collectionId, result);
+      setCollectionItems(result);
     } catch (err) {
       console.warn('Failed to load collection:', err);
     } finally {
@@ -272,8 +347,14 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
+  const favoritesIndex = useMemo(() => buildLibraryIndex(favorites), [favorites]);
+  const currentHeroProgress = useMemo(
+    () => (currentHero ? activeHistory.find(h => h.mangaId === currentHero.id) : undefined),
+    [currentHero, activeHistory]
+  );
+
   const isAlreadySaved = (manga: Manga): boolean => {
-    return isMangaInFavorites(manga, favorites);
+    return isMangaInLibraryIndex(manga, favoritesIndex);
   };
 
   const handleRollVibe = async (vibeId: VibeCategory) => {
@@ -353,12 +434,13 @@ export const HomePage: React.FC<HomePageProps> = ({
                 src={currentHero.coverUrl}
                 alt=""
                 referrerPolicy="no-referrer"
+                decoding="async"
                 onError={() => markCoverError(`hero_${currentHero.id}`)}
-                className="h-full w-full object-cover object-center opacity-20 blur-3xl scale-110 transition-opacity duration-700"
+                className="h-full w-full object-cover object-center opacity-15 scale-105"
               />
             ) : null}
-            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-transparent" />
-            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/70 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/85 to-zinc-950/40" />
+            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/80 to-transparent" />
           </div>
 
           <div className="relative z-10 mx-auto max-w-7xl px-3 sm:px-6 lg:px-8 py-6 sm:py-10 md:py-16">
@@ -368,15 +450,16 @@ export const HomePage: React.FC<HomePageProps> = ({
               <div className="lg:col-span-4 flex flex-col items-center lg:items-start">
                 <div
                   onClick={() => onSelectManga(currentHero.id)}
-                  className="manga-card-interactive group relative w-44 xs:w-52 sm:w-60 md:w-64 aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 hover:border-zinc-700 bg-zinc-900 cursor-pointer transform transition-all duration-300"
+                  className="manga-card-interactive group relative w-44 xs:w-52 sm:w-60 md:w-64 aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl border border-zinc-800 hover:border-zinc-700 bg-zinc-900 cursor-pointer transition-colors duration-200"
                 >
                   {!coverErrors[`hero_${currentHero.id}`] && currentHero.coverUrl ? (
                     <img
                       src={currentHero.coverUrl}
                       alt={currentHero.title}
                       referrerPolicy="no-referrer"
+                      decoding="async"
                       onError={() => markCoverError(`hero_${currentHero.id}`)}
-                      className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                      className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-105"
                     />
                   ) : (
                     <div className="relative h-full w-full flex flex-col justify-between p-4 sm:p-5 bg-gradient-to-br from-zinc-900 via-rose-950/30 to-zinc-950">
@@ -470,11 +553,11 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <div className="flex flex-col xs:flex-row sm:flex-wrap items-stretch xs:items-center justify-center lg:justify-start gap-2.5 sm:gap-3 mb-6 sm:mb-8">
                   <button
                     onClick={() => handleHeroRead(currentHero)}
-                    className="px-5 sm:px-6 py-2.5 min-h-[42px] bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-medium text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 cursor-pointer active:scale-95"
+                    className="px-5 sm:px-6 py-2.5 min-h-[42px] bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 shadow-lg shadow-rose-950/60 cursor-pointer active:scale-95"
                   >
                     <BookOpen className="h-4 w-4 shrink-0" />
                     <span>
-                      {HistoryService.getProgress(currentHero.id) ? 'Continuar Leitura' : 'Iniciar Leitura (Cap. 1)'}
+                      {currentHeroProgress ? 'Continuar Leitura' : 'Iniciar Leitura (Cap. 1)'}
                     </span>
                   </button>
 
@@ -497,7 +580,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                         <button
                           key={spot.id}
                           onClick={() => setHeroIndex(idx)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer truncate max-w-[125px] sm:max-w-[170px] shrink-0 ${
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer truncate max-w-[125px] sm:max-w-[170px] shrink-0 ${
                             idx === heroIndex
                               ? 'bg-zinc-800 text-white border border-rose-500/40 shadow-sm'
                               : 'bg-zinc-900/60 hover:bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800/80'
@@ -568,7 +651,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <div
                     key={item.mangaId}
                     onClick={() => onReadChapter(item.mangaId, item.chapterId)}
-                    className="group relative flex flex-col gap-3 p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/30 rounded-xl cursor-pointer transition-all duration-200 shadow-sm hover:shadow-lg"
+                    className="group relative flex flex-col gap-3 p-3.5 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/30 rounded-xl cursor-pointer transition-colors duration-150 shadow-sm"
                   >
                     <div className="flex gap-3.5">
                       <button
@@ -584,6 +667,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                           src={item.mangaCover}
                           alt={item.mangaTitle}
                           referrerPolicy="no-referrer"
+                          decoding="async"
                           className="w-16 h-22 object-cover bg-zinc-950"
                         />
                       </button>
@@ -622,7 +706,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                         <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden mt-2">
                           <div
-                            className="bg-rose-500 h-1.5 rounded-full transition-all"
+                            className="bg-rose-500 h-1.5 rounded-full transition-[width]"
                             style={{ width: `${percent}%` }}
                           />
                         </div>
@@ -775,7 +859,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <div
                   key={match.manga.id}
                   onClick={() => onSelectManga(match.manga.id)}
-                  className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800/80 hover:border-amber-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
+                  className="manga-card-interactive manga-card-grid-item group relative flex flex-col min-w-0 bg-zinc-950/80 hover:bg-zinc-900 border border-zinc-800/80 hover:border-amber-500/40 rounded-xl overflow-hidden cursor-pointer transition-colors duration-150 shadow-sm"
                 >
                   <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
                     {!coverErrors[match.manga.id] && match.manga.coverUrl ? (
@@ -783,8 +867,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                         src={match.manga.coverUrl}
                         alt={match.manga.title}
                         referrerPolicy="no-referrer"
+                        decoding="async"
                         onError={() => markCoverError(match.manga.id)}
-                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-150"
                         loading="lazy"
                       />
                     ) : (
@@ -794,7 +879,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                     )}
 
                     {/* Affinity Score Badge */}
-                    <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
+                    <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/95 px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md">
                       <span className={match.affinityScore >= 85 ? 'text-emerald-400' : 'text-amber-400'}>
                         ★ {match.affinityScore}%
                       </span>
@@ -802,7 +887,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                     </div>
 
                     {match.isInLibrary && (
-                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/80 backdrop-blur-md text-[9px] text-rose-300 border border-rose-500/30">
+                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/95 text-[9px] text-rose-300 border border-rose-500/30">
                         Salvo
                       </div>
                     )}
@@ -884,7 +969,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <button
                     key={coll.id}
                     onClick={() => loadCollection(coll.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
                       isActive
                         ? 'bg-rose-500/15 text-rose-300 border border-rose-500/40 shadow-sm'
                         : 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
@@ -910,7 +995,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <div
                   key={manga.id}
                   onClick={() => onSelectManga(manga.id)}
-                  className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
+                  className="manga-card-interactive manga-card-grid-item group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 rounded-xl overflow-hidden cursor-pointer transition-colors duration-150 shadow-sm"
                 >
                   <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
                     {!coverErrors[manga.id] && manga.coverUrl ? (
@@ -918,8 +1003,9 @@ export const HomePage: React.FC<HomePageProps> = ({
                         src={manga.coverUrl}
                         alt={manga.title}
                         referrerPolicy="no-referrer"
+                        decoding="async"
                         onError={() => markCoverError(manga.id)}
-                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-150"
                         loading="lazy"
                       />
                     ) : (
@@ -943,7 +1029,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                     {/* Rating badge */}
                     {manga.rating && (
-                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 py-0.5 rounded text-[10px] font-mono text-amber-300 border border-zinc-800">
+                      <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex items-center gap-1 bg-zinc-950/95 px-1.5 py-0.5 rounded text-[10px] font-mono text-amber-300 border border-zinc-800">
                         <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
                         <span>{manga.rating.toFixed(1)}</span>
                       </div>
@@ -1011,7 +1097,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                       key={vibe.id}
                       onClick={() => handleRollVibe(vibe.id)}
                       disabled={isRollingVibe}
-                      className={`p-2.5 sm:p-3 rounded-xl border text-xs font-medium text-left transition-all flex flex-col gap-1.5 cursor-pointer ${
+                      className={`p-2.5 sm:p-3 rounded-xl border text-xs font-medium text-left transition-colors flex flex-col gap-1.5 cursor-pointer ${
                         isSelected
                           ? 'bg-amber-500/15 border-amber-500/50 text-amber-300 shadow-md'
                           : 'bg-zinc-950/60 hover:bg-zinc-800/80 border-zinc-800 text-zinc-300 hover:text-white'
@@ -1035,6 +1121,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                         src={vibeResult.coverUrl}
                         alt={vibeResult.title}
                         referrerPolicy="no-referrer"
+                        decoding="async"
                         onError={() => markCoverError(`vibe_${vibeResult.id}`)}
                         className="h-full w-full object-cover"
                       />
@@ -1087,7 +1174,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 </div>
               ) : (
                 <div className="w-full max-w-md p-8 rounded-2xl bg-zinc-950/40 border border-dashed border-zinc-800 text-center text-zinc-500">
-                  <Dices className="h-8 w-8 mx-auto mb-2 text-zinc-600 animate-bounce" />
+                  <Dices className="h-8 w-8 mx-auto mb-2 text-zinc-600" />
                   <p className="text-xs">Clique em qualquer humor ao lado para sortear uma obra recomendada</p>
                 </div>
               )}
@@ -1150,7 +1237,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                       window.dispatchEvent(new CustomEvent('open-extensions-modal'));
                     }
                   }}
-                  className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                  className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-colors ${
                     isEnabled
                       ? 'bg-zinc-900/50 hover:bg-zinc-900/80 border-zinc-800 hover:border-zinc-700 shadow-sm'
                       : 'bg-zinc-950/40 border-zinc-850/60 opacity-60 hover:opacity-80'

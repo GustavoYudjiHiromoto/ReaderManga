@@ -48,7 +48,7 @@ const HoursTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     const data: DailyReadingRecord = payload[0].payload;
     return (
-      <div className="rounded-xl bg-zinc-950/95 border border-zinc-700/80 p-3 shadow-2xl backdrop-blur-md text-xs z-50">
+      <div className="rounded-xl bg-zinc-950/[0.98] border border-zinc-700/80 p-3 shadow-2xl text-xs z-50">
         <p className="font-bold text-zinc-200 border-b border-zinc-800 pb-1 mb-2 flex items-center justify-between gap-4">
           <span>{data.fullDate} ({data.dayOfWeek})</span>
           <span className="text-[10px] text-zinc-500 font-mono">{data.date}</span>
@@ -84,7 +84,7 @@ const VelocityTooltip = ({ active, payload }: any) => {
   if (active && payload && payload.length) {
     const data: DailyReadingRecord = payload[0].payload;
     return (
-      <div className="rounded-xl bg-zinc-950/95 border border-zinc-700/80 p-3 shadow-2xl backdrop-blur-md text-xs z-50 font-mono">
+      <div className="rounded-xl bg-zinc-950/[0.98] border border-zinc-700/80 p-3 shadow-2xl text-xs z-50 font-mono">
         <p className="font-bold font-sans text-zinc-200 border-b border-zinc-800 pb-1 mb-2">
           {data.fullDate} • Ritmo de Leitura
         </p>
@@ -113,7 +113,7 @@ const GenreTooltip = ({ active, payload }: any) => {
   if (active && payload && payload.length) {
     const data: GenreDistribution = payload[0].payload;
     return (
-      <div className="rounded-xl bg-zinc-950/95 border border-zinc-700/80 p-2.5 shadow-2xl backdrop-blur-md text-xs z-50">
+      <div className="rounded-xl bg-zinc-950/[0.98] border border-zinc-700/80 p-2.5 shadow-2xl text-xs z-50">
         <div className="flex items-center gap-2 mb-1">
           <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: data.color }} />
           <span className="font-bold text-white">{data.name}</span>
@@ -143,20 +143,21 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
     AnalyticsService.getGenreDistribution()
   );
   const [summary, setSummary] = useState<AnalyticsSummary>(() =>
-    AnalyticsService.getAnalyticsSummary()
+    AnalyticsService.getAnalyticsSummary(dailyData30d, genreDist)
   );
 
   const refreshAnalytics = () => {
-    setDailyData30d(AnalyticsService.getLast30DaysData());
-    setGenreDist(AnalyticsService.getGenreDistribution());
-    setSummary(AnalyticsService.getAnalyticsSummary());
+    const next30d = AnalyticsService.getLast30DaysData();
+    const nextGenres = AnalyticsService.getGenreDistribution();
+    setDailyData30d(next30d);
+    setGenreDist(nextGenres);
+    setSummary(AnalyticsService.getAnalyticsSummary(next30d, nextGenres));
   };
 
   useEffect(() => {
-    refreshAnalytics();
     const unsubHistory = HistoryService.subscribe(() => {
       refreshAnalytics();
-    });
+    }, ['history', 'readChapters', 'stats', 'favorites']);
     return unsubHistory;
   }, []);
 
@@ -177,7 +178,7 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
   return (
     <div className={`space-y-6 ${className}`}>
       {/* Analytics Main Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-zinc-900/60 border border-zinc-800 backdrop-blur-sm shadow-xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-xl">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-gradient-to-br from-rose-500/20 via-violet-500/20 to-amber-500/20 border border-rose-500/30 text-rose-400 shadow-inner">
             <BarChart3 className="h-5 w-5" />
@@ -203,7 +204,7 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
             <button
               key={range}
               onClick={() => setTimeRange(range)}
-              className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
+              className={`px-3 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
                 timeRange === range
                   ? 'bg-rose-600 text-white shadow-md shadow-rose-950/50 font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
@@ -218,10 +219,10 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
       {/* 4 Top KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
         {/* Total Hours */}
-        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-rose-500/30 transition-all group">
+        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-rose-500/30 transition-colors group">
           <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
             <span>Horas Totais (30d)</span>
-            <div className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 group-hover:scale-110 transition-transform">
+            <div className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400">
               <Clock className="h-4 w-4" />
             </div>
           </div>
@@ -237,10 +238,10 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
         </div>
 
         {/* Reading Velocity */}
-        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-emerald-500/30 transition-all group">
+        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-emerald-500/30 transition-colors group">
           <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
             <span>Velocidade Média</span>
-            <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 group-hover:scale-110 transition-transform">
+            <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
               <Zap className="h-4 w-4" />
             </div>
           </div>
@@ -256,10 +257,10 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
         </div>
 
         {/* Favorite Genre */}
-        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-violet-500/30 transition-all group">
+        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-violet-500/30 transition-colors group">
           <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
             <span>Gênero Dominante</span>
-            <div className="p-1.5 rounded-lg bg-violet-500/10 text-violet-400 group-hover:scale-110 transition-transform">
+            <div className="p-1.5 rounded-lg bg-violet-500/10 text-violet-400">
               <Award className="h-4 w-4" />
             </div>
           </div>
@@ -274,10 +275,10 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
         </div>
 
         {/* Reading Streak */}
-        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-amber-500/30 transition-all group">
+        <div className="p-4 rounded-xl bg-zinc-900/40 border border-zinc-800/80 hover:border-amber-500/30 transition-colors group">
           <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
             <span>Sequência de Leitura</span>
-            <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 group-hover:scale-110 transition-transform">
+            <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
               <Flame className="h-4 w-4" />
             </div>
           </div>
@@ -443,7 +444,7 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
                         fill={entry.color}
                         stroke="#18181b"
                         strokeWidth={2}
-                        className="transition-all duration-200 cursor-pointer hover:opacity-80"
+                        className="transition-opacity duration-200 cursor-pointer hover:opacity-80"
                       />
                     ))}
                   </Pie>
@@ -478,9 +479,9 @@ export const ReadingAnalytics: React.FC<ReadingAnalyticsProps> = ({
                 onClick={() => onExploreGenre?.(g.name)}
                 onMouseEnter={() => setActiveGenreIndex(idx)}
                 onMouseLeave={() => setActiveGenreIndex(null)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
                   activeGenreIndex === idx
-                    ? 'border-zinc-500 bg-zinc-800 text-white scale-105'
+                    ? 'border-zinc-500 bg-zinc-800 text-white'
                     : 'border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                 }`}
                 title={`Explorar obras do gênero ${g.name}`}

@@ -123,8 +123,13 @@ export const UpdateTrackerService = {
 
   getUnreadUpdatesCount(): number {
     const all = this.getStoredUpdates();
-    const readChapters = new Set(HistoryService.getReadChapters());
-    return Object.values(all).filter(u => u.hasNew && !readChapters.has(u.latestChapterId)).length;
+    let count = 0;
+    for (const u of Object.values(all)) {
+      if (u?.hasNew && HistoryService.isBookmarked(u.mangaId) && !HistoryService.isChapterRead(u.latestChapterId)) {
+        count++;
+      }
+    }
+    return count;
   },
 
   /**
@@ -140,6 +145,7 @@ export const UpdateTrackerService = {
       if (
         u?.hasNew &&
         u.latestChapterId &&
+        HistoryService.isBookmarked(u.mangaId) &&
         !HistoryService.isChapterRead(u.latestChapterId) &&
         seenMap[u.mangaId] !== u.latestChapterId
       ) {
@@ -161,7 +167,7 @@ export const UpdateTrackerService = {
       const nextSeen: Record<string, string> = {};
 
       for (const u of Object.values(all)) {
-        if (u?.mangaId && u?.latestChapterId) {
+        if (u?.mangaId && u?.latestChapterId && HistoryService.isBookmarked(u.mangaId)) {
           if (u.hasNew && !HistoryService.isChapterRead(u.latestChapterId)) {
             nextSeen[u.mangaId] = u.latestChapterId;
             if (prevSeen[u.mangaId] !== u.latestChapterId) {
@@ -171,6 +177,10 @@ export const UpdateTrackerService = {
             nextSeen[u.mangaId] = u.latestChapterId;
           }
         }
+      }
+
+      if (Object.keys(prevSeen).length !== Object.keys(nextSeen).length) {
+        changed = true;
       }
 
       if (changed) {
@@ -185,8 +195,9 @@ export const UpdateTrackerService = {
 
   getMangasWithUpdates(): MangaUpdateInfo[] {
     const all = this.getStoredUpdates();
-    const readChapters = new Set(HistoryService.getReadChapters());
-    return Object.values(all).filter(u => u.hasNew && !readChapters.has(u.latestChapterId));
+    return Object.values(all).filter(
+      u => u?.hasNew && HistoryService.isBookmarked(u.mangaId) && !HistoryService.isChapterRead(u.latestChapterId)
+    );
   },
 
   isChecking(): boolean {
@@ -243,6 +254,124 @@ export const UpdateTrackerService = {
     }
   },
 
+  removeTrackedUpdates(mangaIds: string[]): boolean {
+    if (!mangaIds || mangaIds.length === 0) return false;
+    try {
+      const removeSet = new Set(mangaIds.filter(Boolean));
+      if (removeSet.size === 0) return false;
+      const stored = this.getStoredUpdates();
+      const seenMap = getSeenInFeedMap();
+      let updatesChanged = false;
+      let seenChanged = false;
+      const nextUpdates: Record<string, MangaUpdateInfo> = { ...stored };
+      const nextSeen: Record<string, string> = { ...seenMap };
+
+      for (const id of removeSet) {
+        if (id in nextUpdates) {
+          delete nextUpdates[id];
+          updatesChanged = true;
+        }
+        if (id in nextSeen) {
+          delete nextSeen[id];
+          seenChanged = true;
+        }
+      }
+
+      if (updatesChanged) {
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(nextUpdates));
+        cachedUpdates = nextUpdates;
+      }
+      if (seenChanged) {
+        localStorage.setItem(SEEN_IN_FEED_KEY, JSON.stringify(nextSeen));
+        cachedSeenInFeed = nextSeen;
+      }
+      if (updatesChanged || seenChanged) {
+        notifyListeners();
+      }
+      return updatesChanged || seenChanged;
+    } catch (e) {
+      console.warn('Failed to remove tracked updates', e);
+      return false;
+    }
+  },
+
+  migrateMangaUpdate(sourceMangaId: string, targetMangaId: string): void {
+    if (!sourceMangaId || !targetMangaId || sourceMangaId === targetMangaId) return;
+    try {
+      const stored = this.getStoredUpdates();
+      const seenMap = getSeenInFeedMap();
+      const sourceUpdate = stored[sourceMangaId];
+      const targetUpdate = stored[targetMangaId];
+      const nextUpdates: Record<string, MangaUpdateInfo> = { ...stored };
+      const nextSeen: Record<string, string> = { ...seenMap };
+      let changed = false;
+
+      if (sourceUpdate) {
+        const sourceNum = parseFloat(sourceUpdate.latestChapterNumber || '0');
+        const targetNum = targetUpdate ? parseFloat(targetUpdate.latestChapterNumber || '0') : -Infinity;
+        const sourceIsNewer =
+          !targetUpdate ||
+          (!isNaN(sourceNum) && !isNaN(targetNum) && sourceNum > targetNum) ||
+          (sourceNum === targetNum && (sourceUpdate.checkedAt || 0) > (targetUpdate?.checkedAt || 0));
+
+        if (sourceIsNewer) {
+          const progress = HistoryService.getProgress(targetMangaId);
+          const progressNum = progress?.chapterNumber ? parseFloat(progress.chapterNumber) : NaN;
+          let hasNew = Boolean(sourceUpdate.hasNew);
+          if (HistoryService.isChapterRead(sourceUpdate.latestChapterId)) {
+            hasNew = false;
+          } else if (!isNaN(progressNum) && !isNaN(sourceNum)) {
+            hasNew = sourceNum > progressNum;
+          }
+          nextUpdates[targetMangaId] = {
+            ...sourceUpdate,
+            mangaId: targetMangaId,
+            hasNew,
+            lastReadNumber: progress?.chapterNumber || targetUpdate?.lastReadNumber || sourceUpdate.lastReadNumber
+          };
+          if (seenMap[sourceMangaId] && !nextSeen[targetMangaId]) {
+            nextSeen[targetMangaId] = seenMap[sourceMangaId];
+          }
+        }
+        delete nextUpdates[sourceMangaId];
+        changed = true;
+      }
+
+      if (sourceMangaId in nextSeen) {
+        delete nextSeen[sourceMangaId];
+        changed = true;
+      }
+
+      if (changed) {
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(nextUpdates));
+        cachedUpdates = nextUpdates;
+        localStorage.setItem(SEEN_IN_FEED_KEY, JSON.stringify(nextSeen));
+        cachedSeenInFeed = nextSeen;
+        notifyListeners();
+      }
+    } catch (e) {
+      console.warn('Failed to migrate tracked update', e);
+    }
+  },
+
+  pruneOrphanedUpdates(): boolean {
+    try {
+      const stored = this.getStoredUpdates();
+      const seenMap = getSeenInFeedMap();
+      const orphanSet = new Set<string>();
+      for (const id of Object.keys(stored)) {
+        if (!HistoryService.isBookmarked(id)) orphanSet.add(id);
+      }
+      for (const id of Object.keys(seenMap)) {
+        if (!HistoryService.isBookmarked(id)) orphanSet.add(id);
+      }
+      if (orphanSet.size === 0) return false;
+      return this.removeTrackedUpdates(Array.from(orphanSet));
+    } catch {
+      return false;
+    }
+  },
+
   async checkUpdates(force = false, onProgress?: (msg: string) => void): Promise<{
     count: number;
     updates: Record<string, MangaUpdateInfo>;
@@ -253,6 +382,7 @@ export const UpdateTrackerService = {
 
     const favorites = HistoryService.getFavorites();
     if (favorites.length === 0) {
+      this.pruneOrphanedUpdates();
       return { count: 0, updates: {} };
     }
 
@@ -267,7 +397,8 @@ export const UpdateTrackerService = {
         return u && (now - u.checkedAt) < CACHE_TTL_MS;
       });
       if (allRecent && updatesValues.length > 0) {
-        return { count: this.getUnreadUpdatesCount(), updates: currentUpdates };
+        this.pruneOrphanedUpdates();
+        return { count: this.getUnreadUpdatesCount(), updates: this.getStoredUpdates() };
       }
     }
 
@@ -276,7 +407,13 @@ export const UpdateTrackerService = {
     onProgress?.(checkProgress);
     notifyListeners();
 
-    const newUpdates: Record<string, MangaUpdateInfo> = { ...currentUpdates };
+    const favIdSet = new Set(favorites.map(f => f.mangaId));
+    const newUpdates: Record<string, MangaUpdateInfo> = {};
+    for (const [id, info] of Object.entries(currentUpdates)) {
+      if (favIdSet.has(id) && info) {
+        newUpdates[id] = info;
+      }
+    }
     const readChapters = new Set(HistoryService.getReadChapters());
 
     try {
@@ -392,6 +529,7 @@ export const UpdateTrackerService = {
 
       localStorage.setItem(UPDATES_KEY, JSON.stringify(newUpdates));
       cachedUpdates = newUpdates;
+      this.pruneOrphanedUpdates();
     } finally {
       isChecking = false;
       checkProgress = null;
@@ -413,11 +551,22 @@ export const UpdateTrackerService = {
 
     let lastHistoryRef = HistoryService.getHistory();
     let lastReadRef = HistoryService.getReadChapters();
+    let lastFavoritesRef = HistoryService.getFavorites();
 
-    // Auto-limpeza ao ler capítulos (ignora eventos de favoritos/dispensados que não afetam leitura)
+    // Prune any pre-existing orphaned entries from deleted/merged favorites cleanly on startup
+    this.pruneOrphanedUpdates();
+
+    // Auto-limpeza ao ler capítulos ou remover/mesclar favoritos
     const unsubHistory = HistoryService.subscribe(() => {
       const history = HistoryService.getHistory();
       const readList = HistoryService.getReadChapters();
+      const favList = HistoryService.getFavorites();
+
+      if (favList !== lastFavoritesRef) {
+        lastFavoritesRef = favList;
+        this.pruneOrphanedUpdates();
+      }
+
       if (history === lastHistoryRef && readList === lastReadRef) {
         return;
       }
@@ -444,7 +593,7 @@ export const UpdateTrackerService = {
         cachedUpdates = nextStored;
         notifyListeners();
       }
-    });
+    }, ['favorites', 'history', 'readChapters']);
 
     // Dispara a checagem inicial não-bloqueante
     const initialTimer = setTimeout(() => {
@@ -453,6 +602,9 @@ export const UpdateTrackerService = {
 
     // Agenda intervalo recorrente
     bgTimerId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
       this.checkUpdates(false).catch(() => {});
     }, 30 * 60 * 1000);
 

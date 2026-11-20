@@ -1,18 +1,6 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo, MangaStatus } from '../../src/types/manga.js';
-
-function decodeHtmlEntities(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#x2F;/gi, '/')
-    .replace(/&nbsp;/g, ' ')
-    .trim();
-}
+import { decodeHtmlEntities } from '../../src/utils/htmlEntities.js';
 
 export function parseWeebCentralAssociatedNames(html: string): string[] {
   if (!html) return [];
@@ -297,12 +285,18 @@ export class WeebCentralProvider implements IMangaSource {
       'overpower': 'overpowered',
       'yandere': 'yandere',
       'tomboy': 'tomboy',
+      'gyaru': 'gyaru',
+      'tsundere': 'tsundere',
+      'kuudere / fria por fora': 'ice',
       'construção de vila': 'village',
       'construção de vila / reino': 'village',
       'fazenda / agricultura': 'farming',
       'dungeon / sistema': 'dungeon',
       'domador de monstros': 'tamer',
-      'vingança': 'revenge'
+      'vingança': 'revenge',
+      'expulso do grupo': 'banished',
+      'lorde demônio / rei demônio': 'demon lord',
+      'necromante / invocação': 'necromancer'
     };
     if (!textQuery && options?.genres) {
       for (const g of options.genres) {
@@ -321,8 +315,8 @@ export class WeebCentralProvider implements IMangaSource {
     const tagsToSet = new Set<string>();
     if (options?.genre && options.genre !== 'all') {
       const lower = options.genre.toLowerCase();
-      const mapped = GENRE_MAP[lower] || options.genre;
-      tagsToSet.add(mapped);
+      const mapped = GENRE_MAP[lower];
+      if (mapped) tagsToSet.add(mapped);
     }
     if (Array.isArray(options?.genres)) {
       for (const g of options.genres) {
@@ -333,6 +327,11 @@ export class WeebCentralProvider implements IMangaSource {
     }
     for (const tag of tagsToSet) {
       params.append('included_tag', tag);
+    }
+
+    // If a genre/subgenre was requested without text query and neither mapped to a WeebCentral tag nor keyword fallback, return empty instead of unfiltered popular dump
+    if (!textQuery && tagsToSet.size === 0 && ((options?.genre && options.genre !== 'all') || (options?.genres && options.genres.length > 0))) {
+      return { mangaList: [], total: 0, hasMore: false };
     }
 
     const url = `${this.baseUrl}/search/data?${params.toString()}`;

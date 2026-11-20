@@ -792,7 +792,7 @@ export const ExtensionsModal: React.FC<ExtensionsModalProps> = ({
               <span>Ponte Residencial</span>
               {relayStatus?.bridgeOnline && (
                 <span
-                  className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"
+                  className="h-2 w-2 rounded-full bg-emerald-400"
                   title="Ponte Residencial conectada"
                 />
               )}

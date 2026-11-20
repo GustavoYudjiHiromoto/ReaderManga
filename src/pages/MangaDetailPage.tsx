@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   ArrowLeft,
   BookOpen,
@@ -35,7 +35,7 @@ import {
   ZoomIn,
   ArrowRightLeft
 } from 'lucide-react';
-import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo } from '../types/manga.js';
+import { Manga, Chapter, FavoriteManga, LibraryCategory, MangaUpdateInfo, ReadingProgress } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
 import { HistoryService } from '../services/history.js';
 import { OfflineCacheService } from '../services/offlineCache.js';
@@ -59,6 +59,346 @@ import {
   matchesLanguageFilter,
   subscribePreferredLanguage
 } from '../utils/languagePreference.js';
+
+const CHAPTERS_PAGE_BATCH = 80;
+
+interface ChapterGridItemProps {
+  chapter: Chapter;
+  isRead: boolean;
+  isCurrentRead: boolean;
+  isNew: boolean;
+  isSavedOffline: boolean;
+  onChapterClick: (chapterId: string) => void;
+}
+
+const ChapterGridItem = React.memo<ChapterGridItemProps>(({
+  chapter,
+  isRead,
+  isCurrentRead,
+  isNew,
+  isSavedOffline,
+  onChapterClick
+}) => {
+  return (
+    <button
+      onClick={() => onChapterClick(chapter.id)}
+      title={`Capítulo ${chapter.chapterNumber}${chapter.title ? ` - ${chapter.title}` : ''} (${chapter.scanlationGroup || 'Scan'})`}
+      className={`chapter-grid-item relative flex flex-col items-center justify-center py-2.5 px-2 rounded-xl text-xs font-mono font-medium transition-colors cursor-pointer border group ${
+        isCurrentRead
+          ? 'bg-rose-950/40 border-rose-500 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500/50'
+          : isRead
+          ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-950/30'
+          : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white'
+      }`}
+    >
+      <div className="flex items-center gap-1">
+        {isRead && <Check className="h-3 w-3 text-emerald-400 shrink-0" />}
+        <span className="tabular-nums font-bold">c.{chapter.chapterNumber}</span>
+      </div>
+      <span className="text-[10px] text-zinc-500 truncate max-w-[80px] font-sans mt-0.5">
+        {chapter.scanlationGroup || chapter.language.toUpperCase()}
+      </span>
+      {isNew && (
+        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border border-zinc-950" title="Novo Capítulo" />
+      )}
+      {isSavedOffline && (
+        <span className="absolute bottom-1 right-1 text-emerald-400 text-[9px]" title="Salvo Offline">
+          ↓
+        </span>
+      )}
+    </button>
+  );
+});
+
+interface ChapterListItemProps {
+  chapter: Chapter;
+  isRead: boolean;
+  isCurrentRead: boolean;
+  isExpanded: boolean;
+  isSavedOffline: boolean;
+  isCachingOffline: boolean;
+  onChapterClick: (chapterId: string) => void;
+  onToggleChapterRead: (e: React.MouseEvent, chapterId: string) => void;
+  onMarkUpTo: (e: React.MouseEvent, chapterId: string) => void;
+  onToggleVariants: (e: React.MouseEvent, chapterId: string) => void;
+  onToggleOfflineSaveChapter: (e: React.MouseEvent, chapter: Chapter) => void;
+}
+
+const ChapterListItem = React.memo<ChapterListItemProps>(({
+  chapter,
+  isRead,
+  isCurrentRead,
+  isExpanded,
+  isSavedOffline,
+  isCachingOffline,
+  onChapterClick,
+  onToggleChapterRead,
+  onMarkUpTo,
+  onToggleVariants,
+  onToggleOfflineSaveChapter
+}) => {
+  const hasVariants = Boolean(chapter.variants && chapter.variants.length > 0);
+
+  return (
+    <div
+      className={`chapter-grid-item group flex flex-col p-3 sm:p-3.5 rounded-xl border transition-colors ${
+        isCurrentRead
+          ? 'bg-rose-950/20 border-rose-800/60'
+          : isRead
+          ? 'bg-zinc-950/50 border-zinc-800/60 opacity-85 hover:opacity-100'
+          : 'bg-zinc-900/60 hover:bg-zinc-900/90 border-zinc-800/80 hover:border-zinc-700'
+      }`}
+    >
+      <div
+        onClick={() => onChapterClick(chapter.id)}
+        className="flex items-center justify-between gap-2 cursor-pointer"
+      >
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 overflow-hidden">
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-mono font-medium tabular-nums transition-colors ${
+            isRead
+              ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
+              : 'bg-zinc-950 border-zinc-800 text-zinc-300 group-hover:border-rose-500/50 group-hover:text-rose-400'
+          }`}>
+            {chapter.chapterNumber}
+          </div>
+
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+              <span className="font-semibold text-xs text-zinc-200 line-clamp-1 group-hover:text-rose-400 transition-colors">
+                Capítulo {chapter.chapterNumber}
+                {chapter.title && ` - ${chapter.title}`}
+              </span>
+
+              {isRead && (
+                <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 font-medium shrink-0">
+                  <Check className="h-2.5 w-2.5" />
+                  <span>Lido</span>
+                </span>
+              )}
+
+              {chapter.scanlationGroup && (
+                <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono truncate max-w-[120px] sm:max-w-none">
+                  {chapter.scanlationGroup}
+                </span>
+              )}
+
+              {chapter.edition && chapter.edition !== 'standard' && (
+                <span className="text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 uppercase font-mono font-medium">
+                  {chapter.edition}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] text-zinc-400 mt-1 truncate">
+              {chapter.releaseDate && <span>{chapter.releaseDate}</span>}
+              {chapter.pagesCount && (
+                <>
+                  <span aria-hidden="true" className="text-zinc-600">·</span>
+                  <span className="font-mono tabular-nums">{chapter.pagesCount} págs</span>
+                </>
+              )}
+              <span aria-hidden="true" className="text-zinc-600">·</span>
+              <span className="uppercase text-[10px] text-zinc-400 font-mono">{chapter.language}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {isCurrentRead && (
+            <span className="hidden sm:inline-block text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
+              Em Leitura
+            </span>
+          )}
+
+          {/* Toggle Read Single Chapter Button */}
+          <button
+            type="button"
+            onClick={(e) => onToggleChapterRead(e, chapter.id)}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isRead
+                ? 'text-emerald-400 bg-emerald-500/10 hover:bg-zinc-800'
+                : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
+            }`}
+            title={isRead ? 'Capítulo lido (clique para marcar como não lido)' : 'Marcar capítulo como lido'}
+          >
+            <CheckCircle2 className={`h-4 w-4 ${isRead ? 'fill-emerald-500/20' : ''}`} />
+          </button>
+
+          {/* Mark Up To Here Button */}
+          <button
+            type="button"
+            onClick={(e) => onMarkUpTo(e, chapter.id)}
+            className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-medium bg-zinc-850 hover:bg-emerald-950/50 text-zinc-400 hover:text-emerald-300 border border-zinc-750 hover:border-emerald-500/40 transition-colors cursor-pointer"
+            title={`Marcar o Capítulo ${chapter.chapterNumber} e todos os anteriores como lidos`}
+          >
+            <CheckCheck className="h-3.5 w-3.5 sm:h-3 sm:w-3 text-emerald-400" />
+            <span className="hidden sm:inline">Até aqui</span>
+          </button>
+
+          {hasVariants && (
+            <button
+              type="button"
+              onClick={(e) => onToggleVariants(e, chapter.id)}
+              className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 transition-colors cursor-pointer"
+              title="Alternar versões/scans deste capítulo"
+            >
+              <Layers className="h-3 w-3" />
+              <span>+{chapter.variants!.length}</span>
+              <ChevronDown className={`h-2.5 w-2.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+            </button>
+          )}
+
+          {/* Offline PWA Cache Button */}
+          <button
+            type="button"
+            onClick={(e) => onToggleOfflineSaveChapter(e, chapter)}
+            disabled={isCachingOffline}
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isSavedOffline
+                ? 'text-emerald-400 bg-emerald-500/10 hover:bg-rose-500/10 hover:text-rose-400'
+                : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
+            }`}
+            title={
+              isSavedOffline
+                ? 'Salvo offline no Cache do PWA (Clique para remover)'
+                : 'Salvar no Cache do PWA para leitura 100% offline'
+            }
+          >
+            {isCachingOffline ? (
+              <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+            ) : (
+              <HardDriveDownload className={`h-4 w-4 ${isSavedOffline ? 'fill-emerald-500/20' : ''}`} />
+            )}
+          </button>
+
+          {/* Download CBZ */}
+          <a
+            href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
+            download
+            onClick={(e) => e.stopPropagation()}
+            className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+            title="Baixar capítulo em formato ComicBook (.cbz)"
+          >
+            CBZ
+          </a>
+
+          {/* Download PDF */}
+          <a
+            href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=pdf`}
+            download
+            onClick={(e) => e.stopPropagation()}
+            className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+            title="Baixar capítulo em documento PDF"
+          >
+            PDF
+          </a>
+
+          <button
+            type="button"
+            className="hidden sm:inline-flex p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
+            title="Ler agora"
+          >
+            <BookOpen className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Expandable variants list */}
+      {hasVariants && isExpanded && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="mt-3 pt-3 border-t border-zinc-800/80 space-y-1.5 animate-in fade-in duration-150"
+        >
+          <div className="flex items-center justify-between text-[11px] font-medium text-zinc-400 mb-1">
+            <span>Versões disponíveis para o Capítulo {chapter.chapterNumber}:</span>
+          </div>
+
+          {/* Primary variant */}
+          <div className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/80 border border-zinc-800/60 text-xs">
+            <div className="flex items-center gap-2 overflow-hidden">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-semibold uppercase">
+                Padrão
+              </span>
+              <span className="text-zinc-200 font-medium truncate">
+                {chapter.scanlationGroup || chapter.sourceId}
+              </span>
+              {chapter.pagesCount && (
+                <span className="text-[10px] text-zinc-500 font-mono">
+                  ({chapter.pagesCount} págs)
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <a
+                href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
+                download
+                onClick={(e) => e.stopPropagation()}
+                className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
+                title="Baixar versão padrão (.cbz)"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </a>
+              <button
+                onClick={() => onChapterClick(chapter.id)}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+              >
+                Ler
+              </button>
+            </div>
+          </div>
+
+          {/* Other variants */}
+          {chapter.variants!.map((v) => (
+            <div
+              key={v.id}
+              className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/40 border border-zinc-800/40 text-xs hover:border-zinc-700/70 transition-colors"
+            >
+              <div className="flex items-center gap-2 overflow-hidden">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-medium uppercase">
+                  {v.sourceName || v.sourceId}
+                </span>
+                <span className="text-zinc-300 font-medium truncate">
+                  {v.scanlationGroup || v.title || 'Versão Alternativa'}
+                </span>
+                {v.pagesCount && (
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    ({v.pagesCount} págs)
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=cbz`}
+                  download
+                  onClick={(e) => e.stopPropagation()}
+                  className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                  title="Baixar esta versão (.cbz)"
+                >
+                  CBZ
+                </a>
+                <a
+                  href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=pdf`}
+                  download
+                  onClick={(e) => e.stopPropagation()}
+                  className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
+                  title="Baixar esta versão (.pdf)"
+                >
+                  PDF
+                </a>
+                <button
+                  onClick={() => onChapterClick(v.id)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
+                >
+                  Ler
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
 
 interface MangaDetailPageProps {
   mangaId: string;
@@ -99,6 +439,15 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [chapterSearch, setChapterSearch] = useState('');
   const [deduplicate, setDeduplicate] = useState(true);
   const [selectedLang, setSelectedLang] = useState<string>(() => getPreferredLanguage());
+  const backClickLockRef = useRef<number>(0);
+
+  const handleSafeBack = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const now = Date.now();
+    if (now - backClickLockRef.current < 600) return;
+    backClickLockRef.current = now;
+    onBack();
+  };
 
   useEffect(() => {
     return subscribePreferredLanguage((lang) => {
@@ -110,6 +459,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [isIgnored, setIsIgnored] = useState(false);
   const [favoriteData, setFavoriteData] = useState<FavoriteManga | null>(null);
   const [readChapters, setReadChapters] = useState<string[]>([]);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [readFilter, setReadFilter] = useState<'all' | 'unread' | 'read'>('all');
   const [showScoreModal, setShowScoreModal] = useState(false);
   const [modalScore, setModalScore] = useState<number>(10);
@@ -127,9 +477,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [chapterViewMode, setChapterViewMode] = useState<'list' | 'grid'>('list');
   const [expandAllChapters, setExpandAllChapters] = useState(false);
+  const [visibleChaptersLimit, setVisibleChaptersLimit] = useState(CHAPTERS_PAGE_BATCH);
   const [showCoverLightbox, setShowCoverLightbox] = useState(false);
   const [showMigrationModal, setShowMigrationModal] = useState(false);
   const similarSectionRef = useRef<HTMLElement>(null);
+  const chapterScrollContainerRef = useRef<HTMLDivElement>(null);
+  const chapterLoadSentinelRef = useRef<HTMLDivElement>(null);
 
   const scrollToSimilar = () => {
     similarSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -155,25 +508,28 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setCustomFocusInput('');
     setAppliedFocusQuery('');
     setExpandAllChapters(false);
+    setVisibleChaptersLimit(CHAPTERS_PAGE_BATCH);
     setSimilarMatches([]);
     setSimilarMeta({ microTropes: [], anilistTags: [], detectedTags: [], aiPowered: false });
     loadMangaDetails();
-    const fav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+    const fav = HistoryService.getFavoriteById(mangaId) || null;
     setIsBookmarked(Boolean(fav));
     setIsIgnored(HistoryService.isIgnored(mangaId));
     setFavoriteData(fav);
     setReadChapters(HistoryService.getReadChapters());
+    setHistoryRevision(r => r + 1);
     setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
     setUpdateInfo(UpdateTrackerService.getUpdateForManga(mangaId));
     setTrackerMapping(TrackerService.getMapping(mangaId));
 
     const unsubscribe = HistoryService.subscribe(() => {
-      const updatedFav = HistoryService.getFavorites().find(f => f.mangaId === mangaId) || null;
+      const updatedFav = HistoryService.getFavoriteById(mangaId) || null;
       setIsBookmarked(Boolean(updatedFav));
       setIsIgnored(HistoryService.isIgnored(mangaId));
       setFavoriteData(updatedFav);
       setReadChapters(HistoryService.getReadChapters());
-    });
+      setHistoryRevision(r => r + 1);
+    }, ['favorites', 'ignored', 'readChapters', 'history']);
 
     const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
       setUpdateInfo(UpdateTrackerService.getUpdateForManga(mangaId));
@@ -183,7 +539,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       setSavedOfflineChapterIds(OfflineCacheService.getSavedChapterIds());
     });
 
-    const unsubscribeTrackers = TrackerService.subscribe(() => {
+    const unsubscribeTrackers = TrackerService.subscribeManga(mangaId, () => {
       setTrackerMapping(TrackerService.getMapping(mangaId));
     });
 
@@ -327,21 +683,36 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     loadChapters();
   };
 
-  const handleToggleOfflineSaveChapter = async (e: React.MouseEvent, chapter: Chapter) => {
-    e.stopPropagation();
-    if (cachingOfflineIds[chapter.id]) return;
+  const readChapterSet = useMemo(() => new Set(readChapters), [readChapters]);
+  const savedOfflineSet = useMemo(() => new Set(savedOfflineChapterIds), [savedOfflineChapterIds]);
 
-    const isSaved = savedOfflineChapterIds.includes(chapter.id);
+  const mangaRef = useRef(manga);
+  mangaRef.current = manga;
+  const chaptersRef = useRef(chapters);
+  chaptersRef.current = chapters;
+  const readChapterSetRef = useRef(readChapterSet);
+  readChapterSetRef.current = readChapterSet;
+  const savedOfflineSetRef = useRef(savedOfflineSet);
+  savedOfflineSetRef.current = savedOfflineSet;
+  const cachingOfflineIdsRef = useRef(cachingOfflineIds);
+  cachingOfflineIdsRef.current = cachingOfflineIds;
+
+  const handleToggleOfflineSaveChapter = useCallback(async (e: React.MouseEvent, chapter: Chapter) => {
+    e.stopPropagation();
+    if (cachingOfflineIdsRef.current[chapter.id]) return;
+
+    const isSaved = savedOfflineSetRef.current.has(chapter.id);
     if (isSaved) {
       await OfflineCacheService.removeChapter(chapter.id);
     } else {
       setCachingOfflineIds(prev => ({ ...prev, [chapter.id]: true }));
       try {
         const pages = await MangaApi.getChapterPages(chapter.id);
+        const currentManga = mangaRef.current;
         await OfflineCacheService.cacheChapter(chapter.id, pages, {
-          mangaId: manga?.id || mangaId,
-          mangaTitle: manga?.title || 'Mangá',
-          mangaCover: manga?.coverUrl || '',
+          mangaId: currentManga?.id || mangaId,
+          mangaTitle: currentManga?.title || 'Mangá',
+          mangaCover: currentManga?.coverUrl || '',
           chapterNumber: chapter.chapterNumber,
           chapterTitle: chapter.title
         });
@@ -351,7 +722,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
         setCachingOfflineIds(prev => ({ ...prev, [chapter.id]: false }));
       }
     }
-  };
+  }, [mangaId]);
 
   const toggleSort = () => {
     const newOrder = chapterOrder === 'asc' ? 'desc' : 'asc';
@@ -359,10 +730,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setChapters(prev => [...prev].reverse());
   };
 
-  const handleChapterClick = (chapterId: string) => {
+  const handleChapterClick = useCallback((chapterId: string) => {
     UpdateTrackerService.markMangaUpdateAsSeen(mangaId);
     onReadChapter(mangaId, chapterId);
-  };
+  }, [mangaId, onReadChapter]);
 
   const toggleDeduplication = () => {
     const next = !deduplicate;
@@ -420,19 +791,24 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     setShowScoreModal(false);
   };
 
-  const handleToggleChapterRead = (e: React.MouseEvent, chapterId: string) => {
+  const handleToggleChapterRead = useCallback((e: React.MouseEvent, chapterId: string) => {
     e.stopPropagation();
-    if (readChapters.includes(chapterId)) {
+    if (readChapterSetRef.current.has(chapterId)) {
       HistoryService.unmarkChapterAsRead(chapterId);
     } else {
       HistoryService.markChapterAsRead(chapterId);
     }
-  };
+  }, []);
 
-  const handleMarkUpTo = (e: React.MouseEvent, chapterId: string) => {
+  const handleMarkUpTo = useCallback((e: React.MouseEvent, chapterId: string) => {
     e.stopPropagation();
-    HistoryService.markChaptersUpTo(chapterId, chapters);
-  };
+    HistoryService.markChaptersUpTo(chapterId, chaptersRef.current);
+  }, []);
+
+  const handleToggleVariants = useCallback((e: React.MouseEvent, chapterId: string) => {
+    e.stopPropagation();
+    setExpandedVariantsChapterId(prev => (prev === chapterId ? null : chapterId));
+  }, []);
 
   const handleMarkAllRead = () => {
     HistoryService.markAllChaptersAsRead(chapters);
@@ -442,40 +818,107 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     HistoryService.unmarkAllChapters(chapters);
   };
 
-  const readingProgress = HistoryService.getProgress(mangaId);
+  const readingProgress: ReadingProgress | undefined = useMemo(
+    () => HistoryService.getProgress(mangaId),
+    [mangaId, historyRevision]
+  );
 
   // Statistics
   const totalChaptersCount = chapters.length;
-  const readChaptersCount = chapters.filter(c => readChapters.includes(c.id)).length;
+  const readChaptersCount = useMemo(
+    () => chapters.reduce((acc, c) => (readChapterSet.has(c.id) ? acc + 1 : acc), 0),
+    [chapters, readChapterSet]
+  );
   const unreadChaptersCount = Math.max(0, totalChaptersCount - readChaptersCount);
   const readPercentage = totalChaptersCount > 0 ? Math.round((readChaptersCount / totalChaptersCount) * 100) : 0;
 
-  // Unique languages among loaded chapters
-  const availableLanguages = Array.from(new Set(chapters.map(c => (c.language || 'en').toLowerCase()).filter(Boolean)));
+  // Unique languages and counts among loaded chapters (single pass)
+  const { availableLanguages, ptBrChaptersCount, enChaptersCount, otherLanguageCounts } = useMemo(() => {
+    const langSet = new Set<string>();
+    const counts = new Map<string, number>();
+    let ptCount = 0;
+    let enCount = 0;
+    for (const c of chapters) {
+      const lang = (c.language || 'en').toLowerCase();
+      if (lang) {
+        langSet.add(lang);
+        counts.set(lang, (counts.get(lang) || 0) + 1);
+      }
+      if (matchesLanguageFilter(c.language, 'pt-br')) ptCount++;
+      if (matchesLanguageFilter(c.language, 'en')) enCount++;
+    }
+    return {
+      availableLanguages: Array.from(langSet),
+      ptBrChaptersCount: ptCount,
+      enChaptersCount: enCount,
+      otherLanguageCounts: counts
+    };
+  }, [chapters]);
 
   const matchesLanguage = (lang?: string, filter: string = 'all') => {
     return matchesLanguageFilter(lang, filter);
   };
 
   // Check if current filter produces zero chapters while chapters exist
-  const rawLanguageMatches = chapters.filter(c => matchesLanguage(c.language, selectedLang));
+  const rawLanguageMatches = useMemo(
+    () => chapters.filter(c => matchesLanguageFilter(c.language, selectedLang)),
+    [chapters, selectedLang]
+  );
   const effectiveLangFilter = (rawLanguageMatches.length === 0 && chapters.length > 0 && selectedLang !== 'all') ? 'all' : selectedLang;
   const isFallbackToAll = effectiveLangFilter === 'all' && selectedLang !== 'all' && chapters.length > 0;
 
   // Filtered chapters
-  const filteredChapters = chapters.filter(c => {
-    const isRead = readChapters.includes(c.id);
-    if (readFilter === 'unread' && isRead) return false;
-    if (readFilter === 'read' && !isRead) return false;
-    if (!matchesLanguage(c.language, effectiveLangFilter)) return false;
-    if (!chapterSearch) return true;
+  const filteredChapters = useMemo(() => {
     const q = chapterSearch.toLowerCase();
-    return (
-      c.chapterNumber.includes(q) ||
-      (c.title && c.title.toLowerCase().includes(q)) ||
-      (c.scanlationGroup && c.scanlationGroup.toLowerCase().includes(q))
+    return chapters.filter(c => {
+      const isRead = readChapterSet.has(c.id);
+      if (readFilter === 'unread' && isRead) return false;
+      if (readFilter === 'read' && !isRead) return false;
+      if (!matchesLanguageFilter(c.language, effectiveLangFilter)) return false;
+      if (!q) return true;
+      return (
+        c.chapterNumber.includes(q) ||
+        (c.title && c.title.toLowerCase().includes(q)) ||
+        (c.scanlationGroup && c.scanlationGroup.toLowerCase().includes(q))
+      );
+    });
+  }, [chapters, readChapterSet, readFilter, effectiveLangFilter, chapterSearch]);
+
+  const visibleChapters = useMemo(
+    () => (filteredChapters.length <= visibleChaptersLimit ? filteredChapters : filteredChapters.slice(0, visibleChaptersLimit)),
+    [filteredChapters, visibleChaptersLimit]
+  );
+  const hasMoreChapters = visibleChaptersLimit < filteredChapters.length;
+
+  useEffect(() => {
+    setVisibleChaptersLimit(CHAPTERS_PAGE_BATCH);
+  }, [mangaId, readFilter, effectiveLangFilter, chapterSearch, chapterOrder, deduplicate]);
+
+  useEffect(() => {
+    if (!hasMoreChapters) return;
+    const node = chapterLoadSentinelRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') return;
+    const isScrollBox = filteredChapters.length > 24 && !expandAllChapters;
+    const rootEl = isScrollBox ? chapterScrollContainerRef.current : null;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some(e => e.isIntersecting)) {
+          setVisibleChaptersLimit(prev => prev + CHAPTERS_PAGE_BATCH);
+        }
+      },
+      { root: rootEl, rootMargin: '250px 0px' }
     );
-  });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMoreChapters, visibleChaptersLimit, filteredChapters.length, expandAllChapters, chapterViewMode]);
+
+  const firstChapter = useMemo(() => {
+    const langMatchedForStart = effectiveLangFilter === selectedLang
+      ? rawLanguageMatches
+      : chapters.filter(c => matchesLanguageFilter(c.language, effectiveLangFilter));
+    const startPool = langMatchedForStart.length > 0 ? langMatchedForStart : chapters;
+    return startPool.length > 0 ? (chapterOrder === 'asc' ? startPool[0] : startPool[startPool.length - 1]) : null;
+  }, [chapters, effectiveLangFilter, selectedLang, rawLanguageMatches, chapterOrder]);
 
   if (loading) {
     return (
@@ -494,7 +937,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
         <p className="text-base font-semibold text-zinc-200 mb-2">{error || 'Mangá não encontrado'}</p>
         <p className="text-xs text-zinc-500 mb-6">Não foi possível carregar os dados desta obra na fonte consultada.</p>
         <button
-          onClick={onBack}
+          onClick={handleSafeBack}
           className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition-colors"
         >
           Voltar ao Catálogo
@@ -504,9 +947,6 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   }
 
   const primarySource = manga.sources[0];
-  const langMatchedForStart = chapters.filter(c => matchesLanguage(c.language, effectiveLangFilter));
-  const startPool = langMatchedForStart.length > 0 ? langMatchedForStart : chapters;
-  const firstChapter = startPool.length > 0 ? (chapterOrder === 'asc' ? startPool[0] : startPool[startPool.length - 1]) : null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24 md:pb-28">
@@ -516,16 +956,17 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           src={coverSrc || manga.coverUrl}
           alt=""
           referrerPolicy="no-referrer"
+          decoding="async"
           onError={handleCoverError}
-          className="h-full w-full object-cover opacity-20 blur-2xl scale-110"
+          className="h-full w-full object-cover opacity-15 scale-105"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/70 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-zinc-950/35" />
         
         {/* Navigation bar above backdrop */}
         <div className="absolute top-4 sm:top-6 left-3 sm:left-8 z-10">
           <button
-            onClick={onBack}
-            className="flex items-center gap-2 px-3 sm:px-3.5 py-2 bg-zinc-900/80 hover:bg-zinc-900 backdrop-blur-md border border-zinc-700/60 rounded-lg text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
+            onClick={handleSafeBack}
+            className="flex items-center gap-2 px-3 sm:px-3.5 py-2 bg-zinc-900/95 hover:bg-zinc-900 border border-zinc-700/60 rounded-lg text-xs font-medium text-zinc-300 hover:text-white transition-colors cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
             <span>Voltar</span>
@@ -541,7 +982,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           <div className="md:col-span-4 lg:col-span-3 flex flex-col items-center md:items-start">
             <div
               onClick={() => (coverSrc || manga.coverUrl) && setShowCoverLightbox(true)}
-              className="group/cover relative w-44 xs:w-52 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0 cursor-pointer transition-transform duration-200 hover:scale-[1.02]"
+              className="group/cover relative w-44 xs:w-52 sm:w-64 aspect-[3/4] rounded-xl overflow-hidden shadow-2xl border border-zinc-700/80 bg-zinc-900 shrink-0 cursor-pointer"
               title="Clique para expandir a capa em tela cheia"
             >
               {!coverError && (coverSrc || manga.coverUrl) ? (
@@ -550,11 +991,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                     src={coverSrc || manga.coverUrl}
                     alt={manga.title}
                     referrerPolicy="no-referrer"
+                    decoding="async"
                     onError={handleCoverError}
-                    className="h-full w-full object-cover transition-transform duration-300 group-hover/cover:scale-105"
+                    className="h-full w-full object-cover transition-transform duration-150 group-hover/cover:scale-105"
                   />
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/cover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                    <span className="px-3 py-1.5 rounded-xl bg-zinc-950/90 text-white text-xs font-semibold flex items-center gap-1.5 border border-zinc-700 shadow-xl backdrop-blur-md">
+                    <span className="px-3 py-1.5 rounded-xl bg-zinc-950/95 text-white text-xs font-semibold flex items-center gap-1.5 border border-zinc-700 shadow-xl">
                       <Maximize2 className="h-3.5 w-3.5 text-rose-400" />
                       Expandir Capa
                     </span>
@@ -591,7 +1033,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               {updateInfo?.hasNew && (
                 <button
                   onClick={() => handleChapterClick(updateInfo.latestChapterId)}
-                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/80 transition-all cursor-pointer animate-pulse"
+                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-950/80 transition-colors cursor-pointer"
                 >
                   <Sparkles className="h-4 w-4" />
                   <span>Ler Novo Cap. {updateInfo.latestChapterNumber}</span>
@@ -601,7 +1043,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               {readingProgress ? (
                 <button
                   onClick={() => handleChapterClick(readingProgress.chapterId)}
-                  className={`w-full py-2.5 rounded-lg font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  className={`w-full py-2.5 rounded-lg font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer ${
                     updateInfo?.hasNew
                       ? 'bg-zinc-850 hover:bg-zinc-800 text-zinc-300 border border-zinc-700'
                       : 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white shadow-lg shadow-rose-950/60'
@@ -627,7 +1069,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
               <div className="flex gap-2">
                 <button
                   onClick={handleBookmarkToggle}
-                  className={`flex-1 py-2.5 rounded-xl text-xs font-semibold border flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md active:scale-95 ${
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-semibold border flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-md active:scale-95 ${
                     isBookmarked
                       ? 'bg-rose-600 border-rose-500 text-white shadow-rose-950/60'
                       : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-200 hover:text-white'
@@ -907,7 +1349,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   key={g}
                   type="button"
                   onClick={() => onNavigateToSearch?.('', g)}
-                  className="px-2.5 py-1 rounded-lg bg-zinc-900/80 hover:bg-rose-950/30 text-zinc-300 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 text-xs font-medium transition-all cursor-pointer shadow-sm"
+                  className="px-2.5 py-1 rounded-lg bg-zinc-900/80 hover:bg-rose-950/30 text-zinc-300 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 text-xs font-medium transition-colors cursor-pointer shadow-sm"
                   title={`Ver catálogo filtrado por ${g}`}
                 >
                   #{g}
@@ -1007,7 +1449,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           {updateInfo?.hasNew && (
             <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-rose-950/40 via-zinc-900/70 to-zinc-900/40 border border-rose-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-lg animate-in fade-in duration-300">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 animate-pulse shrink-0">
+                <div className="p-2 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 shrink-0">
                   <Sparkles className="h-4 w-4" />
                 </div>
                 <div>
@@ -1170,7 +1612,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   </div>
                   <div className="h-2 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/80">
                     <div
-                      className="h-full bg-gradient-to-r from-rose-500 via-rose-400 to-emerald-400 rounded-full transition-all duration-300"
+                      className="h-full bg-gradient-to-r from-rose-500 via-rose-400 to-emerald-400 rounded-full transition-[width] duration-300"
                       style={{ width: `${readPercentage}%` }}
                     />
                   </div>
@@ -1269,7 +1711,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   }`}
                   title="Filtrar capítulos em Português"
                 >
-                  PT-BR ({chapters.filter(c => matchesLanguage(c.language, 'pt-br')).length})
+                  PT-BR ({ptBrChaptersCount})
                 </button>
                 <button
                   onClick={() => setSelectedLang('en')}
@@ -1280,10 +1722,10 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                   }`}
                   title="Filtrar capítulos em Inglês"
                 >
-                  EN ({chapters.filter(c => matchesLanguage(c.language, 'en')).length})
+                  EN ({enChaptersCount})
                 </button>
                 {availableLanguages.filter(l => l !== 'pt-br' && l !== 'pt' && l !== 'en' && l !== 'default').map((lang) => {
-                  const count = chapters.filter(c => (c.language || '').toLowerCase() === lang).length;
+                  const count = otherLanguageCounts.get(lang) || 0;
                   return (
                     <button
                       key={lang}
@@ -1378,6 +1820,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           ) : (
             <div className="space-y-3">
               <div
+                ref={chapterScrollContainerRef}
                 className={
                   filteredChapters.length > 24 && !expandAllChapters
                     ? 'max-h-[540px] overflow-y-auto pr-1.5 rounded-2xl border border-zinc-800/70 bg-zinc-950/30 p-2.5 sm:p-3'
@@ -1395,319 +1838,64 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                 </div>
               </div>
               <div className="grid grid-cols-3 xs:grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-1.5 sm:gap-2">
-                {filteredChapters.map((chapter) => {
-                  const isRead = readChapters.includes(chapter.id);
-                  const isCurrentRead = readingProgress?.chapterId === chapter.id;
-                  const isNew = updateInfo?.latestChapterId === chapter.id;
-                  const isSavedOffline = savedOfflineChapterIds.includes(chapter.id);
-
-                  return (
-                    <button
-                      key={chapter.id}
-                      onClick={() => handleChapterClick(chapter.id)}
-                      title={`Capítulo ${chapter.chapterNumber}${chapter.title ? ` - ${chapter.title}` : ''} (${chapter.scanlationGroup || 'Scan'})`}
-                      className={`relative flex flex-col items-center justify-center py-2.5 px-2 rounded-xl text-xs font-mono font-medium transition-all cursor-pointer border group hover:-translate-y-0.5 ${
-                        isCurrentRead
-                          ? 'bg-rose-950/40 border-rose-500 text-white shadow-md shadow-rose-950/40 ring-1 ring-rose-500/50'
-                          : isRead
-                          ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-400 hover:border-emerald-500/60 hover:bg-emerald-950/30'
-                          : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1">
-                        {isRead && <Check className="h-3 w-3 text-emerald-400 shrink-0" />}
-                        <span className="tabular-nums font-bold">c.{chapter.chapterNumber}</span>
-                      </div>
-                      <span className="text-[10px] text-zinc-500 truncate max-w-[80px] font-sans mt-0.5">
-                        {chapter.scanlationGroup || chapter.language.toUpperCase()}
-                      </span>
-                      {isNew && (
-                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 border border-zinc-950 animate-pulse" title="Novo Capítulo" />
-                      )}
-                      {isSavedOffline && (
-                        <span className="absolute bottom-1 right-1 text-emerald-400 text-[9px]" title="Salvo Offline">
-                          ↓
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+                {visibleChapters.map((chapter) => (
+                  <ChapterGridItem
+                    key={chapter.id}
+                    chapter={chapter}
+                    isRead={readChapterSet.has(chapter.id)}
+                    isCurrentRead={readingProgress?.chapterId === chapter.id}
+                    isNew={updateInfo?.latestChapterId === chapter.id}
+                    isSavedOffline={savedOfflineSet.has(chapter.id)}
+                    onChapterClick={handleChapterClick}
+                  />
+                ))}
               </div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {filteredChapters.map((chapter) => {
-                const isRead = readChapters.includes(chapter.id);
-                const isCurrentRead = readingProgress?.chapterId === chapter.id;
-                const hasVariants = Boolean(chapter.variants && chapter.variants.length > 0);
-                const isExpanded = expandedVariantsChapterId === chapter.id;
-
-                return (
-                  <div
-                    key={chapter.id}
-                    className={`group flex flex-col p-3 sm:p-3.5 rounded-xl border transition-all ${
-                      isCurrentRead
-                        ? 'bg-rose-950/20 border-rose-800/60'
-                        : isRead
-                        ? 'bg-zinc-950/50 border-zinc-800/60 opacity-85 hover:opacity-100'
-                        : 'bg-zinc-900/60 hover:bg-zinc-900/90 border-zinc-800/80 hover:border-zinc-700'
-                    }`}
-                  >
-                    <div
-                      onClick={() => handleChapterClick(chapter.id)}
-                      className="flex items-center justify-between gap-2 cursor-pointer"
-                    >
-                      <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 overflow-hidden">
-                        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-xs font-mono font-medium tabular-nums transition-colors ${
-                          isRead
-                            ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
-                            : 'bg-zinc-950 border-zinc-800 text-zinc-300 group-hover:border-rose-500/50 group-hover:text-rose-400'
-                        }`}>
-                          {chapter.chapterNumber}
-                        </div>
-
-                        <div className="min-w-0 flex-1 overflow-hidden">
-                          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
-                            <span className="font-semibold text-xs text-zinc-200 line-clamp-1 group-hover:text-rose-400 transition-colors">
-                              Capítulo {chapter.chapterNumber}
-                              {chapter.title && ` - ${chapter.title}`}
-                            </span>
-
-                            {isRead && (
-                              <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5 font-medium shrink-0">
-                                <Check className="h-2.5 w-2.5" />
-                                <span>Lido</span>
-                              </span>
-                            )}
-
-                            {chapter.scanlationGroup && (
-                              <span className="text-[10px] bg-zinc-800/90 text-zinc-300 px-1.5 py-0.5 rounded border border-zinc-700/60 font-mono truncate max-w-[120px] sm:max-w-none">
-                                {chapter.scanlationGroup}
-                              </span>
-                            )}
-
-                            {chapter.edition && chapter.edition !== 'standard' && (
-                              <span className="text-[10px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 uppercase font-mono font-medium">
-                                {chapter.edition}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] text-zinc-400 mt-1 truncate">
-                            {chapter.releaseDate && <span>{chapter.releaseDate}</span>}
-                            {chapter.pagesCount && (
-                              <>
-                                <span aria-hidden="true" className="text-zinc-600">·</span>
-                                <span className="font-mono tabular-nums">{chapter.pagesCount} págs</span>
-                              </>
-                            )}
-                            <span aria-hidden="true" className="text-zinc-600">·</span>
-                            <span className="uppercase text-[10px] text-zinc-400 font-mono">{chapter.language}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                        {isCurrentRead && (
-                          <span className="hidden sm:inline-block text-[11px] font-medium text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
-                            Em Leitura
-                          </span>
-                        )}
-
-                        {/* Toggle Read Single Chapter Button */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleChapterRead(e, chapter.id)}
-                          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                            isRead
-                              ? 'text-emerald-400 bg-emerald-500/10 hover:bg-zinc-800'
-                              : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
-                          }`}
-                          title={isRead ? 'Capítulo lido (clique para marcar como não lido)' : 'Marcar capítulo como lido'}
-                        >
-                          <CheckCircle2 className={`h-4 w-4 ${isRead ? 'fill-emerald-500/20' : ''}`} />
-                        </button>
-
-                        {/* Mark Up To Here Button */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleMarkUpTo(e, chapter.id)}
-                          className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-medium bg-zinc-850 hover:bg-emerald-950/50 text-zinc-400 hover:text-emerald-300 border border-zinc-750 hover:border-emerald-500/40 transition-colors cursor-pointer"
-                          title={`Marcar o Capítulo ${chapter.chapterNumber} e todos os anteriores como lidos`}
-                        >
-                          <CheckCheck className="h-3.5 w-3.5 sm:h-3 sm:w-3 text-emerald-400" />
-                          <span className="hidden sm:inline">Até aqui</span>
-                        </button>
-
-                        {hasVariants && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setExpandedVariantsChapterId(isExpanded ? null : chapter.id);
-                            }}
-                            className="flex items-center gap-1 px-2 py-1.5 sm:py-1 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 transition-colors cursor-pointer"
-                            title="Alternar versões/scans deste capítulo"
-                          >
-                            <Layers className="h-3 w-3" />
-                            <span>+{chapter.variants!.length}</span>
-                            <ChevronDown className={`h-2.5 w-2.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                          </button>
-                        )}
-
-                        {/* Offline PWA Cache Button */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleOfflineSaveChapter(e, chapter)}
-                          disabled={Boolean(cachingOfflineIds[chapter.id])}
-                          className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                            savedOfflineChapterIds.includes(chapter.id)
-                              ? 'text-emerald-400 bg-emerald-500/10 hover:bg-rose-500/10 hover:text-rose-400'
-                              : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
-                          }`}
-                          title={
-                            savedOfflineChapterIds.includes(chapter.id)
-                              ? 'Salvo offline no Cache do PWA (Clique para remover)'
-                              : 'Salvar no Cache do PWA para leitura 100% offline'
-                          }
-                        >
-                          {cachingOfflineIds[chapter.id] ? (
-                            <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
-                          ) : (
-                            <HardDriveDownload className={`h-4 w-4 ${savedOfflineChapterIds.includes(chapter.id) ? 'fill-emerald-500/20' : ''}`} />
-                          )}
-                        </button>
-
-                        {/* Download CBZ */}
-                        <a
-                          href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
-                          download
-                          onClick={(e) => e.stopPropagation()}
-                          className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
-                          title="Baixar capítulo em formato ComicBook (.cbz)"
-                        >
-                          CBZ
-                        </a>
-
-                        {/* Download PDF */}
-                        <a
-                          href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=pdf`}
-                          download
-                          onClick={(e) => e.stopPropagation()}
-                          className="hidden sm:inline-flex px-1.5 py-0.5 text-zinc-400 hover:text-rose-400 text-[10px] font-mono border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
-                          title="Baixar capítulo em documento PDF"
-                        >
-                          PDF
-                        </a>
-
-                        <button
-                          type="button"
-                          className="hidden sm:inline-flex p-1.5 text-zinc-500 group-hover:text-rose-400 transition-colors"
-                          title="Ler agora"
-                        >
-                          <BookOpen className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Expandable variants list */}
-                    {hasVariants && isExpanded && (
-                      <div
-                        onClick={(e) => e.stopPropagation()}
-                        className="mt-3 pt-3 border-t border-zinc-800/80 space-y-1.5 animate-in fade-in duration-150"
-                      >
-                        <div className="flex items-center justify-between text-[11px] font-medium text-zinc-400 mb-1">
-                          <span>Versões disponíveis para o Capítulo {chapter.chapterNumber}:</span>
-                        </div>
-
-                        {/* Primary variant */}
-                        <div className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/80 border border-zinc-800/60 text-xs">
-                          <div className="flex items-center gap-2 overflow-hidden">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-semibold uppercase">
-                              Padrão
-                            </span>
-                            <span className="text-zinc-200 font-medium truncate">
-                              {chapter.scanlationGroup || chapter.sourceId}
-                            </span>
-                            {chapter.pagesCount && (
-                              <span className="text-[10px] text-zinc-500 font-mono">
-                                ({chapter.pagesCount} págs)
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <a
-                              href={`/api/chapters/${encodeURIComponent(chapter.id)}/download?format=cbz`}
-                              download
-                              onClick={(e) => e.stopPropagation()}
-                              className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
-                              title="Baixar versão padrão (.cbz)"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                            </a>
-                            <button
-                              onClick={() => handleChapterClick(chapter.id)}
-                              className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
-                            >
-                              Ler
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Other variants */}
-                        {chapter.variants!.map((v) => (
-                          <div
-                            key={v.id}
-                            className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/40 border border-zinc-800/40 text-xs hover:border-zinc-700/70 transition-colors"
-                          >
-                            <div className="flex items-center gap-2 overflow-hidden">
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-medium uppercase">
-                                {v.sourceName || v.sourceId}
-                              </span>
-                              <span className="text-zinc-300 font-medium truncate">
-                                {v.scanlationGroup || v.title || 'Versão Alternativa'}
-                              </span>
-                              {v.pagesCount && (
-                                <span className="text-[10px] text-zinc-500 font-mono">
-                                  ({v.pagesCount} págs)
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <a
-                                href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=cbz`}
-                                download
-                                onClick={(e) => e.stopPropagation()}
-                                className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
-                                title="Baixar esta versão (.cbz)"
-                              >
-                                CBZ
-                              </a>
-                              <a
-                                href={`/api/chapters/${encodeURIComponent(v.id)}/download?format=pdf`}
-                                download
-                                onClick={(e) => e.stopPropagation()}
-                                className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-rose-400 border border-zinc-800 hover:border-rose-500/30 rounded transition-colors"
-                                title="Baixar esta versão (.pdf)"
-                              >
-                                PDF
-                              </a>
-                              <button
-                                onClick={() => handleChapterClick(v.id)}
-                                className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-600 text-zinc-200 hover:text-white rounded text-[11px] font-medium transition-colors cursor-pointer"
-                              >
-                                Ler
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {visibleChapters.map((chapter) => (
+                <ChapterListItem
+                  key={chapter.id}
+                  chapter={chapter}
+                  isRead={readChapterSet.has(chapter.id)}
+                  isCurrentRead={readingProgress?.chapterId === chapter.id}
+                  isExpanded={expandedVariantsChapterId === chapter.id}
+                  isSavedOffline={savedOfflineSet.has(chapter.id)}
+                  isCachingOffline={Boolean(cachingOfflineIds[chapter.id])}
+                  onChapterClick={handleChapterClick}
+                  onToggleChapterRead={handleToggleChapterRead}
+                  onMarkUpTo={handleMarkUpTo}
+                  onToggleVariants={handleToggleVariants}
+                  onToggleOfflineSaveChapter={handleToggleOfflineSaveChapter}
+                />
+              ))}
             </div>
           )}
+                {hasMoreChapters && (
+                  <div
+                    ref={chapterLoadSentinelRef}
+                    className="mt-4 flex flex-wrap items-center justify-center gap-2.5 py-3 text-xs text-zinc-400"
+                  >
+                    <span>
+                      Carregados <strong className="text-zinc-200 font-mono">{visibleChapters.length}</strong> de{' '}
+                      <strong className="text-zinc-200 font-mono">{filteredChapters.length}</strong> capítulos
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setVisibleChaptersLimit(prev => prev + CHAPTERS_PAGE_BATCH)}
+                      className="px-3 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer"
+                    >
+                      Mostrar +{Math.min(CHAPTERS_PAGE_BATCH, filteredChapters.length - visibleChapters.length)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVisibleChaptersLimit(filteredChapters.length)}
+                      className="px-2.5 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer"
+                    >
+                      Carregar todos
+                    </button>
+                  </div>
+                )}
               </div>
 
               {filteredChapters.length > 24 && (
@@ -2011,7 +2199,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                           type="button"
                           onClick={() => setSimilarCategoryFilter(tab.id)}
                           title={tab.desc}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5 border ${
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 border ${
                             active
                               ? 'bg-rose-500/15 border-rose-500/40 text-rose-300 shadow-sm'
                               : 'bg-zinc-900/80 hover:bg-zinc-800 border-zinc-800 text-zinc-400 hover:text-zinc-200'
@@ -2035,9 +2223,9 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                             key={item.manga.id}
                             onClick={() => {
                               onSelectManga?.(item.manga.id);
-                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                              window.scrollTo(0, 0);
                             }}
-                            className="manga-card-interactive group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/40 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 shadow-sm hover:shadow-xl"
+                            className="manga-card-interactive manga-card-grid-item group relative flex flex-col min-w-0 bg-zinc-900/60 hover:bg-zinc-900 border border-zinc-800/80 hover:border-rose-500/40 rounded-xl overflow-hidden cursor-pointer transition-colors duration-150 shadow-sm"
                           >
                             <div className="aspect-[3/4] w-full overflow-hidden bg-zinc-950 relative">
                               {item.manga.coverUrl ? (
@@ -2045,7 +2233,8 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                                   src={item.manga.coverUrl}
                                   alt={item.manga.title}
                                   referrerPolicy="no-referrer"
-                                  className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                  decoding="async"
+                                  className="h-full w-full object-cover group-hover:scale-105 transition-transform duration-150"
                                   loading="lazy"
                                 />
                               ) : (
@@ -2055,7 +2244,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
                               )}
 
                               {/* Similarity Score Badge */}
-                              <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/90 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md tabular-nums">
+                              <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 flex items-center gap-1 bg-zinc-950/95 px-1.5 sm:px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border border-zinc-800 shadow-md tabular-nums">
                                 <span className={item.similarityScore >= 82 ? 'text-emerald-400' : 'text-amber-400'}>
                                   ★ {item.similarityScore}%
                                 </span>
@@ -2064,7 +2253,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
 
                               {/* Saved badge if in library and filter is off */}
                               {item.isInLibrary && (
-                                <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/85 backdrop-blur-md text-[9px] text-emerald-300 border border-emerald-500/35 font-medium">
+                                <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 px-1.5 py-0.5 rounded bg-zinc-950/95 text-[9px] text-emerald-300 border border-emerald-500/35 font-medium">
                                   Já lido
                                 </div>
                               )}
@@ -2180,7 +2369,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       {/* Modal for User Rating & Personal Notes */}
       {showScoreModal && manga && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 animate-in fade-in duration-150"
           onClick={() => setShowScoreModal(false)}
         >
           <div
@@ -2299,7 +2488,7 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
       {/* Full-screen Cover Image Lightbox Modal */}
       {showCoverLightbox && (coverSrc || manga?.coverUrl) && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-4 animate-in fade-in duration-150"
           onClick={() => setShowCoverLightbox(false)}
         >
           <div

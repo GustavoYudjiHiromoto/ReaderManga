@@ -25,7 +25,7 @@ export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({
     // Subscribe to live updates from history, timer and tab storage events
     const unsubscribe = HistoryService.subscribe(() => {
       setStats(HistoryService.getReadingStats());
-    });
+    }, ['history', 'readChapters', 'stats']);
 
     return unsubscribe;
   }, []);
@@ -33,7 +33,7 @@ export const ReadingStatsSummary: React.FC<ReadingStatsSummaryProps> = ({
   const hasActivity = stats.totalChaptersRead > 0 || stats.totalSecondsSpent > 0;
 
   return (
-    <div className="mb-8 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 p-5 sm:p-6 backdrop-blur-sm shadow-xl">
+    <div className="mb-8 rounded-2xl bg-zinc-900/80 border border-zinc-800/80 p-5 sm:p-6 shadow-xl">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 mb-5 border-b border-zinc-800/60">
         <div className="flex items-center gap-2.5">
           <div className="p-2 rounded-xl bg-gradient-to-br from-rose-500/20 to-amber-500/20 border border-rose-500/30 text-rose-400">

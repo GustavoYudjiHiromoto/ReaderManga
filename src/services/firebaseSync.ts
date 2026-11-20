@@ -168,6 +168,102 @@ let isApplyingRemoteChange = false;
 let inFlightSyncPromise: Promise<void> | null = null;
 let inFlightSyncUserId: string | null = null;
 
+const REMOVED_FAV_TOMBSTONES_KEY = 'manga_reader_removed_fav_tombstones_v1';
+const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_RACE_GRACE_MS = 15 * 1000;
+const knownDocIdsByMangaId = new Map<string, Set<string>>();
+const pendingDeletesInFlight = new Set<string>();
+let cachedRemovedTombstones: Record<string, number> | null = null;
+let lastStatusNotifiedAt = 0;
+
+function readRemovedFavoriteTombstones(): Record<string, number> {
+  if (cachedRemovedTombstones) return cachedRemovedTombstones;
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(REMOVED_FAV_TOMBSTONES_KEY);
+    if (!raw) {
+      cachedRemovedTombstones = {};
+      return cachedRemovedTombstones;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      cachedRemovedTombstones = {};
+      return cachedRemovedTombstones;
+    }
+    const now = Date.now();
+    const cleaned: Record<string, number> = {};
+    for (const [id, ts] of Object.entries(parsed)) {
+      if (typeof id === 'string' && typeof ts === 'number' && Number.isFinite(ts) && now - ts < TOMBSTONE_TTL_MS) {
+        cleaned[id] = ts;
+      }
+    }
+    cachedRemovedTombstones = cleaned;
+    return cleaned;
+  } catch {
+    return {};
+  }
+}
+
+function writeRemovedFavoriteTombstones(map: Record<string, number>): void {
+  const entries = Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 500);
+  const trimmed = Object.fromEntries(entries);
+  cachedRemovedTombstones = trimmed;
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(REMOVED_FAV_TOMBSTONES_KEY, JSON.stringify(trimmed));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function markFavoriteRemovedLocally(mangaId: string): void {
+  if (!mangaId) return;
+  const map = { ...readRemovedFavoriteTombstones() };
+  map[mangaId] = Date.now();
+  writeRemovedFavoriteTombstones(map);
+}
+
+function clearFavoriteRemovedLocally(mangaId: string): void {
+  if (!mangaId) return;
+  const map = readRemovedFavoriteTombstones();
+  if (mangaId in map) {
+    const next = { ...map };
+    delete next[mangaId];
+    writeRemovedFavoriteTombstones(next);
+  }
+}
+
+function isTombstonedFavorite(mangaId: string, cloudUpdatedAtMs: number, tombstones?: Record<string, number>): boolean {
+  if (pendingDeletesInFlight.has(mangaId)) return true;
+  const map = tombstones || readRemovedFavoriteTombstones();
+  const removedAt = map[mangaId];
+  if (!removedAt) return false;
+  // Treat any cloud doc whose update wasn't strictly created well after deletion as stale/resurrected
+  return cloudUpdatedAtMs <= removedAt + TOMBSTONE_RACE_GRACE_MS;
+}
+
+function recordCloudDocId(mangaId: string, docId: string): void {
+  if (!mangaId || !docId) return;
+  let set = knownDocIdsByMangaId.get(mangaId);
+  if (!set) {
+    set = new Set<string>();
+    knownDocIdsByMangaId.set(mangaId, set);
+  }
+  set.add(docId);
+}
+
+function stringArraysEqual(a?: string[], b?: string[]): boolean {
+  const lenA = a?.length || 0;
+  const lenB = b?.length || 0;
+  if (lenA !== lenB) return false;
+  for (let i = 0; i < lenA; i++) {
+    if (a![i] !== b![i]) return false;
+  }
+  return true;
+}
+
 function notifySyncSubscribers() {
   syncListeners.forEach(fn => {
     try {
@@ -179,12 +275,21 @@ function notifySyncSubscribers() {
 }
 
 function setSyncStatus(status: SyncStatus, err: string | null = null) {
+  const prevStatus = currentStatus;
   currentStatus = status;
   if (status === 'synced') {
     lastSyncedTime = new Date();
     syncErrorMessage = null;
+    const now = Date.now();
+    if (prevStatus === 'synced' && now - lastStatusNotifiedAt < 10000) {
+      return;
+    }
+    lastStatusNotifiedAt = now;
   } else if (status === 'error') {
     syncErrorMessage = err;
+    lastStatusNotifiedAt = Date.now();
+  } else {
+    lastStatusNotifiedAt = Date.now();
   }
   notifySyncSubscribers();
 }
@@ -303,11 +408,23 @@ export const FirebaseSyncService = {
           handleFirestoreError(e, OperationType.GET, `users/${userId}/library/sync`);
         }
 
-        // 1. Merge Favorites (Cloud <-> Local)
+        // 1. Merge Favorites (Cloud <-> Local), honoring local deletion/merge tombstones
+        const tombstones = readRemovedFavoriteTombstones();
         const cloudFavs = new Map<string, FavoriteManga>();
+        const staleCloudDeletes: Array<Promise<void>> = [];
+
         cloudFavSnap.forEach(docSnap => {
           const d = docSnap.data() as any;
           if (d && d.mangaId) {
+            recordCloudDocId(d.mangaId, docSnap.id);
+            const cloudTime = toEpochMs(d.updatedAt, 0);
+            if (isTombstonedFavorite(d.mangaId, cloudTime, tombstones)) {
+              staleCloudDeletes.push(deleteDoc(docSnap.ref).catch(() => {}));
+              return;
+            }
+            if (d.mangaId in tombstones && cloudTime > tombstones[d.mangaId] + TOMBSTONE_RACE_GRACE_MS) {
+              clearFavoriteRemovedLocally(d.mangaId);
+            }
             cloudFavs.set(d.mangaId, {
               mangaId: d.mangaId,
               title: d.title || 'Mangá Salvo',
@@ -329,8 +446,11 @@ export const FirebaseSyncService = {
         const favOpsToUpload: Array<{ ref: ReturnType<typeof doc>; data: Record<string, any>; path: string }> = [];
 
         localFavs.forEach(f => {
-          const existing = mergedFavsMap.get(f.mangaId);
           const localTime = toEpochMs(f.updatedAt, 0);
+          if (isTombstonedFavorite(f.mangaId, localTime, tombstones)) {
+            return;
+          }
+          const existing = mergedFavsMap.get(f.mangaId);
           if (!existing) {
             const normalizedLocal: FavoriteManga = {
               ...f,
@@ -398,6 +518,10 @@ export const FirebaseSyncService = {
             synopsis: fav.synopsis || prev?.synopsis
           };
         });
+
+        if (staleCloudDeletes.length > 0) {
+          Promise.all(staleCloudDeletes).catch(() => {});
+        }
 
         // 2. Merge History / Reading Progress (Cloud <-> Local)
         const cloudHistory = new Map<string, ReadingProgress>();
@@ -560,14 +684,30 @@ export const FirebaseSyncService = {
     const unsubFav = onSnapshot(
       favoritesCol,
       (snapshot) => {
-        if (isApplyingRemoteChange) return;
-        const localById = new Map(HistoryService.getFavorites().map(f => [f.mangaId, f]));
+        if (isApplyingRemoteChange || snapshot.metadata.hasPendingWrites) return;
+        const tombstones = readRemovedFavoriteTombstones();
+        const localFavs = HistoryService.getFavorites();
+        const localById = new Map(localFavs.map(f => [f.mangaId, f]));
         const favorites: FavoriteManga[] = [];
+        const changedIds: string[] = [];
+        const seenRemoteIds = new Set<string>();
+
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
           if (d && d.mangaId) {
+            recordCloudDocId(d.mangaId, docSnap.id);
+            const cloudTime = toEpochMs(d.updatedAt, 0);
+            if (isTombstonedFavorite(d.mangaId, cloudTime, tombstones)) {
+              if (!pendingDeletesInFlight.has(d.mangaId)) {
+                deleteDoc(docSnap.ref).catch(() => {});
+              }
+              return;
+            }
+            if (d.mangaId in tombstones && cloudTime > tombstones[d.mangaId] + TOMBSTONE_RACE_GRACE_MS) {
+              clearFavoriteRemovedLocally(d.mangaId);
+            }
             const prev = localById.get(d.mangaId);
-            favorites.push({
+            const nextEntry: FavoriteManga = {
               mangaId: d.mangaId,
               title: d.title || 'Mangá Salvo',
               coverUrl: d.coverUrl || '',
@@ -584,9 +724,33 @@ export const FirebaseSyncService = {
               status: prev?.status,
               synopsis: prev?.synopsis,
               updatedAt: toEpochMs(d.updatedAt, Date.now())
-            });
+            };
+            seenRemoteIds.add(d.mangaId);
+            if (
+              !prev ||
+              prev.title !== nextEntry.title ||
+              prev.coverUrl !== nextEntry.coverUrl ||
+              normalizeCategory(prev.userCategory) !== nextEntry.userCategory ||
+              prev.userScore !== nextEntry.userScore ||
+              (prev.userNotes || '') !== (nextEntry.userNotes || '') ||
+              !stringArraysEqual(prev.customCollections, nextEntry.customCollections)
+            ) {
+              changedIds.push(d.mangaId);
+            }
+            favorites.push(nextEntry);
           }
         });
+
+        for (const prev of localFavs) {
+          if (!seenRemoteIds.has(prev.mangaId)) {
+            changedIds.push(prev.mangaId);
+          }
+        }
+
+        if (changedIds.length === 0) {
+          setSyncStatus('synced');
+          return;
+        }
 
         isApplyingRemoteChange = true;
         try {
@@ -594,7 +758,7 @@ export const FirebaseSyncService = {
         } finally {
           isApplyingRemoteChange = false;
         }
-        HistoryService.notifyExternalSync();
+        HistoryService.notifyExternalSync('favorites', changedIds);
         setSyncStatus('synced');
       },
       (error) => {
@@ -609,7 +773,7 @@ export const FirebaseSyncService = {
     const unsubHist = onSnapshot(
       historyCol,
       (snapshot) => {
-        if (isApplyingRemoteChange) return;
+        if (isApplyingRemoteChange || snapshot.metadata.hasPendingWrites) return;
         const history: ReadingProgress[] = [];
         snapshot.forEach(docSnap => {
           const d = docSnap.data();
@@ -630,14 +794,42 @@ export const FirebaseSyncService = {
           }
         });
 
+        const sorted = history.sort((a, b) => toEpochMs(b.updatedAt, 0) - toEpochMs(a.updatedAt, 0)).slice(0, 50);
+        const localHist = HistoryService.getHistory();
+        const localById = new Map(localHist.map(h => [h.mangaId, h]));
+        const changedIds: string[] = [];
+        const seenIds = new Set<string>();
+
+        for (const item of sorted) {
+          seenIds.add(item.mangaId);
+          const prev = localById.get(item.mangaId);
+          if (
+            !prev ||
+            prev.chapterId !== item.chapterId ||
+            prev.pageNumber !== item.pageNumber ||
+            Math.abs((prev.updatedAt || 0) - (item.updatedAt || 0)) > 1000
+          ) {
+            changedIds.push(item.mangaId);
+          }
+        }
+        for (const prev of localHist) {
+          if (!seenIds.has(prev.mangaId)) {
+            changedIds.push(prev.mangaId);
+          }
+        }
+
+        if (changedIds.length === 0) {
+          setSyncStatus('synced');
+          return;
+        }
+
         isApplyingRemoteChange = true;
         try {
-          const sorted = history.sort((a, b) => toEpochMs(b.updatedAt, 0) - toEpochMs(a.updatedAt, 0)).slice(0, 50);
           localStorage.setItem('manga_reader_history_v1', JSON.stringify(sorted));
         } finally {
           isApplyingRemoteChange = false;
         }
-        HistoryService.notifyExternalSync();
+        HistoryService.notifyExternalSync('history', changedIds);
         setSyncStatus('synced');
       },
       (error) => {
@@ -652,39 +844,64 @@ export const FirebaseSyncService = {
     const unsubSync = onSnapshot(
       syncDocRef,
       (docSnap) => {
-        if (isApplyingRemoteChange) return;
+        if (isApplyingRemoteChange || docSnap.metadata.hasPendingWrites) return;
         if (docSnap.exists()) {
           const data = docSnap.data();
+          const changedTopics: Array<'readChapters' | 'collections' | 'ignored' | 'stats'> = [];
           isApplyingRemoteChange = true;
           try {
             if (Array.isArray(data.readChapters)) {
-              localStorage.setItem('manga_reader_read_chapters_v1', JSON.stringify(data.readChapters));
+              const prevRead = HistoryService.getReadChapters();
+              if (!stringArraysEqual(prevRead, data.readChapters)) {
+                localStorage.setItem('manga_reader_read_chapters_v1', JSON.stringify(data.readChapters));
+                changedTopics.push('readChapters');
+              }
             }
             if (Array.isArray(data.customCollections)) {
-              localStorage.setItem('manga_reader_custom_collections_v1', JSON.stringify(data.customCollections));
+              const prevCols = HistoryService.getCustomCollections();
+              if (!stringArraysEqual(prevCols, data.customCollections)) {
+                localStorage.setItem('manga_reader_custom_collections_v1', JSON.stringify(data.customCollections));
+                changedTopics.push('collections');
+              }
             }
             if (Array.isArray(data.ignoredMangaIds)) {
               const currentIgnored = HistoryService.getIgnoredMangas();
-              const currentMap = new Map(currentIgnored.map(i => [i.mangaId, i]));
-              const nextIgnored: IgnoredManga[] = data.ignoredMangaIds
-                .filter((id: any) => typeof id === 'string' && id)
-                .map((id: string) => currentMap.get(id) || {
+              const prevIds = currentIgnored.map(i => i.mangaId);
+              const nextIds = data.ignoredMangaIds.filter((id: any): id is string => typeof id === 'string' && id.length > 0);
+              if (!stringArraysEqual(prevIds, nextIds)) {
+                const currentMap = new Map(currentIgnored.map(i => [i.mangaId, i]));
+                const nextIgnored: IgnoredManga[] = nextIds.map((id: string) => currentMap.get(id) || {
                   mangaId: id,
                   title: id.replace(/^mr_[^_]+_/, '').replace(/[-_]/g, ' ') || 'Obra Dispensada',
                   dismissedAt: Date.now()
                 });
-              localStorage.setItem('manga_reader_ignored_v1', JSON.stringify(nextIgnored));
+                localStorage.setItem('manga_reader_ignored_v1', JSON.stringify(nextIgnored));
+                changedTopics.push('ignored');
+              }
             }
             if (typeof data.totalSecondsSpent === 'number') {
-              localStorage.setItem('manga_reader_reading_stats_v1', JSON.stringify({
-                totalSeconds: data.totalSecondsSpent,
-                lastReadDate: data.lastReadDate || new Date().toISOString()
-              }));
+              const prevSec = HistoryService.getStoredSeconds();
+              if (data.totalSecondsSpent !== prevSec) {
+                localStorage.setItem('manga_reader_reading_stats_v1', JSON.stringify({
+                  totalSeconds: data.totalSecondsSpent,
+                  lastReadDate: data.lastReadDate || new Date().toISOString()
+                }));
+                changedTopics.push('stats');
+              }
             }
           } finally {
             isApplyingRemoteChange = false;
           }
-          HistoryService.notifyExternalSync();
+
+          if (changedTopics.length === 0) {
+            setSyncStatus('synced');
+            return;
+          }
+
+          HistoryService.notifyExternalSync(
+            changedTopics,
+            changedTopics.includes('ignored') ? '*' : []
+          );
           setSyncStatus('synced');
         }
       },
@@ -700,12 +917,17 @@ export const FirebaseSyncService = {
    * Pushes a single favorite update or creation to Firestore in real-time
    */
   async pushFavorite(favorite: FavoriteManga): Promise<void> {
+    if (favorite?.mangaId) {
+      clearFavoriteRemovedLocally(favorite.mangaId);
+      pendingDeletesInFlight.delete(favorite.mangaId);
+    }
     const user = auth.currentUser;
     if (!user || isApplyingRemoteChange) return;
     const payload = buildFavoriteFirestorePayload(favorite);
     if (!payload) return;
 
     const docId = sanitizeDocId(favorite.mangaId);
+    recordCloudDocId(favorite.mangaId, docId);
     const ref = doc(db, 'users', user.uid, 'favorites', docId);
     try {
       await setDoc(ref, payload, { merge: true });
@@ -715,17 +937,36 @@ export const FirebaseSyncService = {
   },
 
   /**
-   * Removes a favorite document from Firestore in real-time
+   * Removes a favorite document from Firestore in real-time (including any mismatched legacy docIds)
    */
   async removeFavorite(mangaId: string): Promise<void> {
+    if (!mangaId) return;
+    markFavoriteRemovedLocally(mangaId);
+    pendingDeletesInFlight.add(mangaId);
+
     const user = auth.currentUser;
-    if (!user || isApplyingRemoteChange) return;
-    const docId = sanitizeDocId(mangaId);
-    const ref = doc(db, 'users', user.uid, 'favorites', docId);
+    if (!user || isApplyingRemoteChange) {
+      pendingDeletesInFlight.delete(mangaId);
+      return;
+    }
+
+    const docIdsToDelete = new Set<string>([sanitizeDocId(mangaId)]);
+    const knownIds = knownDocIdsByMangaId.get(mangaId);
+    if (knownIds) {
+      knownIds.forEach(id => docIdsToDelete.add(id));
+    }
+
     try {
-      await deleteDoc(ref);
+      await Promise.all(
+        Array.from(docIdsToDelete).map(docId =>
+          deleteDoc(doc(db, 'users', user.uid, 'favorites', docId))
+        )
+      );
+      knownDocIdsByMangaId.delete(mangaId);
     } catch (e) {
       console.warn('Failed to remove favorite from cloud', e);
+    } finally {
+      pendingDeletesInFlight.delete(mangaId);
     }
   },
 
@@ -772,6 +1013,35 @@ export const FirebaseSyncService = {
 
 let libraryStatePushTimer: ReturnType<typeof setTimeout> | null = null;
 let hasPendingLibraryStatePush = false;
+const progressPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingProgressByManga = new Map<string, ReadingProgress>();
+
+function scheduleReadingProgressPush(progress: ReadingProgress) {
+  if (!auth.currentUser || isApplyingRemoteChange || !progress?.mangaId) return;
+  pendingProgressByManga.set(progress.mangaId, progress);
+  const existing = progressPushTimers.get(progress.mangaId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    progressPushTimers.delete(progress.mangaId);
+    const latest = pendingProgressByManga.get(progress.mangaId);
+    pendingProgressByManga.delete(progress.mangaId);
+    if (latest) {
+      FirebaseSyncService.pushReadingProgress(latest);
+    }
+  }, 1500);
+  progressPushTimers.set(progress.mangaId, timer);
+}
+
+function flushPendingProgressPushes() {
+  progressPushTimers.forEach(timer => clearTimeout(timer));
+  progressPushTimers.clear();
+  if (pendingProgressByManga.size === 0) return;
+  const items = Array.from(pendingProgressByManga.values());
+  pendingProgressByManga.clear();
+  items.forEach(item => {
+    FirebaseSyncService.pushReadingProgress(item);
+  });
+}
 
 function scheduleLibraryStatePush() {
   if (!auth.currentUser || isApplyingRemoteChange) return;
@@ -800,7 +1070,7 @@ function flushPendingLibraryStatePush() {
 // Register sync bridge with HistoryService
 HistoryService.setSyncBridge({
   onProgressSaved: (prog) => {
-    FirebaseSyncService.pushReadingProgress(prog);
+    scheduleReadingProgressPush(prog);
     TrackerService.scrobbleChapter(prog.mangaId, prog.mangaTitle, prog.chapterNumber).catch(() => {});
   },
   onFavoriteUpdated: (fav) => {
@@ -814,6 +1084,7 @@ HistoryService.setSyncBridge({
     scheduleLibraryStatePush();
   },
   onBulkImported: () => {
+    flushPendingProgressPushes();
     flushPendingLibraryStatePush();
     const user = FirebaseSyncService.getCurrentUser();
     if (user) {
@@ -824,12 +1095,19 @@ HistoryService.setSyncBridge({
 
 // Monitor Auth State and automatically initialize/teardown sync
 if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (!event.key || event.key === REMOVED_FAV_TOMBSTONES_KEY) {
+      cachedRemovedTombstones = null;
+    }
+  });
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
+      flushPendingProgressPushes();
       flushPendingLibraryStatePush();
     }
   });
   window.addEventListener('pagehide', () => {
+    flushPendingProgressPushes();
     flushPendingLibraryStatePush();
   });
 

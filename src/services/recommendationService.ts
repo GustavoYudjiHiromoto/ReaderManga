@@ -2,7 +2,12 @@ import { Manga, FavoriteManga, ReadingProgress } from '../types/manga.js';
 import { HistoryService } from './history.js';
 import { MangaApi, SimilarityCategory, DetectedTropeTag } from './api.js';
 import { getPreferredLanguage } from '../utils/languagePreference.js';
-import { isMangaInIgnored } from '../utils/libraryFilters.js';
+import {
+  buildLibraryIndex,
+  isMangaInIgnored,
+  isMangaInLibraryIndex,
+  normalizeLibraryTitle
+} from '../utils/libraryFilters.js';
 
 export type { SimilarityCategory, DetectedTropeTag };
 
@@ -755,23 +760,38 @@ function stripDiacritics(input: string): string {
   return input.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+interface CompiledThemeKeyword {
+  normalizedKw: string;
+  shortRegex: RegExp | null;
+}
+
+const PRECOMPILED_SEMANTIC_THEMES = SEMANTIC_THEMES.map(theme => ({
+  id: theme.id,
+  label: theme.label,
+  searchQuery: theme.searchQuery,
+  compiledKeywords: theme.keywords.map<CompiledThemeKeyword>(kw => {
+    const normalizedKw = stripDiacritics(kw.toLowerCase());
+    const shortRegex =
+      normalizedKw.length <= 4
+        ? new RegExp(`\\b${normalizedKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+        : null;
+    return { normalizedKw, shortRegex };
+  })
+}));
+
 export function extractSemanticThemes(text: string): string[] {
   if (!text) return [];
   const lower = stripDiacritics(text.toLowerCase());
   const matchedLabels: string[] = [];
 
-  SEMANTIC_THEMES.forEach(theme => {
-    const hasMatch = theme.keywords.some(kw => {
-      const normalizedKw = stripDiacritics(kw.toLowerCase());
-      if (normalizedKw.length <= 4) {
-        return new RegExp(`\\b${normalizedKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lower);
-      }
-      return lower.includes(normalizedKw);
-    });
+  for (const theme of PRECOMPILED_SEMANTIC_THEMES) {
+    const hasMatch = theme.compiledKeywords.some(({ normalizedKw, shortRegex }) =>
+      shortRegex ? shortRegex.test(lower) : lower.includes(normalizedKw)
+    );
     if (hasMatch) {
       matchedLabels.push(theme.label);
     }
-  });
+  }
 
   return matchedLabels;
 }
@@ -897,10 +917,10 @@ export function extractNarrativeSearchQueries(manga: {
   synopsis?: string;
 }): string[] {
   const combined = `${manga.title || ''} ${(manga.altTitles || []).join(' ')} ${manga.synopsis || ''}`;
-  const matchedThemes = SEMANTIC_THEMES.filter(theme => {
-    const lower = stripDiacritics(combined.toLowerCase());
-    return theme.keywords.some(kw => lower.includes(stripDiacritics(kw.toLowerCase())));
-  });
+  const lower = stripDiacritics(combined.toLowerCase());
+  const matchedThemes = PRECOMPILED_SEMANTIC_THEMES.filter(theme =>
+    theme.compiledKeywords.some(({ normalizedKw }) => lower.includes(normalizedKw))
+  );
 
   const queries: string[] = [];
   for (const t of matchedThemes) {
@@ -1097,15 +1117,31 @@ export function scoreSimilarMangaCandidate(
   };
 }
 
+let cachedCatalogMeta: Manga[] | null = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === META_CACHE_KEY) {
+      cachedCatalogMeta = null;
+    }
+  });
+}
+
 function getStoredCatalogCache(): Manga[] {
   if (typeof localStorage === 'undefined') return [];
+  if (cachedCatalogMeta) return cachedCatalogMeta;
   try {
     const raw = localStorage.getItem(META_CACHE_KEY);
-    if (!raw) return [];
+    if (!raw) {
+      cachedCatalogMeta = [];
+      return cachedCatalogMeta;
+    }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    cachedCatalogMeta = Array.isArray(parsed) ? parsed : [];
+    return cachedCatalogMeta;
   } catch {
-    return [];
+    cachedCatalogMeta = [];
+    return cachedCatalogMeta;
   }
 }
 
@@ -1136,43 +1172,38 @@ export const RecommendationService = {
         isAdult: manga.isAdult
       };
       const next = [compact, ...filtered].slice(0, MAX_META_CACHE);
+      cachedCatalogMeta = next;
       localStorage.setItem(META_CACHE_KEY, JSON.stringify(next));
     } catch {
       // ignore quota errors silently
     }
   },
 
-  isMangaInLibrary(manga: { id: string; title?: string; altTitles?: string[] }): boolean {
+  isMangaInLibrary(manga: { id: string; title?: string; altTitles?: string[]; sources?: Manga['sources'] }): boolean {
     if (typeof localStorage === 'undefined') return false;
     const favorites = HistoryService.getFavorites();
     const history = HistoryService.getHistory();
 
-    const favIds = new Set(favorites.map(f => f.mangaId));
-    const histIds = new Set(history.map(h => h.mangaId));
+    const favIndex = buildLibraryIndex(favorites);
+    if (isMangaInLibraryIndex(manga as Manga, favIndex)) return true;
 
-    if (favIds.has(manga.id) || histIds.has(manga.id)) return true;
-
-    const normTitle = cleanTitleForMatch(manga.title);
-    if (!normTitle) return false;
-
-    for (const f of favorites) {
-      if (cleanTitleForMatch(f.title) === normTitle) return true;
-    }
+    const histIds = new Set<string>();
+    const histTitles = new Set<string>();
     for (const h of history) {
-      if (cleanTitleForMatch(h.mangaTitle) === normTitle) return true;
+      if (h.mangaId) histIds.add(h.mangaId);
+      if (h.mangaTitle) {
+        const clean = normalizeLibraryTitle(h.mangaTitle);
+        if (clean) histTitles.add(clean);
+      }
     }
 
-    if (manga.altTitles && manga.altTitles.length > 0) {
+    if (histIds.has(manga.id)) return true;
+    const normTitle = normalizeLibraryTitle(manga.title);
+    if (normTitle && histTitles.has(normTitle)) return true;
+    if (manga.altTitles) {
       for (const alt of manga.altTitles) {
-        const normAlt = cleanTitleForMatch(alt);
-        if (normAlt) {
-          for (const f of favorites) {
-            if (cleanTitleForMatch(f.title) === normAlt) return true;
-          }
-          for (const h of history) {
-            if (cleanTitleForMatch(h.mangaTitle) === normAlt) return true;
-          }
-        }
+        const clean = normalizeLibraryTitle(alt);
+        if (clean && histTitles.has(clean)) return true;
       }
     }
 

@@ -15,6 +15,7 @@ import { Chapter, FavoriteManga, Manga, MangaSourceInfo } from '../types/manga.j
 import { MangaApi } from '../services/api.js';
 import { ExtensionService, FALLBACK_SOURCES_META } from '../services/extensionService.js';
 import { HistoryService } from '../services/history.js';
+import { UpdateTrackerService } from '../services/updateTracker.js';
 
 interface BatchMigrationModalProps {
   isOpen: boolean;
@@ -505,6 +506,10 @@ export const BatchMigrationModal: React.FC<BatchMigrationModalProps> = ({
           sourceChapters,
           { removeOldSource: removeOldSource }
         );
+
+        if (removeOldSource) {
+          UpdateTrackerService.migrateMangaUpdate(row.fav.mangaId, targetCandidate.id);
+        }
 
         migrated++;
         if (mountedRef.current) {

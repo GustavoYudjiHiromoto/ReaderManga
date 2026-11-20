@@ -71,8 +71,33 @@ const TRACKER_MAPPINGS_KEY = 'manga_reader_tracker_mappings_v1';
 
 type TrackerListener = () => void;
 const trackerListeners = new Set<TrackerListener>();
+const mangaTrackerListeners = new Map<string, Set<TrackerListener>>();
 
-function notifyTrackerListeners() {
+let cachedAniListAccount: TrackerAccount | null = null;
+let cachedMalAccount: TrackerAccount | null = null;
+let cachedMappings: Record<string, TrackerMediaMapping> | null = null;
+
+function invalidateTrackerCaches(key: string | null) {
+  if (!key || key === ANILIST_ACCOUNT_KEY) cachedAniListAccount = null;
+  if (!key || key === MAL_ACCOUNT_KEY) cachedMalAccount = null;
+  if (!key || key === TRACKER_MAPPINGS_KEY) cachedMappings = null;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (
+      !event.key ||
+      event.key === ANILIST_ACCOUNT_KEY ||
+      event.key === MAL_ACCOUNT_KEY ||
+      event.key === TRACKER_MAPPINGS_KEY
+    ) {
+      invalidateTrackerCaches(event.key);
+      notifyTrackerListeners();
+    }
+  });
+}
+
+function notifyTrackerListeners(targetMangaId?: string) {
   trackerListeners.forEach(fn => {
     try {
       fn();
@@ -80,6 +105,31 @@ function notifyTrackerListeners() {
       console.warn('Tracker listener error', e);
     }
   });
+
+  if (mangaTrackerListeners.size > 0) {
+    if (targetMangaId) {
+      const set = mangaTrackerListeners.get(targetMangaId);
+      if (set) {
+        set.forEach(fn => {
+          try {
+            fn();
+          } catch (e) {
+            console.warn('Manga tracker listener error', e);
+          }
+        });
+      }
+    } else {
+      mangaTrackerListeners.forEach(set => {
+        set.forEach(fn => {
+          try {
+            fn();
+          } catch (e) {
+            console.warn('Manga tracker listener error', e);
+          }
+        });
+      });
+    }
+  }
 }
 
 function cleanTitleForSearch(title: string): string {
@@ -93,6 +143,10 @@ function cleanTitleForSearch(title: string): string {
 }
 
 export const TrackerService = {
+  invalidateCache(): void {
+    invalidateTrackerCaches(null);
+  },
+
   subscribe(listener: TrackerListener): () => void {
     trackerListeners.add(listener);
     return () => {
@@ -100,33 +154,73 @@ export const TrackerService = {
     };
   },
 
+  subscribeManga(mangaId: string, listener: TrackerListener): () => void {
+    if (!mangaId) return () => {};
+    let set = mangaTrackerListeners.get(mangaId);
+    if (!set) {
+      set = new Set();
+      mangaTrackerListeners.set(mangaId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = mangaTrackerListeners.get(mangaId);
+      if (current) {
+        current.delete(listener);
+        if (current.size === 0) {
+          mangaTrackerListeners.delete(mangaId);
+        }
+      }
+    };
+  },
+
   getAniListAccount(): TrackerAccount {
+    if (cachedAniListAccount) return cachedAniListAccount;
     try {
       const data = localStorage.getItem(ANILIST_ACCOUNT_KEY);
-      if (!data) return { provider: 'anilist', connected: false, autoScrobble: true };
+      if (!data) {
+        const empty: TrackerAccount = { provider: 'anilist', connected: false, autoScrobble: true };
+        cachedAniListAccount = empty;
+        return empty;
+      }
       const parsed = JSON.parse(data);
-      return { provider: 'anilist', autoScrobble: true, ...parsed };
+      const account: TrackerAccount = { provider: 'anilist', autoScrobble: true, ...parsed };
+      cachedAniListAccount = account;
+      return account;
     } catch {
       return { provider: 'anilist', connected: false, autoScrobble: true };
     }
   },
 
   getMalAccount(): TrackerAccount {
+    if (cachedMalAccount) return cachedMalAccount;
     try {
       const data = localStorage.getItem(MAL_ACCOUNT_KEY);
-      if (!data) return { provider: 'mal', connected: false, autoScrobble: true };
+      if (!data) {
+        const empty: TrackerAccount = { provider: 'mal', connected: false, autoScrobble: true };
+        cachedMalAccount = empty;
+        return empty;
+      }
       const parsed = JSON.parse(data);
-      return { provider: 'mal', autoScrobble: true, ...parsed };
+      const account: TrackerAccount = { provider: 'mal', autoScrobble: true, ...parsed };
+      cachedMalAccount = account;
+      return account;
     } catch {
       return { provider: 'mal', connected: false, autoScrobble: true };
     }
   },
 
   getMappings(): Record<string, TrackerMediaMapping> {
+    if (cachedMappings) return cachedMappings;
     try {
       const data = localStorage.getItem(TRACKER_MAPPINGS_KEY);
-      if (!data) return {};
-      return JSON.parse(data) || {};
+      if (!data) {
+        const empty: Record<string, TrackerMediaMapping> = {};
+        cachedMappings = empty;
+        return empty;
+      }
+      const parsed: Record<string, TrackerMediaMapping> = JSON.parse(data) || {};
+      cachedMappings = parsed;
+      return parsed;
     } catch {
       return {};
     }
@@ -137,7 +231,7 @@ export const TrackerService = {
   },
 
   setMapping(mangaId: string, partial: Partial<TrackerMediaMapping>): void {
-    const all = this.getMappings();
+    const all = { ...this.getMappings() };
     const current = all[mangaId] || { mangaId, updatedAt: Date.now() };
 
     // Auto-resolve default status when IDs are provided without explicit errors
@@ -161,7 +255,8 @@ export const TrackerService = {
     };
     try {
       localStorage.setItem(TRACKER_MAPPINGS_KEY, JSON.stringify(all));
-      notifyTrackerListeners();
+      cachedMappings = all;
+      notifyTrackerListeners(mangaId);
     } catch (e) {
       console.warn('Failed to save tracker mapping', e);
     }
@@ -309,19 +404,21 @@ export const TrackerService = {
     };
 
     localStorage.setItem(ANILIST_ACCOUNT_KEY, JSON.stringify(account));
+    cachedAniListAccount = account;
     notifyTrackerListeners();
     return account;
   },
 
   disconnectAniList(): void {
     localStorage.removeItem(ANILIST_ACCOUNT_KEY);
+    cachedAniListAccount = { provider: 'anilist', connected: false, autoScrobble: true };
     notifyTrackerListeners();
   },
 
   toggleAniListAutoScrobble(enabled: boolean): void {
-    const account = this.getAniListAccount();
-    account.autoScrobble = enabled;
+    const account = { ...this.getAniListAccount(), autoScrobble: enabled };
     localStorage.setItem(ANILIST_ACCOUNT_KEY, JSON.stringify(account));
+    cachedAniListAccount = account;
     notifyTrackerListeners();
   },
 
@@ -402,6 +499,7 @@ export const TrackerService = {
     };
 
     localStorage.setItem(MAL_ACCOUNT_KEY, JSON.stringify(account));
+    cachedMalAccount = account;
     notifyTrackerListeners();
     return account;
   },
@@ -429,13 +527,14 @@ export const TrackerService = {
 
   disconnectMal(): void {
     localStorage.removeItem(MAL_ACCOUNT_KEY);
+    cachedMalAccount = { provider: 'mal', connected: false, autoScrobble: true };
     notifyTrackerListeners();
   },
 
   toggleMalAutoScrobble(enabled: boolean): void {
-    const account = this.getMalAccount();
-    account.autoScrobble = enabled;
+    const account = { ...this.getMalAccount(), autoScrobble: enabled };
     localStorage.setItem(MAL_ACCOUNT_KEY, JSON.stringify(account));
+    cachedMalAccount = account;
     notifyTrackerListeners();
   },
 
@@ -777,7 +876,7 @@ export const TrackerService = {
     if (prog?.chapterNumber) {
       await this.scrobbleChapter(mangaId, mangaTitle, prog.chapterNumber);
     }
-    const fav = HistoryService.getFavorites().find(f => f.mangaId === mangaId);
+    const fav = HistoryService.getFavoriteById(mangaId);
     if (fav) {
       await this.updateTrackerStatus(mangaId, mangaTitle, fav.userCategory || 'reading', fav.userScore);
     }
@@ -863,7 +962,7 @@ export const TrackerService = {
     const lists = listJson.data?.MediaListCollection?.lists || [];
 
     const importedFavs: FavoriteManga[] = [];
-    const mappings = this.getMappings();
+    const mappings = { ...this.getMappings() };
 
     lists.forEach((list: any) => {
       const entries = list.entries || [];
@@ -906,6 +1005,8 @@ export const TrackerService = {
 
     if (importedFavs.length > 0) {
       localStorage.setItem(TRACKER_MAPPINGS_KEY, JSON.stringify(mappings));
+      cachedMappings = mappings;
+      notifyTrackerListeners();
       HistoryService.importBackup({ favorites: importedFavs });
     }
 
@@ -935,7 +1036,7 @@ export const TrackerService = {
     const dataList = json.data || [];
 
     const importedFavs: FavoriteManga[] = [];
-    const mappings = this.getMappings();
+    const mappings = { ...this.getMappings() };
 
     dataList.forEach((item: any) => {
       const node = item.node;
@@ -976,6 +1077,8 @@ export const TrackerService = {
 
     if (importedFavs.length > 0) {
       localStorage.setItem(TRACKER_MAPPINGS_KEY, JSON.stringify(mappings));
+      cachedMappings = mappings;
+      notifyTrackerListeners();
       HistoryService.importBackup({ favorites: importedFavs });
     }
 

@@ -1,20 +1,8 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo, MangaStatus } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
-
-function decodeHtmlEntities(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#x2F;/gi, '/')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .trim();
-}
+import { residentialRelayService } from '../services/ResidentialRelayService.js';
+import { decodeHtmlEntities } from '../../src/utils/htmlEntities.js';
 
 function parseMangaStatus(rawStatus?: string): MangaStatus {
   if (!rawStatus) return 'ongoing';
@@ -98,7 +86,7 @@ const GENRE_MAP: Record<string, string> = {
 function mapGenre(rawGenre?: string | null): string | null {
   if (!rawGenre || rawGenre === 'all') return null;
   const lower = rawGenre.trim().toLowerCase();
-  return GENRE_MAP[lower] || rawGenre;
+  return GENRE_MAP[lower] || null;
 }
 
 export class MangaPillProvider implements IMangaSource {
@@ -111,9 +99,17 @@ export class MangaPillProvider implements IMangaSource {
 
   private detailsCache: Map<string, { data: Manga; timestamp: number }> = new Map();
   private chaptersCache: Map<string, { data: Chapter[]; timestamp: number }> = new Map();
+  private searchCache: Map<string, { data: SourceSearchResult; timestamp: number }> = new Map();
+  private pageHtmlCache: Map<string, { html: string; timestamp: number }> = new Map();
+  private inFlightHtml: Map<string, Promise<string>> = new Map();
   private popularCache: { data: Manga[]; timestamp: number } | null = null;
+  private upstreamCooldownUntil = 0;
+  private lastCooldownLogAt = 0;
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly SEARCH_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+  private readonly PAGE_HTML_CACHE_TTL_MS = 60 * 1000; // 60 seconds (shares /manga/:id fetch between details & chapters)
   private readonly POPULAR_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+  private readonly UPSTREAM_COOLDOWN_MS = 25 * 1000; // 25 seconds backoff after repeated 5xx failures
 
   getInfo(): MangaSourceInfo {
     return {
@@ -140,74 +136,153 @@ export class MangaPillProvider implements IMangaSource {
     };
   }
 
+  private setSearchCache(key: string, data: SourceSearchResult): void {
+    if (this.searchCache.size >= 120) {
+      const oldestKey = this.searchCache.keys().next().value;
+      if (oldestKey) this.searchCache.delete(oldestKey);
+    }
+    this.searchCache.set(key, { data, timestamp: Date.now() });
+  }
+
+  private setPageHtmlCache(url: string, html: string): void {
+    if (this.pageHtmlCache.size >= 60) {
+      const oldestKey = this.pageHtmlCache.keys().next().value;
+      if (oldestKey) this.pageHtmlCache.delete(oldestKey);
+    }
+    this.pageHtmlCache.set(url, { html, timestamp: Date.now() });
+  }
+
   private async fetchWithTimeout(url: string, timeoutMs = 12000, maxRetries = 2): Promise<string> {
-    let lastError: any;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': this.userAgent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Connection': attempt > 0 ? 'close' : 'keep-alive'
-          }
-        });
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            throw new HttpError(404, `Recurso não encontrado no MangaPill (HTTP 404).`);
-          }
-          if (response.status === 429) {
-            throw new HttpError(429, `Limite de requisições excedido no MangaPill (Rate limit 429).`);
-          }
-          if (response.status >= 500) {
-            throw new HttpError(502, `Falha no servidor MangaPill: HTTP ${response.status}`);
-          }
-          throw new HttpError(502, `Falha de comunicação com o MangaPill: HTTP ${response.status}`);
-        }
-
-        return await response.text();
-      } catch (err) {
-        lastError = err;
-        if (err instanceof HttpError && (err.status === 404 || err.status === 429)) {
-          throw err;
-        }
-
-        const errMsg = ((err as Error)?.message || '').toLowerCase();
-        const errName = (err as Error)?.name || '';
-        const isTransient =
-          errName === 'AbortError' ||
-          errMsg.includes('terminated') ||
-          errMsg.includes('socket') ||
-          errMsg.includes('econnreset') ||
-          errMsg.includes('etimedout') ||
-          errMsg.includes('fetch failed');
-
-        if (attempt < maxRetries && isTransient) {
-          // Wait briefly before retrying with a fresh socket connection
-          await new Promise(r => setTimeout(r, 350 * (attempt + 1)));
-          continue;
-        }
-
-        if (err instanceof HttpError) throw err;
-        if (errName === 'AbortError') {
-          throw new HttpError(504, 'Tempo limite de comunicação esgotado com o MangaPill (Gateway Timeout).');
-        }
-        throw new HttpError(502, `Erro ao conectar com o MangaPill: ${(err as Error).message}`);
-      } finally {
-        clearTimeout(timeout);
+    if (url.includes('/manga/')) {
+      const cachedPage = this.pageHtmlCache.get(url);
+      if (cachedPage && Date.now() - cachedPage.timestamp < this.PAGE_HTML_CACHE_TTL_MS) {
+        return cachedPage.html;
       }
     }
 
-    throw lastError;
+    const existing = this.inFlightHtml.get(url);
+    if (existing) {
+      return existing;
+    }
+
+    const task = (async () => {
+      let lastError: any;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const reqHeaders: Record<string, string> = {
+            'User-Agent': this.userAgent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': `${this.baseUrl}/`,
+            'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"'
+          };
+          if (attempt > 0) {
+            reqHeaders['Connection'] = 'close';
+            reqHeaders['Cache-Control'] = 'no-cache';
+          }
+
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: reqHeaders
+          });
+
+          if (!response.ok) {
+            if (response.status === 404) {
+              throw new HttpError(404, `Recurso não encontrado no MangaPill (HTTP 404).`);
+            }
+            if (response.status === 429) {
+              throw new HttpError(429, `Limite de requisições excedido no MangaPill (Rate limit 429).`);
+            }
+            if (response.status >= 500) {
+              throw new HttpError(502, `Falha no servidor MangaPill: HTTP ${response.status}`);
+            }
+            throw new HttpError(502, `Falha de comunicação com o MangaPill: HTTP ${response.status}`);
+          }
+
+          const html = await response.text();
+          this.upstreamCooldownUntil = 0;
+          if (url.includes('/manga/')) {
+            this.setPageHtmlCache(url, html);
+          }
+          return html;
+        } catch (err) {
+          lastError = err;
+          if (err instanceof HttpError && err.status === 404) {
+            throw err;
+          }
+
+          const errMsg = ((err as Error)?.message || '').toLowerCase();
+          const errName = (err as Error)?.name || '';
+          const isHttpTransient =
+            err instanceof HttpError && (err.status === 429 || err.status >= 500);
+          const isNetworkTransient =
+            errName === 'AbortError' ||
+            errMsg.includes('terminated') ||
+            errMsg.includes('socket') ||
+            errMsg.includes('econnreset') ||
+            errMsg.includes('etimedout') ||
+            errMsg.includes('fetch failed');
+
+          if (attempt < maxRetries && (isHttpTransient || isNetworkTransient)) {
+            const backoffMs = 400 * (attempt + 1) + Math.floor(Math.random() * 200);
+            await new Promise(r => setTimeout(r, backoffMs));
+            continue;
+          }
+
+          // Optional residential relay fallback if connected
+          if (residentialRelayService.isRelayReady()) {
+            try {
+              const relayed = await residentialRelayService.fetchThroughRelay(url, {
+                headers: {
+                  'User-Agent': this.userAgent,
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Referer': `${this.baseUrl}/`
+                },
+                responseType: 'text'
+              });
+              if (relayed.ok && relayed.bodyText) {
+                this.upstreamCooldownUntil = 0;
+                if (url.includes('/manga/')) {
+                  this.setPageHtmlCache(url, relayed.bodyText);
+                }
+                return relayed.bodyText;
+              }
+            } catch {
+              // Ignore relay error and fall through to normalized HttpError
+            }
+          }
+
+          if (err instanceof HttpError) {
+            if (err.status >= 500 || err.status === 429) {
+              this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+            }
+            throw err;
+          }
+          this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+          if (errName === 'AbortError') {
+            throw new HttpError(504, 'Tempo limite de comunicação esgotado com o MangaPill (Gateway Timeout).');
+          }
+          throw new HttpError(502, `Erro ao conectar com o MangaPill: ${(err as Error).message}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      throw lastError;
+    })();
+
+    this.inFlightHtml.set(url, task);
+    try {
+      return await task;
+    } finally {
+      this.inFlightHtml.delete(url);
+    }
   }
 
   /**
@@ -285,22 +360,51 @@ export class MangaPillProvider implements IMangaSource {
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
-    try {
-      const rawQuery = (query || '').trim();
-      const q = rawQuery;
-      const limit = options?.limit || 24;
-      const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
-      let url: string;
+    const rawQuery = (query || '').trim();
+    const q = rawQuery;
+    const limit = options?.limit || 24;
+    const page = options?.page || (options?.offset !== undefined ? Math.floor(options.offset / limit) + 1 : 1);
+    const requestedGenre = options?.genre && options.genre !== 'all' ? options.genre : null;
+    const mappedGenre = mapGenre(requestedGenre);
+    const isPopularBrowse = !q;
 
-      const mappedGenre = mapGenre(options?.genre);
-      const isPopularBrowse = !q;
+    // If user asked for a specific subgenre/trope that MangaPill doesn't support natively without a text query, return empty
+    if (isPopularBrowse && requestedGenre && !mappedGenre) {
+      return { mangaList: [], total: 0, hasMore: false };
+    }
 
-      // On MangaPill /search without ?q=, page 2+ is 100% alphabetical (id ASC: numbers, A-Z).
-      // Never leak alphabetical pages into "Mais Populares" (with or without genre filters).
-      if (isPopularBrowse && page > 1) {
-        return { mangaList: [], total: 0, hasMore: false };
+    // On MangaPill /search without ?q=, page 2+ is 100% alphabetical (id ASC: numbers, A-Z).
+    // Never leak alphabetical pages into "Mais Populares" (with or without genre filters).
+    if (isPopularBrowse && page > 1) {
+      return { mangaList: [], total: 0, hasMore: false };
+    }
+
+    const cacheKey = `${q.toLowerCase()}|${mappedGenre || ''}|${page}|${limit}|${Boolean(options?.includeAdult)}|${Boolean(options?.onlyAvailable)}`;
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const buildFallbackSearchResult = (): SourceSearchResult => {
+      if (cached) return cached.data;
+      if (isPopularBrowse && !mappedGenre) {
+        let pool = this.popularCache?.data?.length
+          ? [...this.popularCache.data]
+          : this.getFallbackPopularList();
+        if (!options?.includeAdult) pool = pool.filter(m => !m.isAdult);
+        if (options?.onlyAvailable) pool = pool.filter(m => m.hasAvailableChapters);
+        const sliced = pool.slice(0, limit);
+        return { mangaList: sliced, total: pool.length, hasMore: false };
       }
+      return { mangaList: [], total: 0, hasMore: false };
+    };
 
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return buildFallbackSearchResult();
+    }
+
+    try {
+      let url: string;
       if (q && mappedGenre) {
         url = `${this.baseUrl}/search?q=${encodeURIComponent(q)}&genre=${encodeURIComponent(mappedGenre)}&page=${page}`;
       } else if (q) {
@@ -316,6 +420,9 @@ export class MangaPillProvider implements IMangaSource {
 
       if (isPopularBrowse) {
         mangaList = MangaPillProvider.sliceCuratedPopular(mangaList);
+        if (!mappedGenre && mangaList.length > 0) {
+          this.popularCache = { data: mangaList, timestamp: Date.now() };
+        }
       }
 
       // Filter adult if includeAdult is false
@@ -329,15 +436,20 @@ export class MangaPillProvider implements IMangaSource {
       }
 
       const sliced = mangaList.slice(0, limit);
-
-      return {
+      const result: SourceSearchResult = {
         mangaList: sliced,
         total: mangaList.length,
         hasMore: isPopularBrowse ? false : mangaList.length >= limit
       };
+      this.setSearchCache(cacheKey, result);
+      return result;
     } catch (err) {
-      console.warn(`[MangaPillProvider] search failed:`, (err as Error).message);
-      return { mangaList: [], total: 0, hasMore: false };
+      const now = Date.now();
+      if (now - this.lastCooldownLogAt >= this.UPSTREAM_COOLDOWN_MS) {
+        this.lastCooldownLogAt = now;
+        console.info(`[MangaPillProvider] Upstream temporarily unavailable during search (${(err as Error).message}); serving fallback.`);
+      }
+      return buildFallbackSearchResult();
     }
   }
 
@@ -386,6 +498,21 @@ export class MangaPillProvider implements IMangaSource {
       if (!options?.includeAdult) cached = cached.filter(m => !m.isAdult);
       if (options?.onlyAvailable) cached = cached.filter(m => m.hasAvailableChapters);
       return cached.slice(0, limit);
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      if (!mappedGenre && this.popularCache && this.popularCache.data.length > 0) {
+        let cached = [...this.popularCache.data];
+        if (!options?.includeAdult) cached = cached.filter(m => !m.isAdult);
+        if (options?.onlyAvailable) cached = cached.filter(m => m.hasAvailableChapters);
+        return cached.slice(0, limit);
+      }
+      if (mappedGenre) return [];
+      const fallback = this.getFallbackPopularList();
+      let filtered = [...fallback];
+      if (!options?.includeAdult) filtered = filtered.filter(m => !m.isAdult);
+      if (options?.onlyAvailable) filtered = filtered.filter(m => m.hasAvailableChapters);
+      return filtered.slice(0, limit);
     }
 
     try {
@@ -652,7 +779,7 @@ export class MangaPillProvider implements IMangaSource {
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) return null;
       if (cached) return cached.data;
-      console.warn(`[MangaPillProvider] getMangaDetails failed for ${externalId}:`, (err as Error).message);
+      console.info(`[MangaPillProvider] getMangaDetails unavailable for ${externalId}: ${(err as Error).message}`);
       return null;
     }
   }
@@ -727,7 +854,7 @@ export class MangaPillProvider implements IMangaSource {
       return chapters;
     } catch (err) {
       if (cached) return cached.data;
-      console.warn(`[MangaPillProvider] getChapters failed for ${externalMangaId}:`, (err as Error).message);
+      console.info(`[MangaPillProvider] getChapters unavailable for ${externalMangaId}: ${(err as Error).message}`);
       return [];
     }
   }

@@ -19,6 +19,30 @@ const LEGACY_KEY = 'mr_offline_chapters';
 type OfflineListener = () => void;
 const listeners = new Set<OfflineListener>();
 
+let cachedSavedChapters: SavedOfflineChapter[] | null = null;
+let cachedSavedIdsList: string[] | null = null;
+let cachedSavedIdsSet: Set<string> | null = null;
+
+function setOfflineManifestCache(list: SavedOfflineChapter[]) {
+  cachedSavedChapters = list;
+  const ids: string[] = [];
+  const set = new Set<string>();
+  for (const item of list) {
+    if (item?.chapterId) {
+      ids.push(item.chapterId);
+      set.add(item.chapterId);
+    }
+  }
+  cachedSavedIdsList = ids;
+  cachedSavedIdsSet = set;
+}
+
+function invalidateOfflineCache() {
+  cachedSavedChapters = null;
+  cachedSavedIdsList = null;
+  cachedSavedIdsSet = null;
+}
+
 const notifyListeners = () => {
   listeners.forEach((listener) => {
     try {
@@ -31,7 +55,8 @@ const notifyListeners = () => {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
-    if (e.key === MANIFEST_KEY || e.key === LEGACY_KEY) {
+    if (!e.key || e.key === MANIFEST_KEY || e.key === LEGACY_KEY) {
+      invalidateOfflineCache();
       notifyListeners();
     }
   });
@@ -59,15 +84,19 @@ export const OfflineCacheService = {
    * Get all offline saved chapter records
    */
   getAllSavedChapters(): SavedOfflineChapter[] {
+    if (cachedSavedChapters) return cachedSavedChapters;
     if (typeof localStorage === 'undefined') return [];
     try {
       const raw = localStorage.getItem(MANIFEST_KEY);
       if (!raw) {
         // Fallback check legacy IDs
         const legacyRaw = localStorage.getItem(LEGACY_KEY);
-        if (!legacyRaw) return [];
+        if (!legacyRaw) {
+          setOfflineManifestCache([]);
+          return cachedSavedChapters!;
+        }
         const legacyIds: string[] = JSON.parse(legacyRaw);
-        return legacyIds.map(id => ({
+        const migrated: SavedOfflineChapter[] = legacyIds.map(id => ({
           chapterId: id,
           chapterNumber: '?',
           mangaId: 'unknown',
@@ -77,8 +106,13 @@ export const OfflineCacheService = {
           savedAt: Date.now(),
           pages: []
         }));
+        setOfflineManifestCache(migrated);
+        return cachedSavedChapters!;
       }
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const list = Array.isArray(parsed) ? parsed : [];
+      setOfflineManifestCache(list);
+      return cachedSavedChapters!;
     } catch {
       return [];
     }
@@ -104,26 +138,21 @@ export const OfflineCacheService = {
    * Check if a chapter is saved offline
    */
   isChapterSaved(chapterId: string): boolean {
-    const list = this.getAllSavedChapters();
-    if (list.some(item => item.chapterId === chapterId)) return true;
-    const legacy = this.getSavedChapterIds();
-    return legacy.includes(chapterId);
+    if (!chapterId) return false;
+    if (!cachedSavedIdsSet) {
+      this.getAllSavedChapters();
+    }
+    return cachedSavedIdsSet?.has(chapterId) || false;
   },
 
   /**
    * Get list of saved chapter IDs (for backward compatibility)
    */
   getSavedChapterIds(): string[] {
-    const list = this.getAllSavedChapters();
-    if (list.length > 0) {
-      return list.map(item => item.chapterId);
+    if (!cachedSavedIdsList) {
+      this.getAllSavedChapters();
     }
-    if (typeof localStorage === 'undefined') return [];
-    try {
-      return JSON.parse(localStorage.getItem(LEGACY_KEY) || '[]');
-    } catch {
-      return [];
-    }
+    return cachedSavedIdsList || [];
   },
 
   /**
@@ -189,10 +218,10 @@ export const OfflineCacheService = {
 
       existingList.unshift(newRecord);
       localStorage.setItem(MANIFEST_KEY, JSON.stringify(existingList));
+      setOfflineManifestCache(existingList);
 
       // Keep legacy key in sync
-      const ids = existingList.map(c => c.chapterId);
-      localStorage.setItem(LEGACY_KEY, JSON.stringify(ids));
+      localStorage.setItem(LEGACY_KEY, JSON.stringify(cachedSavedIdsList || []));
 
       notifyListeners();
       return { cached: successCount, total: pages.length };
@@ -223,9 +252,9 @@ export const OfflineCacheService = {
 
     const updated = list.filter(c => c.chapterId !== chapterId);
     localStorage.setItem(MANIFEST_KEY, JSON.stringify(updated));
+    setOfflineManifestCache(updated);
 
-    const ids = updated.map(c => c.chapterId);
-    localStorage.setItem(LEGACY_KEY, JSON.stringify(ids));
+    localStorage.setItem(LEGACY_KEY, JSON.stringify(cachedSavedIdsList || []));
 
     notifyListeners();
   },
@@ -243,6 +272,7 @@ export const OfflineCacheService = {
     }
     localStorage.removeItem(MANIFEST_KEY);
     localStorage.removeItem(LEGACY_KEY);
+    setOfflineManifestCache([]);
     notifyListeners();
   },
 

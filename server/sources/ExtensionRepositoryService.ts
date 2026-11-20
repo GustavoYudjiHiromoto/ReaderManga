@@ -165,7 +165,7 @@ export function parseRepositoryPayload(payload: any, repoUrl: string): Extension
 export class ExtensionRepositoryService {
   private readonly storePath: string;
   private state: PersistedExtensionsState = { repos: [], installed: [] };
-  private registry: SourceRegistry | null = null;
+  private registries = new Set<SourceRegistry>();
 
   constructor(customStorePath?: string) {
     this.storePath =
@@ -208,7 +208,7 @@ export class ExtensionRepositoryService {
   }
 
   public attachRegistry(registry: SourceRegistry): void {
-    this.registry = registry;
+    this.registries.add(registry);
     for (const manifest of this.state.installed) {
       try {
         registry.registerSource(new DynamicTemplateProvider(manifest));
@@ -301,8 +301,8 @@ export class ExtensionRepositoryService {
     }
 
     this.saveToDisk();
-    if (this.registry) {
-      this.registry.registerSource(new DynamicTemplateProvider(manifest));
+    for (const registry of this.registries) {
+      registry.registerSource(new DynamicTemplateProvider(manifest));
     }
     this.invalidateSourcesAndSearchCache();
     return manifest;
@@ -338,12 +338,12 @@ export class ExtensionRepositoryService {
     this.state.installed[idx] = updated;
     this.saveToDisk();
 
-    if (this.registry) {
-      const existingProvider = this.registry.getSource(extensionId);
+    for (const registry of this.registries) {
+      const existingProvider = registry.getSource(extensionId);
       if (existingProvider && existingProvider instanceof DynamicTemplateProvider) {
         existingProvider.updateBaseUrl(targetUrl);
       } else {
-        this.registry.registerSource(new DynamicTemplateProvider(updated));
+        registry.registerSource(new DynamicTemplateProvider(updated));
       }
     }
 
@@ -360,8 +360,8 @@ export class ExtensionRepositoryService {
     this.state.installed = this.state.installed.filter(e => e.id !== extensionId);
     const removed = this.state.installed.length !== before;
 
-    if (this.registry) {
-      this.registry.unregisterSource(extensionId);
+    for (const registry of this.registries) {
+      registry.unregisterSource(extensionId);
     }
 
     if (removed) {
@@ -413,8 +413,8 @@ export class ExtensionRepositoryService {
       this.state.installed[i] = upgraded;
       stateChanged = true;
 
-      if (this.registry) {
-        this.registry.registerSource(new DynamicTemplateProvider(upgraded));
+      for (const registry of this.registries) {
+        registry.registerSource(new DynamicTemplateProvider(upgraded));
       }
 
       updatedList.push({

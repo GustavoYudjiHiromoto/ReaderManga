@@ -2,20 +2,7 @@ import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaS
 import { Manga, Chapter, MangaPage, MangaSourceInfo, MangaStatus } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
 import { residentialRelayService } from '../services/ResidentialRelayService.js';
-
-function decodeHtmlEntities(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#x2F;/gi, '/')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .trim();
-}
+import { decodeHtmlEntities } from '../../src/utils/htmlEntities.js';
 
 function parseMangaStatus(rawStatus?: string): MangaStatus {
   if (!rawStatus) return 'ongoing';

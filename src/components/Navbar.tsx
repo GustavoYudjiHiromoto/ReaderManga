@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { PWAInstallButton } from './PWAInstallButton.js';
+import { useAppVersion } from '../hooks/useAppVersion.js';
+import { formatShortBuildLabel } from '../services/appVersion.js';
 
 interface NavbarProps {
   currentTab: 'home' | 'catalog' | 'search' | 'updates' | 'favorites' | 'api' | 'detail' | 'reader' | 'profile';
@@ -38,7 +40,7 @@ interface NavbarProps {
   totalSourcesCount?: number;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+const NavbarComponent: React.FC<NavbarProps> = ({
   currentTab,
   onNavigate,
   onOpenHistory,
@@ -54,6 +56,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   totalSourcesCount = 6
 }) => {
   const { user, syncStatus, loginWithGoogle, logout, syncNow } = useAuth();
+  const appVersion = useAppVersion();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -104,7 +107,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* =====================================================================
           TOP APPLICATION BAR (Desktop 3-Zone Header / Clean Compact Mobile Header)
           ===================================================================== */}
-      <header className="sticky top-0 z-40 w-full border-b border-zinc-800/80 bg-zinc-950/92 backdrop-blur-md pt-safe">
+      <header className="sticky top-0 z-40 w-full border-b border-zinc-800/80 bg-zinc-950/[0.97] pt-safe">
         <div className="mx-auto flex h-12 sm:h-14 max-w-7xl items-center justify-between gap-3 md:gap-8 px-3 sm:px-6 lg:px-8">
 
           {/* Zone 1: Brand Wordmark */}
@@ -252,7 +255,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
               {/* Consolidated Dropdown Popover */}
               {isMenuOpen && (
-                <div className="absolute right-0 top-12 w-72 max-w-[calc(100vw-1rem)] rounded-2xl bg-zinc-950/95 border border-zinc-800 shadow-2xl p-2 z-50 text-xs backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 top-12 w-72 max-w-[calc(100vw-1rem)] rounded-2xl bg-zinc-950/[0.98] border border-zinc-800 shadow-2xl p-2 z-50 text-xs animate-in fade-in zoom-in-95 duration-150">
 
                   {/* Section A: User Identity & Cloud Sync */}
                   <div className="p-2.5 rounded-xl bg-zinc-900/50 border border-zinc-850/80 mb-2 space-y-2">
@@ -491,7 +494,61 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <span className="text-[10px] text-zinc-500 font-mono">&rarr;</span>
                     </button>
 
-                    <div className="pt-1 border-t border-zinc-850/80">
+                    <div className="pt-1.5 mt-1 border-t border-zinc-850/80 space-y-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          appVersion.status === 'update_available'
+                            ? appVersion.applyUpdate()
+                            : appVersion.checkNow()
+                        }
+                        disabled={appVersion.isApplying || appVersion.status === 'checking'}
+                        className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg bg-zinc-900/70 hover:bg-zinc-900 border border-zinc-800/80 transition-colors cursor-pointer text-left"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-200 flex items-center gap-1.5">
+                            <span>Versão do App</span>
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                                appVersion.status === 'update_available'
+                                  ? 'bg-rose-400 animate-pulse'
+                                  : appVersion.status === 'latest'
+                                  ? 'bg-emerald-400'
+                                  : 'bg-zinc-500'
+                              }`}
+                            />
+                          </div>
+                          <div className="text-[10px] font-mono text-zinc-400 truncate">
+                            {formatShortBuildLabel(appVersion.client)}
+                          </div>
+                        </div>
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 ${
+                            appVersion.status === 'update_available'
+                              ? 'bg-rose-600 text-white'
+                              : appVersion.status === 'latest'
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-zinc-800 text-zinc-300'
+                          }`}
+                        >
+                          <RefreshCw
+                            className={`h-2.5 w-2.5 ${
+                              appVersion.status === 'checking' || appVersion.isApplying ? 'animate-spin' : ''
+                            }`}
+                          />
+                          <span>
+                            {appVersion.isApplying
+                              ? 'Atualizando'
+                              : appVersion.status === 'update_available'
+                              ? 'Atualizar'
+                              : appVersion.status === 'checking'
+                              ? 'Checando'
+                              : appVersion.status === 'latest'
+                              ? 'Atualizado'
+                              : 'Verificar'}
+                          </span>
+                        </span>
+                      </button>
                       <PWAInstallButton />
                     </div>
                   </div>
@@ -506,7 +563,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           MOBILE FIXED BOTTOM TAB BAR (Thumb-Zone Ergonomics for < md screens)
           ===================================================================== */}
       <nav
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-zinc-800/90 bg-zinc-950/95 backdrop-blur-xl pb-safe"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-zinc-800/90 bg-zinc-950/[0.98] pb-safe"
         aria-label="Navegação mobile"
       >
         <div className="grid grid-cols-5 items-center h-14">
@@ -586,3 +643,5 @@ export const Navbar: React.FC<NavbarProps> = ({
     </>
   );
 };
+
+export const Navbar = React.memo(NavbarComponent);

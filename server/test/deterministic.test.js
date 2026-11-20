@@ -4,7 +4,7 @@
  * SourceRegistry e comportamento HTTP da API sem qualquer dependência de Mock.
  */
 
-const BASE_URL = 'http://localhost:3000';
+let BASE_URL = 'http://127.0.0.1:0';
 
 let totalTests = 0;
 let passedTests = 0;
@@ -28,26 +28,23 @@ async function runDeterministicTests() {
 
   let serverInstance = null;
   try {
-    // Garante que o servidor esteja rodando. Se estiver em ambiente CI (onde o servidor não roda em background), inicializa-o embutido.
-    try {
-      const checkRes = await fetch(`${BASE_URL}/api/sources`, { signal: AbortSignal.timeout(1200) });
-      if (!checkRes.ok) throw new Error('Servidor não ativo');
-    } catch {
-      console.log('⚡ Servidor não detectado em localhost:3000. Inicializando instância de testes para execução em CI...');
-      const express = (await import('express')).default;
-      const { apiRouter } = await import('../api/routes.js');
-      const { trackerRouter } = await import('../trackers/TrackerRouter.js');
-      const app = express();
-      app.use(express.json({ limit: '16mb' }));
-      app.use('/api/trackers', trackerRouter);
-      app.use('/api', apiRouter);
-      await new Promise((resolve) => {
-        serverInstance = app.listen(3000, '0.0.0.0', () => {
-          console.log('  ✓ Servidor de testes iniciado com sucesso em http://0.0.0.0:3000\n');
-          resolve();
-        });
+    // Sempre inicializa instância isolada in-process para que singletons de API e estado HTTP compartilhem o mesmo processo
+    const express = (await import('express')).default;
+    const { apiRouter } = await import('../api/routes.js');
+    const { trackerRouter } = await import('../trackers/TrackerRouter.js');
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/trackers', trackerRouter);
+    app.use('/api', apiRouter);
+    await new Promise((resolve) => {
+      serverInstance = app.listen(0, '127.0.0.1', () => {
+        const addr = serverInstance.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 3000;
+        BASE_URL = `http://127.0.0.1:${port}`;
+        console.log(`  ✓ Servidor de testes isolado iniciado em ${BASE_URL}\n`);
+        resolve();
       });
-    }
+    });
 
     // -------------------------------------------------------------------------
     // 1. CONTRATO DO ENDPOINT /api/sources (SEM MOCK)
@@ -1360,6 +1357,7 @@ async function runDeterministicTests() {
       const originalFetch = globalThis.fetch;
       const savedRelayMode = residentialRelayService.getMode();
       try {
+        residentialRelayService.disconnectBridge();
         residentialRelayService.updateConfig({ mode: 'fallback' });
 
         // Stub de upstream retornando HTTP 403 Cloudflare no fetch direto
@@ -1885,6 +1883,623 @@ async function runDeterministicTests() {
       resolvedTerritoryChip.anilistTags.includes('Kingdom Building'),
       'Chip de subcategoria "Gestão de Território / Reino" mapeia para Territory Management e Kingdom Building'
     );
+
+    // =========================================================================
+    // 20. Merge de Favoritos Duplicados & Limpeza do Radar de Lançamentos
+    // =========================================================================
+    console.log('\n[20/20] Testando Merge de Favoritos Duplicados & Limpeza de UpdateTracker...');
+    const hadGlobalStorage = 'localStorage' in globalThis;
+    const prevGlobalStorage = globalThis.localStorage;
+    const mockStore = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (mockStore.has(k) ? mockStore.get(k) : null),
+      setItem: (k, v) => mockStore.set(k, String(v)),
+      removeItem: (k) => mockStore.delete(k),
+      clear: () => mockStore.clear()
+    };
+
+    try {
+      const { HistoryService } = await import('../../src/services/history.js');
+      const { UpdateTrackerService } = await import('../../src/services/updateTracker.js');
+
+      HistoryService.notifyExternalSync();
+
+      const primaryId = 'mr_mangadex_kaoru-hana';
+      const dupId = 'mr_weebcentral_fragrant-flower';
+
+      HistoryService.toggleBookmark({
+        mangaId: primaryId,
+        title: 'Kaoru Hana wa Rin to Saku',
+        coverUrl: 'https://example.com/kaoru.jpg',
+        sourceId: 'mangadex',
+        sourceName: 'MangaDex',
+        userCategory: 'reading',
+        altTitles: ['The Fragrant Flower Blooms With Dignity']
+      });
+      HistoryService.toggleBookmark({
+        mangaId: dupId,
+        title: 'The Fragrant Flower Blooms With Dignity',
+        coverUrl: 'https://example.com/fragrant.jpg',
+        sourceId: 'weebcentral',
+        sourceName: 'WeebCentral',
+        userCategory: 'reading'
+      });
+
+      const fakeUpdates = {
+        [primaryId]: {
+          mangaId: primaryId,
+          latestChapterId: 'ch_md_207',
+          latestChapterNumber: '207',
+          hasNew: true,
+          checkedAt: Date.now()
+        },
+        [dupId]: {
+          mangaId: dupId,
+          latestChapterId: 'ch_wc_207',
+          latestChapterNumber: '207',
+          hasNew: true,
+          checkedAt: Date.now()
+        },
+        mr_orphan_deleted: {
+          mangaId: 'mr_orphan_deleted',
+          latestChapterId: 'ch_orphan_10',
+          latestChapterNumber: '10',
+          hasNew: true,
+          checkedAt: Date.now()
+        }
+      };
+      globalThis.localStorage.setItem('manga_reader_updates_v1', JSON.stringify(fakeUpdates));
+
+      // Orphan entry not in favorites must NOT count toward unread/unseen badge
+      assert(
+        UpdateTrackerService.getUnreadUpdatesCount() === 2 &&
+        UpdateTrackerService.getUnseenBadgeCount() === 2,
+        'UpdateTrackerService ignora entradas órfãs fora dos favoritos na contagem de Lançamentos'
+      );
+
+      // Simulate merging dupId into primaryId
+      HistoryService.migrateMangaData(
+        dupId,
+        {
+          mangaId: primaryId,
+          title: 'Kaoru Hana wa Rin to Saku',
+          coverUrl: 'https://example.com/kaoru.jpg',
+          sourceId: 'mangadex',
+          sourceName: 'MangaDex',
+          altTitles: ['The Fragrant Flower Blooms With Dignity'],
+          userCategory: 'reading'
+        },
+        [],
+        [],
+        { removeOldSource: true }
+      );
+      UpdateTrackerService.migrateMangaUpdate(dupId, primaryId);
+      UpdateTrackerService.pruneOrphanedUpdates();
+
+      const remainingFavs = HistoryService.getFavorites();
+      const storedAfterMerge = UpdateTrackerService.getStoredUpdates();
+
+      assert(
+        remainingFavs.length === 1 && remainingFavs[0].mangaId === primaryId,
+        'HistoryService.migrateMangaData mantém apenas o favorito principal após merge'
+      );
+      assert(
+        !(dupId in storedAfterMerge) &&
+        !('mr_orphan_deleted' in storedAfterMerge) &&
+        Boolean(storedAfterMerge[primaryId]),
+        'UpdateTrackerService remove entrada duplicada e órfãos após merge mantendo o principal'
+      );
+      assert(
+        UpdateTrackerService.getUnreadUpdatesCount() === 1 &&
+        UpdateTrackerService.getUnseenBadgeCount() === 1,
+        'Contagem de novos capítulos e badge cai de 2 para 1 após mesclar duplicata'
+      );
+    } finally {
+      if (hadGlobalStorage) {
+        globalThis.localStorage = prevGlobalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 21: Performance em Escala (Favoritar/Ocultar Rápidos + Cache + Índices)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [21/21] Testando Otimizações de Performance (O(N), Cache, Escopo)...');
+
+    const prevPerfStorage = globalThis.localStorage;
+    const hadPerfStorage = 'localStorage' in globalThis;
+    const perfStore = new Map();
+    let trackerMappingReads = 0;
+
+    globalThis.localStorage = {
+      getItem: (k) => {
+        if (k === 'manga_reader_tracker_mappings_v1') trackerMappingReads++;
+        return perfStore.has(k) ? perfStore.get(k) : null;
+      },
+      setItem: (k, v) => { perfStore.set(k, String(v)); },
+      removeItem: (k) => { perfStore.delete(k); },
+      clear: () => { perfStore.clear(); }
+    };
+
+    try {
+      const { HistoryService } = await import('../../src/services/history.js');
+      const { TrackerService } = await import('../../src/services/trackerService.js');
+      const { detectDuplicateFavoriteGroups } = await import('../../src/components/DuplicateFavoritesModal.js');
+      const { buildLibraryIndex, isMangaInLibraryIndex } = await import('../../src/utils/libraryFilters.js');
+
+      HistoryService.notifyExternalSync();
+      TrackerService.invalidateCache();
+
+      // 19.1 Scoped HistoryService topics + O(1) per-manga listeners
+      let favTopicCalls = 0;
+      let ignoredTopicCalls = 0;
+      let m1Calls = 0;
+      let m2Calls = 0;
+
+      const uFav = HistoryService.subscribe(() => { favTopicCalls++; }, ['favorites']);
+      const uIg = HistoryService.subscribe(() => { ignoredTopicCalls++; }, ['ignored']);
+      const uM1 = HistoryService.subscribeManga('mr_test_m1', () => { m1Calls++; });
+      const uM2 = HistoryService.subscribeManga('mr_test_m2', () => { m2Calls++; });
+
+      HistoryService.ignoreManga({ mangaId: 'mr_test_m1', title: 'Test Manga One' });
+      assert(
+        ignoredTopicCalls === 1 && favTopicCalls === 0 && m1Calls === 1 && m2Calls === 0,
+        'ignoreManga notifica apenas tópico ignored e card específico sem acordar favoritos ou outros cards'
+      );
+
+      HistoryService.toggleBookmark({ mangaId: 'mr_test_m2', title: 'Test Manga Two', coverUrl: '' });
+      assert(
+        favTopicCalls === 1 && ignoredTopicCalls === 1 && m1Calls === 1 && m2Calls === 1,
+        'toggleBookmark notifica apenas tópico favorites e card específico'
+      );
+
+      uFav();
+      uIg();
+      uM1();
+      uM2();
+
+      // 19.2 TrackerService in-memory cache avoids repeated JSON.parse on 1,000 badges
+      TrackerService.setMapping('mr_test_m1', { anilistId: 12345, anilistTitle: 'Test', anilistStatus: 'synced' });
+      const readsBeforeLoop = trackerMappingReads;
+      const tTrackerStart = performance.now();
+      for (let i = 0; i < 1000; i++) {
+        TrackerService.getMangaSyncStatus(i % 2 === 0 ? 'mr_test_m1' : `mr_other_${i}`);
+      }
+      const tTrackerMs = performance.now() - tTrackerStart;
+      assert(
+        trackerMappingReads === readsBeforeLoop && tTrackerMs < 150,
+        `TrackerService usa cache em memória sem reler localStorage em 1000 consultas (${tTrackerMs.toFixed(1)}ms)`
+      );
+
+      // 19.3 Indexed duplicate detection at scale (600 favorites) preserving exact/alt/romaji/substring parity
+      const largeFavs = [];
+      for (let i = 0; i < 592; i++) {
+        largeFavs.push({
+          mangaId: `mr_mangadex_scale_${i}`,
+          title: `Chronicles of Magic Sword Volume ${i} Special`,
+          altTitles: [`Mahou Ken no Monogatari ${i}`, `Legend of Blade ${i}`],
+          coverUrl: '',
+          sourceName: 'MangaDex',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        });
+      }
+      // Inject 4 distinct duplicate pairs (exact, alt_title, romaji_loose, substring_match)
+      largeFavs.push(
+        {
+          mangaId: 'mr_mangadex_beast',
+          title: 'Yuusha Party wo Tsuihou Sareta Beast Tamer, Saikyoushu no Nekomimi Shoujo to Deau',
+          coverUrl: '',
+          sourceName: 'MangaDex',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_weebcentral_beast',
+          title: 'Beast Tamer',
+          coverUrl: '',
+          sourceName: 'WeebCentral',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_mangadex_exact_dup',
+          title: 'Witch Watch (Official)',
+          coverUrl: '',
+          sourceName: 'MangaDex',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_comick_exact_dup',
+          title: 'Witch Watch',
+          coverUrl: '',
+          sourceName: 'Comick',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_mangadex_alt_dup',
+          title: 'Kaoru Hana wa Rin to Saku',
+          altTitles: ['The Fragrant Flower Blooms With Dignity'],
+          coverUrl: '',
+          sourceName: 'MangaDex',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_weebcentral_alt_dup',
+          title: 'The Fragrant Flower Blooms With Dignity',
+          coverUrl: '',
+          sourceName: 'WeebCentral',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_mangadex_romaji_dup',
+          title: 'Tensei Shitara Ken Deshita wo Bouken',
+          coverUrl: '',
+          sourceName: 'MangaDex',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        },
+        {
+          mangaId: 'mr_comick_romaji_dup',
+          title: 'Tensei Shitara Ken Deshita o Boken',
+          coverUrl: '',
+          sourceName: 'Comick',
+          userCategory: 'reading',
+          updatedAt: Date.now()
+        }
+      );
+
+      const tDupStart = performance.now();
+      const dupGroups = detectDuplicateFavoriteGroups(largeFavs);
+      const tDupMs = performance.now() - tDupStart;
+      const dupGroupIds = dupGroups.map(g => g.items.map(x => x.mangaId).sort().join('|'));
+
+      assert(
+        dupGroups.length === 4 &&
+        dupGroupIds.includes('mr_mangadex_beast|mr_weebcentral_beast') &&
+        dupGroupIds.includes('mr_comick_exact_dup|mr_mangadex_exact_dup') &&
+        dupGroupIds.includes('mr_mangadex_alt_dup|mr_weebcentral_alt_dup') &&
+        dupGroupIds.includes('mr_comick_romaji_dup|mr_mangadex_romaji_dup') &&
+        tDupMs < 250,
+        `detectDuplicateFavoriteGroups indexado detecta 4 tipos de duplicatas em 600 obras rapidamente (${tDupMs.toFixed(1)}ms)`
+      );
+
+      // 19.4 Large LibraryIndex filter pass (1500 ignored + 600 favs x 250 search items)
+      const largeIgnored = [];
+      for (let i = 0; i < 1500; i++) {
+        largeIgnored.push({
+          mangaId: `mr_comick_ig_${i}`,
+          title: `Oculto da Busca Número ${i}`,
+          altTitles: [`Hidden Work Alt ${i}`],
+          dismissedAt: Date.now()
+        });
+      }
+      const searchPool = [];
+      for (let i = 0; i < 250; i++) {
+        searchPool.push({
+          id: i === 5 ? 'mr_comick_ig_42' : `mr_search_${i}`,
+          title: i === 10 ? 'Hidden Work Alt 100' : `Fantasy Romance Adventure ${i}`,
+          altTitles: [`Fantasy Alt ${i}`],
+          coverUrl: '',
+          synopsis: '',
+          authors: [],
+          artists: [],
+          genres: ['Romance', 'Fantasy'],
+          status: 'ongoing',
+          publicationInfo: {},
+          sources: []
+        });
+      }
+
+      const tFilterStart = performance.now();
+      const favIdx = buildLibraryIndex(largeFavs);
+      const igIdx = buildLibraryIndex(largeIgnored);
+      const visible = searchPool.filter(m => !isMangaInLibraryIndex(m, favIdx) && !isMangaInLibraryIndex(m, igIdx));
+      const tFilterMs = performance.now() - tFilterStart;
+
+      assert(
+        visible.length === 248 && tFilterMs < 100,
+        `Filtragem indexada de busca com 600 favoritos + 1500 ocultos conclui rapidamente (${tFilterMs.toFixed(1)}ms)`
+      );
+    } finally {
+      if (hadPerfStorage) {
+        globalThis.localStorage = prevPerfStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 22: Descoberta de Subgêneros / Nichos via AniList Discovery
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [22/22] Testando Descoberta de Subgêneros de Nicho via AniList...');
+    {
+      const { extractAniListFilters, shouldUseAniListDiscovery } = await import('../sources/AniListDiscovery.js');
+
+      const aniFilters = extractAniListFilters({ genres: ['Tomboy'], type: 'manga' });
+      assert(
+        aniFilters.hasNicheTag && aniFilters.allTags.includes('Tomboy'),
+        'extractAniListFilters mapeia subgenero Tomboy para tag oficial AniList'
+      );
+
+      const kingdomFilters = extractAniListFilters({ genres: ['Construção de Vila / Reino', 'Regressão / Tempo'], type: 'manhwa' });
+      assert(
+        kingdomFilters.hasNicheTag &&
+        kingdomFilters.allTags.includes('Kingdom Management') &&
+        kingdomFilters.allTags.includes('Time Manipulation'),
+        'extractAniListFilters mapeia multiplos subgeneros para tags oficiais AniList'
+      );
+
+      assert(
+        shouldUseAniListDiscovery('', { genres: ['Tomboy'], type: 'manga' }) === true,
+        'shouldUseAniListDiscovery ativa busca comunitaria AniList para subgeneros de nicho sem query textual'
+      );
+
+      assert(
+        shouldUseAniListDiscovery('Nagatoro', { genres: ['Tomboy'], type: 'manga' }) === false,
+        'shouldUseAniListDiscovery nao intercepta buscas com query textual explicita'
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 23: Resiliência do MangaPillProvider a HTTP 502 (Retry & Fallback)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [23/23] Testando Resiliência do MangaPillProvider a HTTP 502...');
+    {
+      const pillRetryProvider = new MangaPillProvider();
+      const origFetch = globalThis.fetch;
+      let callCount = 0;
+      const sampleHtml = `
+        <div>
+          <a href="/manga/1/berserk"><figure><img data-src="https://cdn.readdetectiveconan.com/file/mangapill/covers/1.jpg" alt="Berserk"></figure></a>
+          <a href="/manga/1/berserk"><div class="line-clamp-2">Berserk</div></a>
+        </div>
+      `;
+
+      try {
+        // 1) Transient 502 on attempt 0 -> 200 on retry
+        globalThis.fetch = async () => {
+          callCount++;
+          if (callCount === 1) {
+            return new Response('Bad Gateway', { status: 502, statusText: 'Bad Gateway' });
+          }
+          return new Response(sampleHtml, { status: 200, headers: { 'Content-Type': 'text/html' } });
+        };
+
+        const recovered = await pillRetryProvider.search('berserk-retry-test');
+        assert(
+          callCount === 2 && recovered.mangaList.length === 1 && recovered.mangaList[0].title === 'Berserk',
+          'MangaPillProvider faz retry em HTTP 502 transitorio e recupera busca automaticamente'
+        );
+
+        // 2) Persistent 502 on uncached query returns stale cache or graceful empty without throwing
+        globalThis.fetch = async () => new Response('Bad Gateway', { status: 502, statusText: 'Bad Gateway' });
+        const persistentRes = await pillRetryProvider.search('uncached-502-query');
+        assert(
+          Array.isArray(persistentRes.mangaList) && persistentRes.mangaList.length === 0,
+          'MangaPillProvider degrada graciosamente sem lancar excecao quando 502 persiste'
+        );
+
+        // 3) Popular browse falls back to curated baseline during 502 cooldown
+        const popFallback = await pillRetryProvider.search('');
+        assert(
+          popFallback.mangaList.length > 0 && popFallback.mangaList.some(m => m.title === 'Berserk'),
+          'MangaPillProvider serve catalogo popular fallback durante cooldown de 502'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 24: Decodificação Unificada de Entidades HTML (Numéricas, Hex & Duplas)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [24/24] Testando Decodificação de Entidades HTML em Fontes & Gateway...');
+    {
+      const { decodeHtmlEntities, sanitizeMangaEntities, sanitizeChapterEntities } = await import('../../src/utils/htmlEntities.js');
+      const { WeebCentralProvider } = await import('../sources/WeebCentralProvider.js');
+      const { sourceRegistry } = await import('../sources/SourceRegistry.js');
+
+      assert(
+        decodeHtmlEntities('Cherry Yuusha to &#34;Sei&#34; Naru Ken') === 'Cherry Yuusha to "Sei" Naru Ken',
+        'decodeHtmlEntities decodifica entidades decimais como &#34; no título reportado'
+      );
+      assert(
+        decodeHtmlEntities('Hero&#x27;s &ldquo;Journey&rdquo; &ndash; Vol. 1 &hellip;') === 'Hero\'s “Journey” – Vol. 1 …',
+        'decodeHtmlEntities decodifica entidades hexadecimais (&#x27;) e nomeadas (&ldquo;, &ndash;, &hellip;)'
+      );
+      assert(
+        decodeHtmlEntities('Double &amp;#34;Encoded&amp;#34; &amp;amp; Mixed') === 'Double "Encoded" & Mixed',
+        'decodeHtmlEntities decodifica payloads duplamente escapados (&amp;#34;)'
+      );
+
+      const dirtyManga = {
+        id: 'mr_weebcentral_01TEST00000000000000000000',
+        title: 'Cherry Yuusha to &#34;Sei&#34; Naru Ken',
+        altTitles: ['Cherry Hero&#x27;s Sword', '&#34;Holy&#34; Blade'],
+        coverUrl: 'https://example.com/cover.jpg',
+        synopsis: 'A hero&#39;s tale &ndash; full of &#34;surprises&#34;.',
+        authors: ['Uchiba &amp; Studio'],
+        artists: ['Uchiba&#39;s Team'],
+        genres: ['Action', 'Sci&#45;Fi'],
+        status: 'ongoing',
+        publicationInfo: { magazine: 'Jump&#39;s Plus', demographic: 'Shounen' },
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        sources: []
+      };
+      const cleanManga = sanitizeMangaEntities(dirtyManga);
+      assert(
+        cleanManga.title === 'Cherry Yuusha to "Sei" Naru Ken' &&
+        cleanManga.altTitles[0] === "Cherry Hero's Sword" &&
+        cleanManga.altTitles[1] === '"Holy" Blade' &&
+        cleanManga.synopsis === 'A hero\'s tale – full of "surprises".' &&
+        cleanManga.authors[0] === 'Uchiba & Studio' &&
+        cleanManga.genres[1] === 'Sci-Fi' &&
+        cleanManga.publicationInfo.magazine === "Jump's Plus",
+        'sanitizeMangaEntities limpa titulo, sinopse, altTitles, autores, generos e revista'
+      );
+
+      const cleanChapter = sanitizeChapterEntities({
+        id: 'ch_weebcentral_1_2',
+        mangaId: 'mr_weebcentral_1',
+        sourceId: 'weebcentral',
+        externalChapterId: '2',
+        chapterNumber: '1',
+        title: 'Cap. 1: &#34;Despertar&#34;',
+        language: 'en',
+        publishDate: '2026-01-01',
+        scanlationGroup: 'Team&#39;s Alpha'
+      });
+      assert(
+        cleanChapter.title === 'Cap. 1: "Despertar"' && cleanChapter.scanlationGroup === "Team's Alpha",
+        'sanitizeChapterEntities limpa titulo e scanlationGroup do capitulo'
+      );
+
+      // Integration test with WeebCentralProvider HTML search response via mocked fetch
+      const wcProvider = new WeebCentralProvider();
+      const origFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => new Response(
+          `<article class="bg-base-300 flex gap-4 p-4">
+            <a href="https://weebcentral.com/series/01JH9999999999999999999999/cherry-yuusha" class="line-clamp-1 link link-hover">Cherry Yuusha to &#34;Sei&#34; Naru Ken</a>
+            <img src="https://temp.compsci88.com/cover/normal/01JH9999999999999999999999.webp" alt="Cherry Yuusha to &#34;Sei&#34; Naru Ken cover">
+            <strong>Status:</strong> <span>Ongoing</span>
+          </article>`,
+          { status: 200, headers: { 'Content-Type': 'text/html' } }
+        );
+        const wcRes = await wcProvider.search('cherry yuusha entity test');
+        assert(
+          wcRes.mangaList.length === 1 && wcRes.mangaList[0].title === 'Cherry Yuusha to "Sei" Naru Ken',
+          'WeebCentralProvider retorna titulo sem &#34; ao parsear HTML do servidor Go'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+
+      // Gateway integration check via SourceRegistry.getMangaById
+      const origGet = sourceRegistry.getSource('weebcentral').getMangaDetails;
+      sourceRegistry.getSource('weebcentral').getMangaDetails = async () => dirtyManga;
+      try {
+        const regManga = await sourceRegistry.getMangaById('mr_weebcentral_01TEST00000000000000000000');
+        assert(
+          regManga?.title === 'Cherry Yuusha to "Sei" Naru Ken',
+          'SourceRegistry.getMangaById sanitiza entidades HTML antes de retornar para a API'
+        );
+      } finally {
+        sourceRegistry.getSource('weebcentral').getMangaDetails = origGet;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 25: Resiliência do MangaDexProvider a "fetch failed" (Retry & Fallback)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [25/25] Testando Resiliência do MangaDexProvider a "fetch failed"...');
+    {
+      const { MangaDexProvider } = await import('../sources/MangaDexProvider.js');
+      const dexProvider = new MangaDexProvider();
+      const origFetch = globalThis.fetch;
+      let calls = 0;
+
+      const sampleDexResponse = {
+        total: 1,
+        data: [
+          {
+            id: '11111111-1111-4111-8111-111111111111',
+            attributes: {
+              title: { en: 'Resilient MangaDex Title' },
+              altTitles: [],
+              description: { en: 'Sample synopsis' },
+              status: 'ongoing',
+              contentRating: 'safe',
+              availableTranslatedLanguages: ['en'],
+              latestUploadedChapter: '22222222-2222-4222-8222-222222222222',
+              tags: []
+            },
+            relationships: []
+          }
+        ]
+      };
+
+      try {
+        // 1) Transient TypeError('fetch failed') on search -> retries automatically and succeeds
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.includes('/manga/tag')) {
+            return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          calls++;
+          if (calls === 1) {
+            throw new TypeError('fetch failed');
+          }
+          return new Response(JSON.stringify(sampleDexResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        };
+
+        const recovered = await dexProvider.search('resilient-dex-test');
+        assert(
+          calls === 2 &&
+          recovered.mangaList.length === 1 &&
+          recovered.mangaList[0].title === 'Resilient MangaDex Title',
+          'MangaDexProvider faz retry automatico apos "fetch failed" transitorio e recupera busca'
+        );
+
+        // 2) Persistent fetch failed on uncached query returns graceful empty without throwing
+        globalThis.fetch = async () => {
+          throw new TypeError('fetch failed');
+        };
+        const persistentOutage = await dexProvider.search('uncached-dex-outage');
+        assert(
+          Array.isArray(persistentOutage.mangaList) && persistentOutage.mangaList.length === 0,
+          'MangaDexProvider degrada graciosamente sem lancar excecao quando fetch failed persiste'
+        );
+
+        // 3) Cached query remains available during cooldown
+        const staleHit = await dexProvider.search('resilient-dex-test');
+        assert(
+          staleHit.mangaList.length === 1 && staleHit.mangaList[0].title === 'Resilient MangaDex Title',
+          'MangaDexProvider serve resultado em cache durante cooldown sem novo erro'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 26: Versão do App & Verificação de Atualizações (/api/version)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [26/26] Testando Endpoint /api/version e Consistência com /api/health...');
+    {
+      const versionRes = await fetch(`${BASE_URL}/api/version`);
+      assert(versionRes.status === 200, 'GET /api/version retorna HTTP 200');
+      const cacheControl = versionRes.headers.get('cache-control') || '';
+      assert(
+        cacheControl.includes('no-store'),
+        'GET /api/version envia Cache-Control: no-store para evitar cache no celular'
+      );
+      const versionJson = await versionRes.json();
+      assert(
+        versionJson.success === true &&
+        typeof versionJson.data?.version === 'string' &&
+        typeof versionJson.data?.buildId === 'string' &&
+        typeof versionJson.data?.buildTime === 'string',
+        'GET /api/version retorna version, buildId e buildTime validos'
+      );
+
+      const healthRes2 = await fetch(`${BASE_URL}/api/health`);
+      const healthJson2 = await healthRes2.json();
+      assert(
+        healthJson2.version === versionJson.data.version &&
+        healthJson2.buildId === versionJson.data.buildId,
+        'GET /api/health reporta a mesma versao e buildId que /api/version'
+      );
+    }
 
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);

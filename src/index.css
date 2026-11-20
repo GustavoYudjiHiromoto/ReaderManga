@@ -25,7 +25,6 @@
   }
 
   html {
-    scroll-behavior: smooth;
     overflow-x: clip;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
@@ -187,6 +186,25 @@
   .manga-cover-grid-compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* Skip layout/paint work for off-screen cards in long multi-page search & library grids */
+.manga-card-grid-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 340px;
+  contain: layout style paint;
+}
+
+.manga-list-row-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 104px;
+  contain: layout style paint;
+}
+
+.chapter-grid-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
+  contain: layout style;
 }
 
 /* Disable sticky hover lifts on touch-only screens to avoid stuck cards after tap */

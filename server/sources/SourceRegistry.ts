@@ -9,7 +9,8 @@ import { MangaBallProvider } from './MangaBallProvider.js';
 import { HttpError } from '../errors/HttpError.js';
 import { deduplicateAndGroupChapters, normalizeChapterNumber } from './ChapterDeduplicator.js';
 import { extensionRepositoryService } from './ExtensionRepositoryService.js';
-import { matchesProtagonistGender } from '../../src/utils/protagonistFilter.js';
+import { discoverViaAniList, shouldUseAniListDiscovery } from './AniListDiscovery.js';
+import { sanitizeMangaEntities, sanitizeChapterEntities } from '../../src/utils/htmlEntities.js';
 
 function stripEditionTags(t: string): string {
   return (t || '')
@@ -301,10 +302,6 @@ export class SourceRegistry {
       'corrida / carros / drift': ['racing', 'drift', 'cars']
     };
 
-    const effectiveOptions: SourceSearchOptions | undefined = options?.protagonist
-      ? { ...options, limit: Math.min(Math.max(options.limit || 24, 48), 60) }
-      : options;
-
     const extraSynonyms: string[] = [];
     if (!query.trim() && options?.genres) {
       for (const g of options.genres) {
@@ -317,7 +314,7 @@ export class SourceRegistry {
     }
 
     const promises = sourcesToQuery.map(src =>
-      src.search(query, effectiveOptions).catch(err => {
+      src.search(query, options).catch(err => {
         console.error(`Error querying source ${src.getInfo().id}:`, err);
         return { mangaList: [], total: 0, hasMore: false };
       })
@@ -327,27 +324,28 @@ export class SourceRegistry {
       sourcesToQuery
         .filter(src => src.getInfo().id !== 'mangapill')
         .map(src =>
-          src.search(syn, { ...effectiveOptions, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
+          src.search(syn, { ...options, genres: undefined, genre: undefined }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
         )
     );
 
-    // If browsing Female Protagonist without text query or explicit subgenre, include Villainess/FMC catalog batch
-    if (options?.protagonist === 'female' && !query.trim() && (!options.genres || options.genres.length === 0)) {
-      for (const src of sourcesToQuery) {
-        const id = src.getInfo().id;
-        if (id === 'mangadex' || id === 'comick' || id === 'weebcentral') {
-          extraPromises.push(
-            src.search('', { ...effectiveOptions, genre: 'villainess', genres: ['villainess'] }).catch(() => ({ mangaList: [], total: 0, hasMore: false }))
-          );
-        }
-      }
-    }
+    const hasReadableCoreSource = sourcesToQuery.some(s =>
+      ['mangadex', 'weebcentral', 'comick', 'mangapill'].includes(s.getInfo().id)
+    );
+    const aniListPromise =
+      hasReadableCoreSource && shouldUseAniListDiscovery(query, options)
+        ? discoverViaAniList(sourcesToQuery, options || {}).catch(() => [])
+        : Promise.resolve([] as Manga[]);
 
-    const [outcomes, extraOutcomes] = await Promise.all([
+    const [outcomes, extraOutcomes, aniListOutcomes] = await Promise.all([
       Promise.all(promises),
-      Promise.all(extraPromises)
+      Promise.all(extraPromises),
+      aniListPromise
     ]);
     const rawLiveResults: Manga[] = [];
+
+    if (aniListOutcomes.length > 0) {
+      rawLiveResults.push(...aniListOutcomes);
+    }
 
     if (!query.trim() && outcomes.length > 1) {
       const maxLen = Math.max(...outcomes.map(o => o.mangaList.length), 0);
@@ -391,11 +389,6 @@ export class SourceRegistry {
           : m.genres.some(g => g.toLowerCase().includes('josei')) ? 'josei' : undefined);
         return demo === targetDemo;
       });
-    }
-
-    // Filter by protagonist gender if requested
-    if (options?.protagonist) {
-      liveResults = liveResults.filter(m => matchesProtagonistGender(m, options.protagonist!));
     }
 
     // Filter by status if requested
@@ -465,9 +458,11 @@ export class SourceRegistry {
       });
     }
 
+    const sanitizedResults = liveResults.map(sanitizeMangaEntities);
+
     return {
-      results: liveResults,
-      total: liveResults.length,
+      results: sanitizedResults,
+      total: sanitizedResults.length,
       sourcesQueried: sourcesToQuery.map(s => s.getInfo().id)
     };
   }
@@ -498,7 +493,7 @@ export class SourceRegistry {
 
     const deduped = deduplicateMangaList(rawList);
     // Exclude adult content and metadata-only works from homepage featured
-    return deduped.filter(m => !m.isAdult && m.hasAvailableChapters !== false);
+    return deduped.filter(m => !m.isAdult && m.hasAvailableChapters !== false).map(sanitizeMangaEntities);
   }
 
   /**
@@ -527,7 +522,7 @@ export class SourceRegistry {
     if (!options?.includeAdult) {
       list = list.filter(m => !m.isAdult);
     }
-    return list;
+    return list.map(sanitizeMangaEntities);
   }
 
   /**
@@ -778,7 +773,8 @@ export class SourceRegistry {
       throw new HttpError(404, `Fonte '${parsed.sourceId}' não encontrada para o mangá '${internalId}'.`);
     }
 
-    return await source.getMangaDetails(parsed.externalId);
+    const details = await source.getMangaDetails(parsed.externalId);
+    return details ? sanitizeMangaEntities(details) : null;
   }
 
   private shouldFederateChapters(chapters: Chapter[], sourceId: string, language?: string): boolean {
@@ -941,7 +937,7 @@ export class SourceRegistry {
       chapters = deduplicateAndGroupChapters(chapters);
     }
 
-    return chapters;
+    return chapters.map(sanitizeChapterEntities);
   }
 
   /**

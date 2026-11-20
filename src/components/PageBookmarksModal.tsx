@@ -175,7 +175,7 @@ export const PageBookmarksModal: React.FC<PageBookmarksModalProps> = ({
                       onJumpToPage(bm.mangaId, bm.chapterId, bm.pageNumber);
                       onClose();
                     }}
-                    className="group relative flex gap-3.5 p-3 rounded-xl bg-zinc-950/70 hover:bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 transition-all cursor-pointer overflow-hidden shadow-sm hover:shadow-lg"
+                    className="group relative flex gap-3.5 p-3 rounded-xl bg-zinc-950/70 hover:bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 transition-colors cursor-pointer overflow-hidden shadow-sm"
                   >
                     {/* Thumbnail */}
                     <div className="w-16 h-24 rounded-lg bg-zinc-900 border border-zinc-800 shrink-0 overflow-hidden relative">
@@ -183,6 +183,8 @@ export const PageBookmarksModal: React.FC<PageBookmarksModalProps> = ({
                         src={bm.imageUrl}
                         alt={`Página ${bm.pageNumber}`}
                         referrerPolicy="no-referrer"
+                        decoding="async"
+                        loading="lazy"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                         onError={(e) => {
                           const img = e.currentTarget as HTMLImageElement;
@@ -191,7 +193,7 @@ export const PageBookmarksModal: React.FC<PageBookmarksModalProps> = ({
                           }
                         }}
                       />
-                      <span className="absolute bottom-1 right-1 bg-black/80 backdrop-blur-sm text-[10px] font-mono text-zinc-200 px-1 py-0.2 rounded font-semibold">
+                      <span className="absolute bottom-1 right-1 bg-black/90 text-[10px] font-mono text-zinc-200 px-1 py-0.2 rounded font-semibold">
                         p.{bm.pageNumber}
                       </span>
                     </div>
