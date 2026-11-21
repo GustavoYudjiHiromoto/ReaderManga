@@ -5,7 +5,36 @@ import { filterChaptersByLanguage, getPreferredLanguage } from '../utils/languag
 
 const UPDATES_KEY = 'manga_reader_updates_v1';
 const SEEN_IN_FEED_KEY = 'manga_reader_updates_feed_seen_v1';
+const AUTO_RADAR_ENABLED_KEY = 'mr_updates_auto_radar_v1';
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutos de cache para não sobrecarregar as fontes
+const NON_FORCED_ITEM_SKIP_MS = 30 * 60 * 1000; // 30 minutos de skip por obra em checagens automáticas
+const ACTIVITY_SAMPLE_THROTTLE_MS = 1000; // Atualiza timestamp de interação no máximo 1x/segundo
+const DEFAULT_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // Para polling após 15 min sem interação
+const DEFAULT_POLL_INTERVAL_MS = 30 * 60 * 1000; // Intervalo entre ciclos em segundo plano
+const DEFAULT_DEBOUNCE_MS = 2500; // Debounce para navegação / bursts de eventos
+const DEFAULT_IDLE_SETTLE_MS = 2000; // Aguarda pausa curta de interação antes de iniciar check automático
+const DEFAULT_MIN_THROTTLE_MS = 5 * 60 * 1000; // Mínimo de 5 min entre verificações automáticas
+const DEFAULT_IDLE_CALLBACK_TIMEOUT_MS = 2000;
+
+export const BACKGROUND_ELIGIBLE_VIEWS = new Set(['home', 'catalog', 'favorites', 'updates']);
+
+export interface RadarTimingConfig {
+  inactivityTimeoutMs: number;
+  pollIntervalMs: number;
+  debounceMs: number;
+  idleSettleMs: number;
+  minThrottleMs: number;
+  idleCallbackTimeoutMs: number;
+}
+
+const radarConfig: RadarTimingConfig = {
+  inactivityTimeoutMs: DEFAULT_INACTIVITY_TIMEOUT_MS,
+  pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+  debounceMs: DEFAULT_DEBOUNCE_MS,
+  idleSettleMs: DEFAULT_IDLE_SETTLE_MS,
+  minThrottleMs: DEFAULT_MIN_THROTTLE_MS,
+  idleCallbackTimeoutMs: DEFAULT_IDLE_CALLBACK_TIMEOUT_MS
+};
 
 type UpdateListener = () => void;
 const listeners = new Set<UpdateListener>();
@@ -32,6 +61,13 @@ if (typeof window !== 'undefined') {
     } else if (event.key === SEEN_IN_FEED_KEY) {
       cachedSeenInFeed = null;
       notifyListeners();
+    } else if (event.key === AUTO_RADAR_ENABLED_KEY) {
+      if (event.newValue === 'true') {
+        startBackgroundTimers();
+      } else {
+        stopBackgroundTimers(true);
+      }
+      notifyListeners();
     }
   });
 }
@@ -53,11 +89,334 @@ function getSeenInFeedMap(): Record<string, string> {
 }
 
 let isChecking = false;
+let isCurrentCheckManual = false;
 let checkProgress: string | null = null;
-let bgTimerId: any = null;
+let cancelRequested = false;
+
+let activeView = 'home';
+let radarInitialized = false;
+let lastInteractionAt = Date.now();
+let lastActivitySampleAt = 0;
+let lastBackgroundCheckAt = 0;
+let isPollingActive = false;
+let stoppedByInactivity = false;
+
+let debounceTimerId: ReturnType<typeof setTimeout> | null = null;
+let idleTaskHandle: { type: 'idle' | 'timeout'; id: number | ReturnType<typeof setTimeout> } | null = null;
+let bgPollTimerId: ReturnType<typeof setInterval> | null = null;
+let inactivityWatchdogId: ReturnType<typeof setTimeout> | null = null;
+
 const NOTIFICATIONS_ENABLED_KEY = 'mr_notifications_enabled';
 
+function isPageHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function isViewEligibleForBackground(view = activeView): boolean {
+  return BACKGROUND_ELIGIBLE_VIEWS.has(view);
+}
+
+function clearPendingBackgroundCheck() {
+  if (debounceTimerId) {
+    clearTimeout(debounceTimerId);
+    debounceTimerId = null;
+  }
+  if (idleTaskHandle) {
+    if (
+      idleTaskHandle.type === 'idle' &&
+      typeof window !== 'undefined' &&
+      typeof (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback === 'function'
+    ) {
+      (window as unknown as { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(
+        idleTaskHandle.id as number
+      );
+    } else {
+      clearTimeout(idleTaskHandle.id as ReturnType<typeof setTimeout>);
+    }
+    idleTaskHandle = null;
+  }
+}
+
+function clearInactivityWatchdog() {
+  if (inactivityWatchdogId) {
+    clearTimeout(inactivityWatchdogId);
+    inactivityWatchdogId = null;
+  }
+}
+
+function cancelUnforcedBackgroundCheck() {
+  if (isChecking && !isCurrentCheckManual) {
+    cancelRequested = true;
+    checkProgress = null;
+  }
+}
+
+function stopBackgroundTimers(abortActiveBackground = false) {
+  clearPendingBackgroundCheck();
+  clearInactivityWatchdog();
+  if (bgPollTimerId) {
+    clearInterval(bgPollTimerId);
+    bgPollTimerId = null;
+  }
+  isPollingActive = false;
+  if (abortActiveBackground) {
+    cancelUnforcedBackgroundCheck();
+  }
+}
+
+function scheduleInactivityWatchdog() {
+  clearInactivityWatchdog();
+  if (!radarInitialized || !UpdateTrackerService.isAutoRadarEnabled() || isPageHidden()) {
+    return;
+  }
+  const elapsed = Math.max(0, Date.now() - lastInteractionAt);
+  const remaining = Math.max(25, radarConfig.inactivityTimeoutMs - elapsed);
+  inactivityWatchdogId = setTimeout(() => {
+    inactivityWatchdogId = null;
+    if (!UpdateTrackerService.isUserInteracting()) {
+      stoppedByInactivity = true;
+      stopBackgroundTimers(true);
+      notifyListeners();
+    } else {
+      scheduleInactivityWatchdog();
+    }
+  }, remaining);
+}
+
+function dispatchWhenIdle(callback: () => void) {
+  clearPendingBackgroundCheck();
+  const win = typeof window !== 'undefined'
+    ? (window as unknown as {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      })
+    : null;
+
+  if (win && typeof win.requestIdleCallback === 'function') {
+    const id = win.requestIdleCallback(
+      () => {
+        idleTaskHandle = null;
+        callback();
+      },
+      { timeout: radarConfig.idleCallbackTimeoutMs }
+    );
+    idleTaskHandle = { type: 'idle', id };
+  } else {
+    const id = setTimeout(() => {
+      idleTaskHandle = null;
+      callback();
+    }, 0);
+    idleTaskHandle = { type: 'timeout', id };
+  }
+}
+
+function scheduleDebouncedBackgroundCheck(delayMs = radarConfig.debounceMs): boolean {
+  if (!radarInitialized || !UpdateTrackerService.isAutoRadarEnabled()) return false;
+  if (!isViewEligibleForBackground()) return false;
+  if (!UpdateTrackerService.isUserInteracting()) return false;
+  if (isChecking) return false;
+
+  const now = Date.now();
+  if (lastBackgroundCheckAt > 0 && now - lastBackgroundCheckAt < radarConfig.minThrottleMs) {
+    return false;
+  }
+
+  clearPendingBackgroundCheck();
+  const effectiveDelay = Math.max(0, delayMs);
+
+  debounceTimerId = setTimeout(() => {
+    debounceTimerId = null;
+    if (!radarInitialized || !UpdateTrackerService.isAutoRadarEnabled()) return;
+    if (!isViewEligibleForBackground()) return;
+    if (!UpdateTrackerService.isUserInteracting()) {
+      stoppedByInactivity = true;
+      stopBackgroundTimers(true);
+      return;
+    }
+    if (isChecking) return;
+
+    const currentNow = Date.now();
+    if (lastBackgroundCheckAt > 0 && currentNow - lastBackgroundCheckAt < radarConfig.minThrottleMs) {
+      return;
+    }
+
+    // Se o usuário acabou de interagir em alta frequência, espera estabilizar (idle curto) antes de disparar
+    const sinceInteraction = currentNow - lastInteractionAt;
+    if (radarConfig.idleSettleMs > 0 && sinceInteraction < radarConfig.idleSettleMs) {
+      scheduleDebouncedBackgroundCheck(radarConfig.idleSettleMs - sinceInteraction);
+      return;
+    }
+
+    dispatchWhenIdle(() => {
+      if (!radarInitialized || !UpdateTrackerService.isAutoRadarEnabled()) return;
+      if (!isViewEligibleForBackground() || !UpdateTrackerService.isUserInteracting() || isChecking) return;
+      const fireNow = Date.now();
+      if (lastBackgroundCheckAt > 0 && fireNow - lastBackgroundCheckAt < radarConfig.minThrottleMs) return;
+      lastBackgroundCheckAt = fireNow;
+      UpdateTrackerService.checkUpdates(false).catch(() => {});
+    });
+  }, effectiveDelay);
+
+  return true;
+}
+
+function startBackgroundTimers() {
+  if (!radarInitialized) return;
+  stopBackgroundTimers(false);
+  if (!UpdateTrackerService.isAutoRadarEnabled()) return;
+  if (!UpdateTrackerService.isUserInteracting()) {
+    stoppedByInactivity = true;
+    return;
+  }
+  if (!isViewEligibleForBackground()) {
+    return;
+  }
+
+  stoppedByInactivity = false;
+  isPollingActive = true;
+  scheduleInactivityWatchdog();
+
+  // Agenda verificação inicial com debounce + espera de ociosidade
+  scheduleDebouncedBackgroundCheck(radarConfig.debounceMs);
+
+  // Agenda intervalo recorrente somente enquanto houver interação recente e view elegível
+  bgPollTimerId = setInterval(() => {
+    if (!radarInitialized || !UpdateTrackerService.isAutoRadarEnabled()) {
+      stopBackgroundTimers(true);
+      return;
+    }
+    if (!UpdateTrackerService.isUserInteracting()) {
+      stoppedByInactivity = true;
+      stopBackgroundTimers(true);
+      notifyListeners();
+      return;
+    }
+    if (!isViewEligibleForBackground()) {
+      return;
+    }
+    scheduleDebouncedBackgroundCheck(radarConfig.debounceMs);
+  }, radarConfig.pollIntervalMs);
+}
+
 export const UpdateTrackerService = {
+  isAutoRadarEnabled(): boolean {
+    try {
+      return localStorage.getItem(AUTO_RADAR_ENABLED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  },
+
+  setAutoRadarEnabled(enabled: boolean): void {
+    try {
+      localStorage.setItem(AUTO_RADAR_ENABLED_KEY, enabled ? 'true' : 'false');
+    } catch {}
+    if (enabled) {
+      this.recordUserInteraction();
+      startBackgroundTimers();
+    } else {
+      stoppedByInactivity = false;
+      stopBackgroundTimers(true);
+    }
+    notifyListeners();
+  },
+
+  setActiveView(view: string): void {
+    const normalized = (view || 'home').toLowerCase().trim() || 'home';
+    const prevView = activeView;
+    activeView = normalized;
+    this.recordUserInteraction();
+
+    if (!isViewEligibleForBackground(normalized)) {
+      stopBackgroundTimers(true);
+      return;
+    }
+
+    if (radarInitialized && this.isAutoRadarEnabled()) {
+      if (!isPollingActive) {
+        startBackgroundTimers();
+      } else if (prevView !== normalized) {
+        scheduleDebouncedBackgroundCheck(radarConfig.debounceMs);
+      }
+    }
+  },
+
+  getActiveView(): string {
+    return activeView;
+  },
+
+  recordUserInteraction(timestamp = Date.now()): void {
+    lastInteractionAt = timestamp;
+    if (radarInitialized && this.isAutoRadarEnabled() && !isPageHidden()) {
+      if (stoppedByInactivity && isViewEligibleForBackground()) {
+        stoppedByInactivity = false;
+        startBackgroundTimers();
+      } else if (isPollingActive && !inactivityWatchdogId) {
+        scheduleInactivityWatchdog();
+      }
+    }
+  },
+
+  isUserInteracting(now = Date.now()): boolean {
+    if (isPageHidden()) return false;
+    return now - lastInteractionAt < radarConfig.inactivityTimeoutMs;
+  },
+
+  isBackgroundPollingActive(): boolean {
+    return isPollingActive;
+  },
+
+  requestBackgroundCheck(_reason: 'navigation' | 'idle' | 'interval' | 'resume' = 'idle'): boolean {
+    return scheduleDebouncedBackgroundCheck(radarConfig.debounceMs);
+  },
+
+  getRadarStatus() {
+    return {
+      activeView,
+      isPollingActive,
+      isUserInteracting: this.isUserInteracting(),
+      stoppedByInactivity,
+      lastBackgroundCheckAt,
+      lastInteractionAt,
+      hasPendingDebounce: Boolean(debounceTimerId || idleTaskHandle)
+    };
+  },
+
+  configureRadarTiming(partial: Partial<RadarTimingConfig>): void {
+    Object.assign(radarConfig, partial);
+    if (isPollingActive) {
+      scheduleInactivityWatchdog();
+    }
+  },
+
+  resetRadarStateForTests(): void {
+    stopBackgroundTimers(true);
+    radarConfig.inactivityTimeoutMs = DEFAULT_INACTIVITY_TIMEOUT_MS;
+    radarConfig.pollIntervalMs = DEFAULT_POLL_INTERVAL_MS;
+    radarConfig.debounceMs = DEFAULT_DEBOUNCE_MS;
+    radarConfig.idleSettleMs = DEFAULT_IDLE_SETTLE_MS;
+    radarConfig.minThrottleMs = DEFAULT_MIN_THROTTLE_MS;
+    radarConfig.idleCallbackTimeoutMs = DEFAULT_IDLE_CALLBACK_TIMEOUT_MS;
+    activeView = 'home';
+    radarInitialized = false;
+    lastInteractionAt = Date.now();
+    lastActivitySampleAt = 0;
+    lastBackgroundCheckAt = 0;
+    stoppedByInactivity = false;
+    isChecking = false;
+    isCurrentCheckManual = false;
+    cancelRequested = false;
+    checkProgress = null;
+    cachedUpdates = null;
+    cachedSeenInFeed = null;
+  },
+
+  cancelCheck(): void {
+    if (!isChecking) return;
+    cancelRequested = true;
+    checkProgress = 'Cancelando verificação...';
+    notifyListeners();
+  },
+
   isNotificationsSupported(): boolean {
     return typeof window !== 'undefined' && 'Notification' in window;
   },
@@ -393,6 +752,7 @@ export const UpdateTrackerService = {
     if (!force) {
       const updatesValues = Object.values(currentUpdates);
       const allRecent = favorites.every(f => {
+        if (f.userCategory === 'completed' || f.userCategory === 'dropped') return true;
         const u = currentUpdates[f.mangaId];
         return u && (now - u.checkedAt) < CACHE_TTL_MS;
       });
@@ -403,6 +763,11 @@ export const UpdateTrackerService = {
     }
 
     isChecking = true;
+    isCurrentCheckManual = force;
+    cancelRequested = false;
+    if (!force) {
+      lastBackgroundCheckAt = Date.now();
+    }
     checkProgress = 'Iniciando radar de lançamentos...';
     onProgress?.(checkProgress);
     notifyListeners();
@@ -415,44 +780,70 @@ export const UpdateTrackerService = {
       }
     }
     const readChapters = new Set(HistoryService.getReadChapters());
+    const preferredLang = getPreferredLanguage();
 
-    try {
-      for (let i = 0; i < favorites.length; i++) {
-        const fav = favorites[i];
-        const statusMsg = `Verificando ${i + 1}/${favorites.length}: ${fav.title.slice(0, 18)}...`;
-        checkProgress = statusMsg;
-        onProgress?.(statusMsg);
-        notifyListeners();
-
-        // Se checado recentemente (< 5 min) e não for force, reaproveita
-        const existing = currentUpdates[fav.mangaId];
-        if (!force && existing && (now - existing.checkedAt < 5 * 60 * 1000)) {
-          // Apenas revalida se o usuário leu recentemente
+    // Smart skip upfront for non-forced checks
+    const targets = favorites.filter(fav => {
+      const existing = currentUpdates[fav.mangaId];
+      if (!force) {
+        if (fav.userCategory === 'completed' || fav.userCategory === 'dropped') {
+          if (existing && readChapters.has(existing.latestChapterId)) {
+            newUpdates[fav.mangaId] = { ...existing, hasNew: false };
+          }
+          return false;
+        }
+        if (existing && (now - existing.checkedAt < NON_FORCED_ITEM_SKIP_MS)) {
           if (readChapters.has(existing.latestChapterId)) {
             newUpdates[fav.mangaId] = { ...existing, hasNew: false };
           }
-          continue;
+          return false;
+        }
+      }
+      return true;
+    });
+
+    let completedCount = 0;
+    const totalCount = targets.length;
+    let nextIdx = 0;
+    const CONCURRENCY = Math.min(5, Math.max(1, totalCount));
+    let lastUiNotifyAt = 0;
+
+    const persistProgress = () => {
+      try {
+        localStorage.setItem(UPDATES_KEY, JSON.stringify(newUpdates));
+        cachedUpdates = { ...newUpdates };
+      } catch {}
+    };
+
+    const worker = async () => {
+      while (!cancelRequested) {
+        const idx = nextIdx++;
+        if (idx >= totalCount) break;
+        const fav = targets[idx];
+        const existing = currentUpdates[fav.mangaId];
+
+        if (!cancelRequested) {
+          const nowTick = Date.now();
+          const statusMsg = `Verificando ${completedCount + 1}/${totalCount}: ${fav.title.slice(0, 18)}...`;
+          checkProgress = statusMsg;
+          onProgress?.(statusMsg);
+          if (nowTick - lastUiNotifyAt >= 120) {
+            lastUiNotifyAt = nowTick;
+            notifyListeners();
+          }
         }
 
         try {
-          let rawChapters = await MangaApi.getChapters(fav.mangaId, {
+          const rawChapters = await MangaApi.getChapters(fav.mangaId, {
             order: 'desc',
             deduplicate: true,
             title: fav.title,
             altTitles: fav.altTitles
           });
 
-          if ((!rawChapters || rawChapters.length === 0) && fav.title) {
-            rawChapters = await MangaApi.getChapters(fav.mangaId, {
-              order: 'desc',
-              deduplicate: true,
-              title: fav.title,
-              altTitles: fav.altTitles,
-              forceFederate: true
-            });
-          }
+          if (cancelRequested) break;
 
-          const { chapters } = filterChaptersByLanguage(rawChapters, getPreferredLanguage());
+          const { chapters } = filterChaptersByLanguage(rawChapters, preferredLang);
           if (chapters.length > 0) {
             const sorted = [...chapters].sort((a, b) => {
               const nA = parseFloat(a.chapterNumber);
@@ -519,20 +910,31 @@ export const UpdateTrackerService = {
               hasNew,
               lastReadNumber: progress?.chapterNumber,
               discoveredAt,
-              checkedAt: now
+              checkedAt: Date.now()
             };
           }
         } catch (err) {
           console.warn(`Radar: Falha ao obter capítulos de ${fav.mangaId}:`, err);
+        } finally {
+          completedCount++;
+          if (completedCount % 20 === 0) {
+            persistProgress();
+          }
         }
       }
+    };
 
-      localStorage.setItem(UPDATES_KEY, JSON.stringify(newUpdates));
-      cachedUpdates = newUpdates;
+    try {
+      if (totalCount > 0) {
+        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+      }
+      persistProgress();
       this.pruneOrphanedUpdates();
     } finally {
       isChecking = false;
+      isCurrentCheckManual = false;
       checkProgress = null;
+      cancelRequested = false;
       notifyListeners();
     }
 
@@ -543,21 +945,24 @@ export const UpdateTrackerService = {
   },
 
   /**
-   * Inicializa o radar silencioso em segundo plano.
-   * Roda 3 segundos após o carregamento e depois periodicamente a cada 30 minutos.
+   * Inicializa o radar em segundo plano com monitoramento de interação,
+   * debounce/throttle e parada automática quando o usuário está ausente/inativo.
    */
   initBackgroundRadar(): () => void {
-    if (typeof window === 'undefined') return () => {};
+    radarInitialized = true;
+    lastInteractionAt = Date.now();
 
     let lastHistoryRef = HistoryService.getHistory();
     let lastReadRef = HistoryService.getReadChapters();
     let lastFavoritesRef = HistoryService.getFavorites();
+    let historyCleanupTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Prune any pre-existing orphaned entries from deleted/merged favorites cleanly on startup
     this.pruneOrphanedUpdates();
 
-    // Auto-limpeza ao ler capítulos ou remover/mesclar favoritos
-    const unsubHistory = HistoryService.subscribe(() => {
+    // Coalesce high-frequency HistoryService updates so burst writes don't thrash storage/UI
+    const flushHistorySync = () => {
+      historyCleanupTimer = null;
       const history = HistoryService.getHistory();
       const readList = HistoryService.getReadChapters();
       const favList = HistoryService.getFavorites();
@@ -593,25 +998,67 @@ export const UpdateTrackerService = {
         cachedUpdates = nextStored;
         notifyListeners();
       }
+    };
+
+    const unsubHistory = HistoryService.subscribe(() => {
+      if (historyCleanupTimer) {
+        clearTimeout(historyCleanupTimer);
+      }
+      historyCleanupTimer = setTimeout(flushHistorySync, 200);
     }, ['favorites', 'history', 'readChapters']);
 
-    // Dispara a checagem inicial não-bloqueante
-    const initialTimer = setTimeout(() => {
-      this.checkUpdates(false).catch(() => {});
-    }, 3500);
-
-    // Agenda intervalo recorrente
-    bgTimerId = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    const handleUserActivity = () => {
+      const now = Date.now();
+      if (now - lastActivitySampleAt < ACTIVITY_SAMPLE_THROTTLE_MS) {
         return;
       }
-      this.checkUpdates(false).catch(() => {});
-    }, 30 * 60 * 1000);
+      lastActivitySampleAt = now;
+      this.recordUserInteraction(now);
+    };
+
+    const handleVisibilityChange = () => {
+      if (isPageHidden()) {
+        stoppedByInactivity = true;
+        stopBackgroundTimers(true);
+        notifyListeners();
+      } else {
+        lastActivitySampleAt = Date.now();
+        this.recordUserInteraction(lastActivitySampleAt);
+      }
+    };
+
+    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll', 'mousemove'] as const;
+    if (typeof window !== 'undefined') {
+      for (const evt of activityEvents) {
+        window.addEventListener(evt, handleUserActivity, { passive: true });
+      }
+      window.addEventListener('focus', handleVisibilityChange);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    if (this.isAutoRadarEnabled()) {
+      startBackgroundTimers();
+    }
 
     return () => {
+      radarInitialized = false;
+      if (historyCleanupTimer) {
+        clearTimeout(historyCleanupTimer);
+        historyCleanupTimer = null;
+      }
       unsubHistory();
-      clearTimeout(initialTimer);
-      if (bgTimerId) clearInterval(bgTimerId);
+      stopBackgroundTimers(true);
+      if (typeof window !== 'undefined') {
+        for (const evt of activityEvents) {
+          window.removeEventListener(evt, handleUserActivity);
+        }
+        window.removeEventListener('focus', handleVisibilityChange);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
   }
 };

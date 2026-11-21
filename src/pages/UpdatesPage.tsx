@@ -11,7 +11,8 @@ import {
   Compass,
   Bell,
   Calendar,
-  Layers
+  Layers,
+  X
 } from 'lucide-react';
 import { FavoriteManga, MangaUpdateInfo, LibraryCategory, ReadingProgress } from '../types/manga.js';
 import { HistoryService } from '../services/history.js';
@@ -124,6 +125,8 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [isChecking, setIsChecking] = useState<boolean>(() => UpdateTrackerService.isChecking());
   const [progressMsg, setProgressMsg] = useState<string | null>(() => UpdateTrackerService.getProgress());
+  const [autoRadarEnabled, setAutoRadarEnabled] = useState<boolean>(() => UpdateTrackerService.isAutoRadarEnabled());
+  const [dismissedDuplicatePairs, setDismissedDuplicatePairs] = useState<string[]>(() => HistoryService.getDismissedDuplicatePairs());
   const [coverErrors, setCoverErrors] = useState<Record<string, boolean>>({});
   const [coverOverrides, setCoverOverrides] = useState<Record<string, string>>({});
   const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
@@ -140,14 +143,16 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     const syncState = () => {
       setFavorites(HistoryService.getFavorites());
       setReadChapters(HistoryService.getReadChapters());
+      setDismissedDuplicatePairs(HistoryService.getDismissedDuplicatePairs());
     };
     const syncUpdates = () => {
       setUpdatesMap(UpdateTrackerService.getStoredUpdates());
       setIsChecking(UpdateTrackerService.isChecking());
       setProgressMsg(UpdateTrackerService.getProgress());
+      setAutoRadarEnabled(UpdateTrackerService.isAutoRadarEnabled());
     };
 
-    const unsubHist = HistoryService.subscribe(syncState, ['favorites', 'readChapters']);
+    const unsubHist = HistoryService.subscribe(syncState, ['favorites', 'readChapters', 'duplicates']);
     const unsubUpd = UpdateTrackerService.subscribe(syncUpdates);
     return () => {
       unsubHist();
@@ -189,8 +194,8 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   const readSet = useMemo(() => new Set(readChapters), [readChapters]);
 
   const duplicateGroups = useMemo(
-    () => detectDuplicateFavoriteGroups(favorites),
-    [favorites]
+    () => detectDuplicateFavoriteGroups(favorites, undefined, dismissedDuplicatePairs),
+    [favorites, dismissedDuplicatePairs]
   );
 
   const combinedRows = useMemo(() => {
@@ -393,6 +398,24 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
 
               <button
                 type="button"
+                onClick={() => {
+                  const next = !autoRadarEnabled;
+                  UpdateTrackerService.setAutoRadarEnabled(next);
+                  setAutoRadarEnabled(next);
+                }}
+                title="Ativar ou desativar verificação periódica automática em segundo plano"
+                className={`min-h-[44px] px-3.5 py-2 rounded-xl border text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  autoRadarEnabled
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/20'
+                    : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <Clock className={`h-3.5 w-3.5 ${autoRadarEnabled ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                <span>Auto: {autoRadarEnabled ? 'Ativo' : 'Manual'}</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleManualCheck}
                 disabled={isChecking || favorites.length === 0}
                 className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors flex items-center gap-2 shadow-lg shadow-rose-950/40 cursor-pointer"
@@ -404,9 +427,19 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
           </div>
 
           {progressMsg && (
-            <div className="mt-4 px-3.5 py-2 rounded-xl bg-zinc-900 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
-              <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
-              <span className="truncate">{progressMsg}</span>
+            <div className="mt-4 px-3.5 py-2 rounded-xl bg-zinc-900 border border-rose-500/30 text-xs text-rose-300 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
+                <span className="truncate">{progressMsg}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => UpdateTrackerService.cancelCheck()}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer shrink-0"
+              >
+                <X className="h-3 w-3 text-rose-400" />
+                <span>Cancelar</span>
+              </button>
             </div>
           )}
 

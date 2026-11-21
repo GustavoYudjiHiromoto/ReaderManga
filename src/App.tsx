@@ -166,8 +166,14 @@ export default function App() {
     }, 100);
   };
 
+  // Keep UpdateTrackerService view-aware so background checks only trigger on eligible views
+  useEffect(() => {
+    UpdateTrackerService.setActiveView(currentTab);
+  }, [currentTab]);
+
   // Initial setup & popstate listener for browser back/forward buttons
   useEffect(() => {
+    UpdateTrackerService.setActiveView(initialRoute.tab);
     // Initialize silent background radar for new chapters
     const cleanupRadar = UpdateTrackerService.initBackgroundRadar();
 

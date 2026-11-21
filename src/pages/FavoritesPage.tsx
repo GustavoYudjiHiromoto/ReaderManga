@@ -527,6 +527,21 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
   const [updateCheckProgress, setUpdateCheckProgress] = useState<string | null>(() => UpdateTrackerService.getProgress());
   const [updatesMap, setUpdatesMap] = useState<Record<string, MangaUpdateInfo>>(() => UpdateTrackerService.getStoredUpdates());
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => UpdateTrackerService.isNotificationsEnabled());
+  const [autoRadarEnabled, setAutoRadarEnabled] = useState<boolean>(() => UpdateTrackerService.isAutoRadarEnabled());
+  const [dismissedDuplicatePairs, setDismissedDuplicatePairs] = useState<string[]>(() => HistoryService.getDismissedDuplicatePairs());
+
+  const handleToggleAutoRadar = () => {
+    const next = !autoRadarEnabled;
+    UpdateTrackerService.setAutoRadarEnabled(next);
+    setAutoRadarEnabled(next);
+    setNotification({
+      type: 'success',
+      message: next
+        ? 'Radar automático ativado! As fontes serão verificadas em segundo plano.'
+        : 'Radar automático desativado. Use "Verificar Atualizações" quando quiser sincronizar lançamentos.'
+    });
+    setTimeout(() => setNotification(null), 4000);
+  };
 
   const handleToggleNotifications = async () => {
     if (notificationsEnabled) {
@@ -566,6 +581,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setHistoryItems(prev => (prev === nextHist ? prev : nextHist));
       setCustomCollections(prev => (prev === nextCols ? prev : nextCols));
       setPageBookmarksCount(prev => (prev === nextBmCount ? prev : nextBmCount));
+      setDismissedDuplicatePairs(HistoryService.getDismissedDuplicatePairs());
     }
     if (dirtyFlagsRef.current.updates) {
       dirtyFlagsRef.current.updates = false;
@@ -573,6 +589,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setIsCheckingUpdates(UpdateTrackerService.isChecking());
       setUpdateCheckProgress(UpdateTrackerService.getProgress());
       setNotificationsEnabled(UpdateTrackerService.isNotificationsEnabled());
+      setAutoRadarEnabled(UpdateTrackerService.isAutoRadarEnabled());
     }
     if (dirtyFlagsRef.current.offline) {
       dirtyFlagsRef.current.offline = false;
@@ -595,7 +612,8 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setHistoryItems(prev => (prev === nextHist ? prev : nextHist));
       setCustomCollections(prev => (prev === nextCols ? prev : nextCols));
       setPageBookmarksCount(prev => (prev === nextBmCount ? prev : nextBmCount));
-    }, ['favorites', 'collections', 'pageBookmarks', 'history']);
+      setDismissedDuplicatePairs(HistoryService.getDismissedDuplicatePairs());
+    }, ['favorites', 'collections', 'pageBookmarks', 'history', 'duplicates']);
 
     const unsubscribeUpdates = UpdateTrackerService.subscribe(() => {
       if (!isActiveRef.current) {
@@ -606,6 +624,7 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
       setIsCheckingUpdates(UpdateTrackerService.isChecking());
       setUpdateCheckProgress(UpdateTrackerService.getProgress());
       setNotificationsEnabled(UpdateTrackerService.isNotificationsEnabled());
+      setAutoRadarEnabled(UpdateTrackerService.isAutoRadarEnabled());
     });
 
     const unsubscribeOffline = OfflineCacheService.subscribe(() => {
@@ -1218,14 +1237,14 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
     if (!isActive || currentFavorites.length < 2) {
       return { duplicateGroupsCount: 0, hasSuspectedDuplicates: false };
     }
-    const confirmed = detectDuplicateFavoriteGroups(currentFavorites);
+    const confirmed = detectDuplicateFavoriteGroups(currentFavorites, undefined, dismissedDuplicatePairs);
     const groupedIds = new Set(confirmed.flatMap(g => g.items.map(i => i.mangaId)));
-    const suspects = findSuspectedCandidateIds(currentFavorites, groupedIds);
+    const suspects = findSuspectedCandidateIds(currentFavorites, groupedIds, dismissedDuplicatePairs);
     return {
       duplicateGroupsCount: confirmed.length,
       hasSuspectedDuplicates: confirmed.length > 0 || suspects.length >= 2
     };
-  }, [isActive, favIdentitySignature]);
+  }, [isActive, favIdentitySignature, dismissedDuplicatePairs]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 pb-24">
@@ -1344,6 +1363,22 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
                         <span>AniList & MyAnimeList</span>
                       </div>
                       <span className="text-[10px] font-mono text-zinc-500">Auto-sync</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleToggleAutoRadar();
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-zinc-900 text-zinc-300 hover:text-white transition-colors cursor-pointer text-left"
+                      title="Ativar ou desativar verificação periódica automática de novos capítulos em segundo plano"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Clock className={`h-3.5 w-3.5 ${autoRadarEnabled ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                        <span>Radar Automático</span>
+                      </div>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${autoRadarEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-850 text-zinc-500'}`}>
+                        {autoRadarEnabled ? 'Ativo' : 'Desativado'}
+                      </span>
                     </button>
 
                     <button
@@ -1501,9 +1536,19 @@ export const FavoritesPage: React.FC<FavoritesPageProps> = ({
 
         {/* Checking Updates Progress Banner */}
         {isCheckingUpdates && updateCheckProgress && (
-          <div className="mb-6 p-3 rounded-xl bg-zinc-900/90 border border-rose-500/30 flex items-center gap-3 text-xs text-zinc-200">
-            <RefreshCw className="h-4 w-4 text-rose-500 animate-spin shrink-0" />
-            <span>{updateCheckProgress}</span>
+          <div className="mb-6 p-3 rounded-xl bg-zinc-900/90 border border-rose-500/30 flex items-center justify-between gap-3 text-xs text-zinc-200">
+            <div className="flex items-center gap-3 min-w-0">
+              <RefreshCw className="h-4 w-4 text-rose-500 animate-spin shrink-0" />
+              <span className="truncate">{updateCheckProgress}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => UpdateTrackerService.cancelCheck()}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer shrink-0"
+            >
+              <X className="h-3 w-3 text-rose-400" />
+              <span>Cancelar</span>
+            </button>
           </div>
         )}
 

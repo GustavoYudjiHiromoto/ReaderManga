@@ -2501,6 +2501,660 @@ async function runDeterministicTests() {
       );
     }
 
+    // -----------------------------------------------------------------------
+    // SEÇÃO 27: Resiliência Comick, Idiomas em Capítulos e Failover Cruzado
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [27/30] Testando ComickProvider getChapters e Failover Cruzado (titleHint / chapterNumberHint)...');
+    {
+      const { ComickProvider } = await import('../sources/ComickProvider.js');
+      const { sourceRegistry } = await import('../sources/SourceRegistry.js');
+      const origFetch = globalThis.fetch;
+
+      try {
+        const comick = new ComickProvider();
+        const requestedLangUrls = [];
+
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          requestedLangUrls.push(u);
+          if (u.includes('lang=pt-br')) {
+            return new Response(JSON.stringify({
+              total: 1,
+              chapters: [{ hid: 'chpt1', chap: '1', lang: 'pt-br', title: 'Cap 1 PT', created_at: '2026-01-01T00:00:00Z' }]
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          if (u.includes('lang=en')) {
+            return new Response(JSON.stringify({
+              total: 1,
+              chapters: [{ hid: 'chen1', chap: '2', lang: 'en', title: 'Ch 2 EN', created_at: '2026-01-02T00:00:00Z' }]
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response(JSON.stringify({
+            total: 2,
+            chapters: [
+              { hid: 'chpt1', chap: '1', lang: 'pt-br', created_at: '2026-01-01T00:00:00Z' },
+              { hid: 'ches1', chap: '3', lang: 'es', created_at: '2026-01-03T00:00:00Z' }
+            ]
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+
+        const multiLangChs = await comick.getChapters('COMICKHID1', 'pt-br,en');
+        assert(
+          multiLangChs.some(c => c.language === 'pt-br') && multiLangChs.some(c => c.language === 'en'),
+          'ComickProvider.getChapters("pt-br,en") consulta ambos idiomas e preserva language real por capitulo'
+        );
+
+        const allLangChs = await comick.getChapters('COMICKHID1', 'all');
+        assert(
+          allLangChs.some(c => c.language === 'es') && requestedLangUrls.some(u => !u.includes('lang=')),
+          'ComickProvider.getChapters("all") busca sem parametro lang e aceita todos os idiomas'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+
+      // Cross-source failover in SourceRegistry for mr_comick_... & ch_comick_...
+      const comickSrc = sourceRegistry.getSource('comick');
+      const weebSrc = sourceRegistry.getSource('weebcentral');
+      const pillSrc = sourceRegistry.getSource('mangapill');
+      const dexSrc = sourceRegistry.getSource('mangadex');
+      const fireSrc = sourceRegistry.getSource('mangafire');
+      const ballSrc = sourceRegistry.getSource('mangaball');
+
+      const origComickDetails = comickSrc.getMangaDetails.bind(comickSrc);
+      const origComickPagesRes = comickSrc.getChapterPagesResult.bind(comickSrc);
+      const origComickChapters = comickSrc.getChapters.bind(comickSrc);
+      const origWeebSearch = weebSrc.search.bind(weebSrc);
+      const origWeebDetails = weebSrc.getMangaDetails.bind(weebSrc);
+      const origWeebChapters = weebSrc.getChapters.bind(weebSrc);
+      const origWeebPages = weebSrc.getChapterPages.bind(weebSrc);
+      const origPillSearch = pillSrc.search.bind(pillSrc);
+      const origDexSearch = dexSrc.search.bind(dexSrc);
+      const origFireSearch = fireSrc?.search?.bind(fireSrc);
+      const origBallSearch = ballSrc?.search?.bind(ballSrc);
+
+      try {
+        comickSrc.getMangaDetails = async () => {
+          throw new Error('HTTP 403 Cloudflare block');
+        };
+        comickSrc.getChapterPagesResult = async () => {
+          throw new Error('HTTP 502 Bad Gateway');
+        };
+        comickSrc.getChapters = async () => {
+          throw new Error('HTTP 502 Bad Gateway');
+        };
+
+        const recoveredCandidate = {
+          id: 'mr_weebcentral_01FAILOVER00000000000000',
+          title: 'Comick Recovery Chronicle',
+          altTitles: [],
+          coverUrl: 'https://example.com/cover.webp',
+          synopsis: 'Recovered via WeebCentral',
+          authors: ['Author Test'],
+          artists: ['Author Test'],
+          genres: ['Action'],
+          status: 'ongoing',
+          publicationInfo: { country: 'JP' },
+          availableLanguages: ['en'],
+          updatedAt: '2026-01-01T00:00:00Z',
+          sources: [{ sourceId: 'weebcentral', externalId: '01FAILOVER00000000000000', url: 'https://weebcentral.com/series/01FAILOVER00000000000000' }],
+          hasAvailableChapters: true,
+          availabilityStatus: 'available'
+        };
+
+        weebSrc.search = async () => ({ mangaList: [recoveredCandidate], total: 1, hasMore: false });
+        weebSrc.getMangaDetails = async () => recoveredCandidate;
+        weebSrc.getChapters = async () => ([
+          {
+            id: 'ch_weebcentral_01FAILOVER00000000000000_01CH420000000000000000000',
+            mangaId: recoveredCandidate.id,
+            chapterNumber: '42',
+            language: 'en',
+            sourceId: 'weebcentral',
+            externalChapterId: '01CH420000000000000000000'
+          }
+        ]);
+        weebSrc.getChapterPages = async () => ([
+          { pageNumber: 1, imageUrl: 'https://cdn.example.com/ch42/01.jpg' },
+          { pageNumber: 2, imageUrl: 'https://cdn.example.com/ch42/02.jpg' }
+        ]);
+        pillSrc.search = async () => ({ mangaList: [], total: 0, hasMore: false });
+        dexSrc.search = async () => ({ mangaList: [], total: 0, hasMore: false });
+        if (fireSrc) fireSrc.search = async () => ({ mangaList: [], total: 0, hasMore: false });
+        if (ballSrc) ballSrc.search = async () => ({ mangaList: [], total: 0, hasMore: false });
+
+        const recoveredDetails = await sourceRegistry.getMangaById('mr_comick_OPQ12345', {
+          titleHint: 'Comick Recovery Chronicle'
+        });
+        assert(
+          recoveredDetails?.id === 'mr_comick_OPQ12345' && recoveredDetails?.title === 'Comick Recovery Chronicle',
+          'SourceRegistry.getMangaById recupera obra do Comick com erro via failover cruzado usando titleHint'
+        );
+
+        const recoveredPages = await sourceRegistry.getChapterPages('ch_comick_OPQ12345_BADHID99', {
+          titleHint: 'Comick Recovery Chronicle',
+          chapterNumberHint: '42'
+        });
+        assert(
+          recoveredPages.length === 2 && recoveredPages[0].imageUrl.includes('ch42/01.jpg'),
+          'SourceRegistry.getChapterPages recupera paginas de capitulo Comick com erro via chapterNumberHint + titleHint'
+        );
+      } finally {
+        comickSrc.getMangaDetails = origComickDetails;
+        comickSrc.getChapterPagesResult = origComickPagesRes;
+        comickSrc.getChapters = origComickChapters;
+        weebSrc.search = origWeebSearch;
+        weebSrc.getMangaDetails = origWeebDetails;
+        weebSrc.getChapters = origWeebChapters;
+        weebSrc.getChapterPages = origWeebPages;
+        pillSrc.search = origPillSearch;
+        dexSrc.search = origDexSearch;
+        if (fireSrc && origFireSearch) fireSrc.search = origFireSearch;
+        if (ballSrc && origBallSearch) ballSrc.search = origBallSearch;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 28: Paridade de Idiomas em Todos os Provedores
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [28/30] Testando Paridade de Idiomas (pt-br, en, pt-br,en, all) nos Provedores...');
+    {
+      const { WeebCentralProvider } = await import('../sources/WeebCentralProvider.js');
+      const { MangaPillProvider } = await import('../sources/MangaPillProvider.js');
+      const { MangaDexProvider } = await import('../sources/MangaDexProvider.js');
+      const { MangaFireProvider } = await import('../sources/MangaFireProvider.js');
+      const { MangaBallProvider } = await import('../sources/MangaBallProvider.js');
+      const origFetch = globalThis.fetch;
+
+      try {
+        const weeb = new WeebCentralProvider();
+        const pill = new MangaPillProvider();
+        const dex = new MangaDexProvider();
+        const fire = new MangaFireProvider();
+        const ball = new MangaBallProvider();
+
+        // English-only providers must return empty on strict pt-br without hitting network
+        let networkHitForPtBr = false;
+        globalThis.fetch = async () => {
+          networkHitForPtBr = true;
+          return new Response('', { status: 200 });
+        };
+
+        const weebPtSearch = await weeb.search('berserk', { language: 'pt-br' });
+        const weebPtChs = await weeb.getChapters('01SERIES', 'pt-br');
+        const pillPtSearch = await pill.search('berserk', { language: 'pt-br' });
+        const pillPtChs = await pill.getChapters('1-berserk', 'pt-br');
+        assert(
+          !networkHitForPtBr &&
+          weebPtSearch.mangaList.length === 0 &&
+          weebPtChs.length === 0 &&
+          pillPtSearch.mangaList.length === 0 &&
+          pillPtChs.length === 0,
+          'WeebCentral e MangaPill bloqueiam busca e capitulos para "pt-br" estrito sem disparar rede'
+        );
+
+        // MangaDex chapter language queries
+        const dexFeedUrls = [];
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.includes('/manga/') && u.includes('/feed')) {
+            dexFeedUrls.push(u);
+            return new Response(JSON.stringify({
+              total: 2,
+              data: [
+                { id: 'aaaa-1111', attributes: { chapter: '1', translatedLanguage: 'pt-br', pages: 10 }, relationships: [] },
+                { id: 'bbbb-2222', attributes: { chapter: '2', translatedLanguage: 'en', pages: 12 }, relationships: [] }
+              ]
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          if (u.includes('mangafire.to')) {
+            return new Response(
+              `<ul>
+                <li data-number="1"><a href="/manga/test-slug/pt-1" title="Cap 1 PT">Cap 1</a></li>
+                <li data-number="2"><a href="/manga/test-slug/en-2" title="Ch 2 EN">Ch 2</a></li>
+                <li data-number="3"><a href="/manga/test-slug/es-3" title="Cap 3 ES">Cap 3</a></li>
+              </ul>`,
+              { status: 200, headers: { 'Content-Type': 'text/html' } }
+            );
+          }
+          if (u.includes('mangaball.net')) {
+            return new Response(JSON.stringify({
+              items: [
+                { id: 'b1', chapter_number: '1', language: 'pt-br', title: 'PT' },
+                { id: 'b2', chapter_number: '2', language: 'en', title: 'EN' },
+                { id: 'b3', chapter_number: '3', language: 'es', title: 'ES' }
+              ]
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+
+        await dex.getChapters('11111111-1111-4111-8111-111111111111', 'pt-br');
+        await dex.getChapters('11111111-1111-4111-8111-111111111111', 'all');
+        assert(
+          dexFeedUrls[0]?.includes('translatedLanguage[]=pt-br') &&
+          dexFeedUrls[0]?.includes('translatedLanguage[]=pt') &&
+          !dexFeedUrls[1]?.includes('translatedLanguage'),
+          'MangaDexProvider expande pt-br para pt-br+pt e omite filtro em "all"'
+        );
+
+        const firePt = await fire.getChapters('test-slug', 'pt-br');
+        const fireCombo = await fire.getChapters('test-slug', 'pt-br,en');
+        const fireAll = await fire.getChapters('test-slug', 'all');
+        assert(
+          firePt.length === 1 && firePt[0].language === 'pt-br' &&
+          fireCombo.length === 2 && fireCombo.every(c => c.language !== 'pt-br,en') &&
+          fireAll.length === 3,
+          'MangaFireProvider preserva idioma real do capitulo e filtra corretamente pt-br / pt-br,en / all'
+        );
+
+        const ballPt = await ball.getChapters('test-ball', 'pt-br');
+        const ballCombo = await ball.getChapters('test-ball', 'pt-br,en');
+        const ballAll = await ball.getChapters('test-ball', 'all');
+        assert(
+          ballPt.length === 1 && ballPt[0].language === 'pt-br' &&
+          ballCombo.length === 2 && ballCombo.every(c => c.language !== 'pt-br,en') &&
+          ballAll.length === 3,
+          'MangaBallProvider preserva idioma real do capitulo e filtra corretamente pt-br / pt-br,en / all'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 29: Parsing de Tipo no WeebCentral e Filtros (- Fantasia, Formato JP)
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [29/30] Testando WeebCentral Type Badge e Filtros de Busca (type=manga + excludedGenres=Fantasia)...');
+    {
+      const { WeebCentralProvider } = await import('../sources/WeebCentralProvider.js');
+      const { SourceRegistry } = await import('../sources/SourceRegistry.js');
+      const origFetch = globalThis.fetch;
+
+      try {
+        const weeb = new WeebCentralProvider();
+        const weebSearchUrls = [];
+        const sampleHtml = [
+          `<article class="bg-base-300 flex gap-4 p-4">
+            <a href="https://weebcentral.com/series/01KR0000000000000000000000/overgeared" class="line-clamp-1 link link-hover">Overgeared</a>
+            <div><strong>Type:</strong> <span>Manhwa</span></div>
+            <div><strong>Tag(s):</strong> <span>Action</span><span>Fantasy</span></div>
+          </article>`,
+          `<article class="bg-base-300 flex gap-4 p-4">
+            <a href="https://weebcentral.com/series/01CN0000000000000000000000/tales-of-demons" class="line-clamp-1 link link-hover">Tales of Demons and Gods</a>
+            <div><strong>Type:</strong> <span>Manhua</span></div>
+            <div><strong>Tag(s):</strong> <span>Action</span><span>Romance</span></div>
+          </article>`,
+          `<article class="bg-base-300 flex gap-4 p-4">
+            <a href="https://weebcentral.com/series/01JPROM0000000000000000000/horimiya" class="line-clamp-1 link link-hover">Horimiya</a>
+            <div><strong>Type:</strong> <span>Manga</span></div>
+            <div><strong>Tag(s):</strong> <span>Romance</span><span>Slice of Life</span></div>
+          </article>`,
+          `<article class="bg-base-300 flex gap-4 p-4">
+            <a href="https://weebcentral.com/series/01JPFAN0000000000000000000/magic-knight" class="line-clamp-1 link link-hover">Magic Knight Saga</a>
+            <div><strong>Type:</strong> <span>Manga</span></div>
+            <div><strong>Tag(s):</strong> <span>Romance</span><span>Magic</span></div>
+          </article>`
+        ].join('\n');
+
+        globalThis.fetch = async (url) => {
+          const u = String(url);
+          if (u.includes('anilist.co')) {
+            return new Response(JSON.stringify({ data: { Page: { media: [] } } }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+          weebSearchUrls.push(u);
+          return new Response(sampleHtml, { status: 200, headers: { 'Content-Type': 'text/html' } });
+        };
+
+        const unfiltered = await weeb.search('', { language: 'en', genre: 'Romance' });
+        const overgeared = unfiltered.mangaList.find(m => m.title === 'Overgeared');
+        const tales = unfiltered.mangaList.find(m => m.title === 'Tales of Demons and Gods');
+        const horimiya = unfiltered.mangaList.find(m => m.title === 'Horimiya');
+        assert(
+          overgeared?.publicationInfo?.country === 'KR' &&
+          tales?.publicationInfo?.country === 'CN' &&
+          horimiya?.publicationInfo?.country === 'JP',
+          'WeebCentralProvider detecta Manhwa (KR), Manhua (CN) e Manga (JP) via badge Type:'
+        );
+
+        const filteredRegistry = new SourceRegistry();
+        // Keep only WeebCentral active with mocked fetch for deterministic filter validation
+        for (const src of filteredRegistry.getSources()) {
+          if (src.id !== 'weebcentral') {
+            filteredRegistry.getSource(src.id).search = async () => ({ mangaList: [], total: 0, hasMore: false });
+          }
+        }
+        filteredRegistry.getSource('weebcentral').search = (q, opts) => weeb.search(q, opts);
+
+        const strictRes = await filteredRegistry.search('', {
+          enabledSources: ['weebcentral'],
+          language: 'en',
+          type: 'manga',
+          genres: ['Romance'],
+          excludedGenres: ['Fantasia'],
+          onlyAvailable: false
+        });
+        assert(
+          weebSearchUrls.some(u => u.includes('included_type=Manga') && u.includes('excluded_tag=Fantasy') && u.includes('excluded_tag=Magic')) &&
+          strictRes.results.length === 1 &&
+          strictRes.results[0].title === 'Horimiya',
+          'SourceRegistry + WeebCentral exclui KR/CN e obras de Fantasia/Magic quando type=manga & excludedGenres=["Fantasia"]'
+        );
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 30: Detecção de Duplicados e Persistência "Não é duplicado"
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [30/30] Testando Falsos Positivos de Duplicados, Dismiss e Backup...');
+    {
+      const {
+        matchFavoritesPair,
+        detectDuplicateFavoriteGroups,
+        findSuspectedCandidateIds
+      } = await import('../../src/components/DuplicateFavoritesModal.tsx');
+      const { HistoryService, makeDuplicatePairKey } = await import('../../src/services/history.js');
+
+      const makeFav = (mangaId, title, altTitles = []) => ({
+        mangaId,
+        title,
+        altTitles,
+        coverUrl: 'https://example.com/c.jpg',
+        addedAt: Date.now()
+      });
+
+      const imouto = makeFav('mr_comick_AAAA1111', 'Imouto no Tomodachi ga Nani Kangaeteru no ka Wakaranai');
+      const ane = makeFav('mr_mangadex_bbbb-2222', 'Ane no Tomodachi');
+      const pairCheck = matchFavoritesPair(imouto, ane);
+      assert(
+        pairCheck.matched === false,
+        'matchFavoritesPair NAO junta "Imouto no Tomodachi..." com "Ane no Tomodachi"'
+      );
+
+      const beastLong = makeFav('mr_comick_BBBB1111', 'Yuusha Party wo Tsuihou Sareta Beast Tamer, Saikyoushu no Nekomimi Shoujo to Deau');
+      const beastShort = makeFav('mr_mangapill_555-beast-tamer', 'Beast Tamer');
+      const beastGroups = detectDuplicateFavoriteGroups([imouto, ane, beastLong, beastShort]);
+      assert(
+        beastGroups.length === 1 &&
+        beastGroups[0].items.length === 2 &&
+        beastGroups[0].items.some(i => i.mangaId === beastLong.mangaId) &&
+        beastGroups[0].items.some(i => i.mangaId === beastShort.mangaId),
+        'detectDuplicateFavoriteGroups continua agrupando obras legitimas (Beast Tamer) sem falsos positivos'
+      );
+
+      const suspectedWithoutMatch = findSuspectedCandidateIds([imouto, ane], new Set());
+      assert(
+        suspectedWithoutMatch.length === 0,
+        'findSuspectedCandidateIds ignora pares com qualificadores familiares conflitantes (Imouto vs Ane)'
+      );
+
+      // Dismiss & Backup roundtrip with isolated localStorage shim
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      const memStore = new Map();
+      const storageMock = {
+        getItem: (k) => (memStore.has(k) ? memStore.get(k) : null),
+        setItem: (k, v) => { memStore.set(String(k), String(v)); },
+        removeItem: (k) => { memStore.delete(String(k)); },
+        clear: () => { memStore.clear(); }
+      };
+      globalThis.localStorage = storageMock;
+      globalThis.window = {
+        localStorage: storageMock,
+        addEventListener: () => {},
+        removeEventListener: () => {}
+      };
+
+      try {
+        HistoryService.clearDismissedDuplicatePairs();
+        HistoryService.dismissDuplicateGroup([beastLong.mangaId, beastShort.mangaId]);
+        const dismissed = HistoryService.getDismissedDuplicatePairs();
+        const expectedKey = makeDuplicatePairKey(beastLong.mangaId, beastShort.mangaId);
+        assert(
+          dismissed.includes(expectedKey) &&
+          detectDuplicateFavoriteGroups([beastLong, beastShort], undefined, dismissed).length === 0,
+          'HistoryService.dismissDuplicateGroup suprime grupo ignorado em detectDuplicateFavoriteGroups'
+        );
+
+        const backup = HistoryService.createBackup();
+        assert(
+          Array.isArray(backup.dismissedDuplicatePairs) && backup.dismissedDuplicatePairs.includes(expectedKey),
+          'HistoryService.createBackup inclui dismissedDuplicatePairs'
+        );
+
+        HistoryService.clearDismissedDuplicatePairs();
+        assert(
+          detectDuplicateFavoriteGroups([beastLong, beastShort], undefined, HistoryService.getDismissedDuplicatePairs()).length === 1,
+          'HistoryService.clearDismissedDuplicatePairs restaura deteccao de duplicados'
+        );
+
+        HistoryService.importBackup(backup);
+        assert(
+          HistoryService.getDismissedDuplicatePairs().includes(expectedKey),
+          'HistoryService.importBackup restaura pares "Nao e duplicado"'
+        );
+      } finally {
+        HistoryService.clearDismissedDuplicatePairs();
+        globalThis.localStorage = origLocalStorage;
+        globalThis.window = origWindow;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 31: UpdateTrackerService Debounce/Throttle, Views, Idle & Inatividade
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [31/31] Testando UpdateTrackerService (Debounce, Throttle, Views, Idle e Parada por Inatividade)...');
+    {
+      const { UpdateTrackerService } = await import('../../src/services/updateTracker.js');
+      const origWindow = globalThis.window;
+      const origDocument = globalThis.document;
+      const origLocalStorage = globalThis.localStorage;
+      const origCheckUpdates = UpdateTrackerService.checkUpdates;
+
+      const memStore = new Map();
+      const storageMock = {
+        getItem: (k) => (memStore.has(k) ? memStore.get(k) : null),
+        setItem: (k, v) => { memStore.set(String(k), String(v)); },
+        removeItem: (k) => { memStore.delete(String(k)); },
+        clear: () => { memStore.clear(); }
+      };
+
+      const docListeners = new Map();
+      let visibilityState = 'visible';
+      const docMock = {
+        get visibilityState() { return visibilityState; },
+        addEventListener: (evt, fn) => {
+          const arr = docListeners.get(evt) || [];
+          arr.push(fn);
+          docListeners.set(evt, arr);
+        },
+        removeEventListener: (evt, fn) => {
+          const arr = docListeners.get(evt) || [];
+          docListeners.set(evt, arr.filter(f => f !== fn));
+        },
+        dispatch: (evt) => {
+          (docListeners.get(evt) || []).forEach(fn => fn());
+        }
+      };
+
+      globalThis.localStorage = storageMock;
+      globalThis.window = {
+        localStorage: storageMock,
+        addEventListener: () => {},
+        removeEventListener: () => {}
+      };
+      globalThis.document = docMock;
+
+      let cleanupRadar = () => {};
+      try {
+        UpdateTrackerService.resetRadarStateForTests();
+
+        let bgCheckCount = 0;
+        UpdateTrackerService.checkUpdates = async (force = false) => {
+          if (!force) bgCheckCount++;
+          return { count: 0, updates: {} };
+        };
+
+        // Configure fast deterministic timings
+        UpdateTrackerService.configureRadarTiming({
+          debounceMs: 35,
+          idleSettleMs: 35,
+          minThrottleMs: 250,
+          inactivityTimeoutMs: 110,
+          pollIntervalMs: 500
+        });
+
+        UpdateTrackerService.setAutoRadarEnabled(true);
+        UpdateTrackerService.setActiveView('favorites');
+        cleanupRadar = UpdateTrackerService.initBackgroundRadar();
+
+        // 1) Non-eligible view ('reader') must stop background polling & reject checks
+        UpdateTrackerService.setActiveView('reader');
+        assert(
+          UpdateTrackerService.isBackgroundPollingActive() === false &&
+          UpdateTrackerService.requestBackgroundCheck('navigation') === false,
+          'UpdateTrackerService para polling e bloqueia check automatico fora de views elegiveis (reader)'
+        );
+
+        // 2) Eligible view ('updates') + rapid burst / high-frequency updates coalesce into a single debounced check
+        UpdateTrackerService.setActiveView('updates');
+        UpdateTrackerService.requestBackgroundCheck('navigation');
+        UpdateTrackerService.requestBackgroundCheck('idle');
+        UpdateTrackerService.requestBackgroundCheck('navigation');
+        assert(
+          bgCheckCount === 0 && UpdateTrackerService.isBackgroundPollingActive() === true,
+          'UpdateTrackerService faz debounce e nao dispara imediatamente durante interacoes/navegacao em rajada'
+        );
+
+        await new Promise(r => setTimeout(r, 90));
+        assert(
+          bgCheckCount === 1,
+          'UpdateTrackerService dispara exatamente 1 check coalescido apos o usuario ficar ocioso'
+        );
+
+        // 3) Throttle cooldown prevents back-to-back background checks
+        const throttledAccepted = UpdateTrackerService.requestBackgroundCheck('navigation');
+        assert(
+          throttledAccepted === false && bgCheckCount === 1,
+          'UpdateTrackerService aplica throttle e ignora novos disparos dentro da janela minima'
+        );
+
+        // 4) Inactivity timeout stops background polling automatically
+        await new Promise(r => setTimeout(r, 150));
+        assert(
+          UpdateTrackerService.isUserInteracting() === false &&
+          UpdateTrackerService.isBackgroundPollingActive() === false,
+          'UpdateTrackerService interrompe polling automatico quando usuario fica sem interagir'
+        );
+
+        // 5) Resuming user interaction restarts polling cleanly & visibility hidden stops it again
+        UpdateTrackerService.recordUserInteraction(Date.now());
+        assert(
+          UpdateTrackerService.isUserInteracting() === true &&
+          UpdateTrackerService.isBackgroundPollingActive() === true,
+          'UpdateTrackerService retoma polling ao detectar nova interacao do usuario em view elegivel'
+        );
+
+        visibilityState = 'hidden';
+        docMock.dispatch('visibilitychange');
+        assert(
+          UpdateTrackerService.isBackgroundPollingActive() === false,
+          'UpdateTrackerService interrompe polling imediatamente quando a aba perde foco (hidden)'
+        );
+      } finally {
+        cleanupRadar();
+        UpdateTrackerService.checkUpdates = origCheckUpdates;
+        UpdateTrackerService.resetRadarStateForTests();
+        globalThis.localStorage = origLocalStorage;
+        globalThis.window = origWindow;
+        globalThis.document = origDocument;
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // SEÇÃO 32: Proteção contra Tempestade de HTTP 403 no ComickProvider & Resolve-Titles
+    // -----------------------------------------------------------------------
+    console.log('\n📋 [32/32] Testando Short-Circuit de Cooldown 403 no ComickProvider & /api/library/resolve-titles...');
+    {
+      const { ComickProvider } = await import('../sources/ComickProvider.js');
+      const { sourceRegistry } = await import('../sources/SourceRegistry.js');
+      const origFetch = globalThis.fetch;
+
+      try {
+        const isolatedComick = new ComickProvider();
+        let comickFetchAttempts = 0;
+
+        globalThis.fetch = async (url, init) => {
+          const u = String(url);
+          if (u.includes('api.comick.dev')) {
+            comickFetchAttempts++;
+            return new Response('Forbidden', { status: 403 });
+          }
+          if (u.includes('anilist.co')) {
+            return new Response(JSON.stringify({ data: { Page: { media: [] }, Media: null } }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+          return origFetch(url, init);
+        };
+
+        const firstRes = await isolatedComick.getMangaDetails('4VhV4Nl1');
+        const attemptsAfterFirst = comickFetchAttempts;
+        const secondRes = await isolatedComick.getMangaDetails('3ZmDSZqi');
+        const thirdRes = await isolatedComick.getMangaDetails('0GMpVmks');
+
+        assert(
+          firstRes === null &&
+          secondRes === null &&
+          thirdRes === null &&
+          attemptsAfterFirst === 1 &&
+          comickFetchAttempts === 1,
+          'ComickProvider nao faz retries em HTTP 403 e aplica short-circuit de cooldown em chamadas subsequentes (1 fetch total)'
+        );
+
+        // Ensure SourceRegistry.getMangaById with skipFailover handles failing Comick source without throwing
+        const comickRegSrc = sourceRegistry.getSource('comick');
+        const origRegDetails = comickRegSrc.getMangaDetails.bind(comickRegSrc);
+        let failoverSearchTriggered = false;
+        const weebRegSrc = sourceRegistry.getSource('weebcentral');
+        const origWeebSearch = weebRegSrc.search.bind(weebRegSrc);
+
+        try {
+          comickRegSrc.getMangaDetails = async () => null;
+          weebRegSrc.search = async () => {
+            failoverSearchTriggered = true;
+            return { mangaList: [], total: 0, hasMore: false };
+          };
+
+          const resolveRes = await fetch(`${BASE_URL}/api/library/resolve-titles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              items: [
+                { mangaId: 'mr_comick_4VhV4Nl1', title: 'Test Blocked Comick Title 1' },
+                { mangaId: 'mr_comick_3ZmDSZqi', title: 'Test Blocked Comick Title 2' }
+              ]
+            })
+          });
+          assert(
+            resolveRes.status === 200 && !failoverSearchTriggered,
+            'POST /api/library/resolve-titles retorna HTTP 200 sem tempestade de failover quando Comick esta em cooldown 403'
+          );
+        } finally {
+          comickRegSrc.getMangaDetails = origRegDetails;
+          weebRegSrc.search = origWeebSearch;
+        }
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    }
+
   } catch (err) {
     console.error('Erro catastrófico na execução dos testes:', err);
     failedTests++;

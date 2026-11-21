@@ -9,11 +9,13 @@ import {
   Search,
   Check,
   Sparkles,
-  BookOpen
+  BookOpen,
+  EyeOff,
+  RotateCcw
 } from 'lucide-react';
 import { Chapter, FavoriteManga, Manga } from '../types/manga.js';
 import { MangaApi } from '../services/api.js';
-import { HistoryService } from '../services/history.js';
+import { HistoryService, makeDuplicatePairKey } from '../services/history.js';
 import { UpdateTrackerService } from '../services/updateTracker.js';
 import { extractFavoriteSourceId } from './BatchMigrationModal.js';
 import { normalizeLibraryTitle, normalizeSpacedLibraryTitle } from '../utils/libraryFilters.js';
@@ -53,6 +55,20 @@ const STOP_STEMS = new Set([
   'ore', 'kimi', 'tachi', 'kara', 'made', 'yori', 'dake', 'nado', 'tame', 'nara'
 ]);
 
+const CONTAINMENT_NOISE_WORDS = new Set([
+  'the', 'and', 'of', 'for', 'with', 'from', 'into', 'in', 'on', 'at', 'to', 'by', 'as', 'an', 'a', 'is',
+  'no', 'wa', 'ga', 'wo', 'o', 'ni', 'de', 'mo', 'ka', 'ya', 'na', 'e', 'he',
+  'kara', 'made', 'yori', 'dake', 'nado', 'tame', 'nara', 'koto', 'mono', 'toki', 'nani', 'nanka',
+  'san', 'kun', 'chan', 'sama', 'desu', 'sore', 'kono', 'ano', 'boku', 'watashi', 'ore', 'kimi', 'tachi',
+  'tomodachi', 'koibito', 'kanojo', 'kareshi', 'sensei', 'senpai', 'kouhai', 'gakkou', 'isekai',
+  'imouto', 'ane', 'ani', 'otouto', 'onee', 'onii', 'little', 'younger', 'older', 'elder',
+  'manga', 'webtoon', 'comic', 'story', 'tales', 'world', 'life', 'days', 'chronicles',
+  'part', 'season', 'volume', 'official', 'colored'
+]);
+
+const YOUNGER_QUALIFIERS = new Set(['imouto', 'imoutosan', 'imoutochan', 'otouto', 'little', 'younger']);
+const OLDER_QUALIFIERS = new Set(['ane', 'aneki', 'onee', 'oneesan', 'oneechan', 'ani', 'aniki', 'onii', 'oniisan', 'oniichan', 'older', 'elder']);
+
 const SOURCE_PRIORITY: Record<string, number> = {
   comick: 8,
   mangadex: 7,
@@ -76,12 +92,48 @@ function getAllTitles(fav: FavoriteManga, enriched?: EnrichedFavMeta): string[] 
   );
 }
 
+function extractQualifierBuckets(titles: string[]): { hasYounger: boolean; hasOlder: boolean } {
+  let hasYounger = false;
+  let hasOlder = false;
+  for (const t of titles) {
+    const words = normalizeSpacedWords(t).split(' ').filter(Boolean);
+    for (const w of words) {
+      if (YOUNGER_QUALIFIERS.has(w)) hasYounger = true;
+      if (OLDER_QUALIFIERS.has(w)) hasOlder = true;
+    }
+  }
+  return { hasYounger, hasOlder };
+}
+
+function hasConflictingTitleQualifiers(titlesA: string[], titlesB: string[]): boolean {
+  const qa = extractQualifierBuckets(titlesA);
+  const qb = extractQualifierBuckets(titlesB);
+  // Conflicting if one clearly designates younger sibling and the other designates older sibling without also having it
+  if (qa.hasYounger && !qa.hasOlder && qb.hasOlder && !qb.hasYounger) return true;
+  if (qa.hasOlder && !qa.hasYounger && qb.hasYounger && !qb.hasOlder) return true;
+  return false;
+}
+
 export function matchFavoritesPair(
   a: FavoriteManga,
   b: FavoriteManga,
-  enrichedMap?: Record<string, EnrichedFavMeta>
+  enrichedMap?: Record<string, EnrichedFavMeta>,
+  dismissedPairs?: string[]
 ): { matched: boolean; reason: DuplicateGroup['reason']; reasonLabel: string } {
   if (a.mangaId === b.mangaId) {
+    return { matched: false, reason: 'exact_title', reasonLabel: '' };
+  }
+
+  if (dismissedPairs && dismissedPairs.length > 0) {
+    const dismissedSet = new Set(dismissedPairs);
+    if (dismissedSet.has(makeDuplicatePairKey(a.mangaId, b.mangaId))) {
+      return { matched: false, reason: 'exact_title', reasonLabel: '' };
+    }
+  }
+
+  const titlesA = getAllTitles(a, enrichedMap?.[a.mangaId]);
+  const titlesB = getAllTitles(b, enrichedMap?.[b.mangaId]);
+  if (hasConflictingTitleQualifiers(titlesA, titlesB)) {
     return { matched: false, reason: 'exact_title', reasonLabel: '' };
   }
 
@@ -132,9 +184,9 @@ export function matchFavoritesPair(
   }
 
   // Romaji particle tolerance
-  const romajiLoose = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
-  const looseA = [normA, ...altsA].filter(s => s.length >= 12).map(romajiLoose);
-  const looseB = [normB, ...altsB].filter(s => s.length >= 12).map(romajiLoose);
+  const romajiLooseLocal = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
+  const looseA = [normA, ...altsA].filter(s => s.length >= 12).map(romajiLooseLocal);
+  const looseB = [normB, ...altsB].filter(s => s.length >= 12).map(romajiLooseLocal);
   for (const r of looseA) {
     if (looseB.includes(r)) {
       return {
@@ -146,8 +198,6 @@ export function matchFavoritesPair(
   }
 
   // Word-boundary multi-word containment (e.g. "Beast Tamer" inside "Yuusha Party wo Tsuihou Sareta Beast Tamer, ...")
-  const titlesA = getAllTitles(a, enrichedMap?.[a.mangaId]);
-  const titlesB = getAllTitles(b, enrichedMap?.[b.mangaId]);
   for (const tA of titlesA) {
     for (const tB of titlesB) {
       const sA = normalizeSpacedWords(tA);
@@ -157,7 +207,8 @@ export function matchFavoritesPair(
       const longer = sA.length <= sB.length ? sB : sA;
       const shorterCompact = shorter.replace(/\s+/g, '');
       const shorterWords = shorter.split(' ').filter(Boolean);
-      if (shorterWords.length >= 2 && shorterCompact.length >= 9) {
+      const meaningfulWords = shorterWords.filter(w => !CONTAINMENT_NOISE_WORDS.has(w) && w.length >= 2);
+      if (shorterWords.length >= 2 && meaningfulWords.length >= 2 && shorterCompact.length >= 9) {
         if (` ${longer} `.includes(` ${shorter} `)) {
           return {
             matched: true,
@@ -180,9 +231,11 @@ function getDistinctiveTokens(title: string): string[] {
 
 export function findSuspectedCandidateIds(
   favorites: FavoriteManga[],
-  alreadyGroupedIds: Set<string>
+  alreadyGroupedIds: Set<string>,
+  dismissedPairs?: string[]
 ): string[] {
   const tokenOwners = new Map<string, FavoriteManga[]>();
+  const dismissedSet = new Set(dismissedPairs || []);
 
   for (const fav of favorites) {
     const tokens = getDistinctiveTokens(fav.title);
@@ -196,13 +249,17 @@ export function findSuspectedCandidateIds(
   const candidateIds = new Set<string>();
   tokenOwners.forEach((owners) => {
     if (owners.length >= 2 && owners.length <= 5) {
-      // At least two entries from different sources sharing a distinctive token (e.g. "komi")
-      const distinctSources = new Set(owners.map(o => extractFavoriteSourceId(o)));
-      if (distinctSources.size >= 2) {
-        for (const o of owners) {
-          if (!alreadyGroupedIds.has(o.mangaId)) {
-            candidateIds.add(o.mangaId);
-          }
+      // Require at least one non-dismissed pair across different sources without conflicting qualifiers
+      for (let i = 0; i < owners.length; i++) {
+        for (let j = i + 1; j < owners.length; j++) {
+          const a = owners[i];
+          const b = owners[j];
+          if (a.mangaId === b.mangaId) continue;
+          if (extractFavoriteSourceId(a) === extractFavoriteSourceId(b)) continue;
+          if (dismissedSet.has(makeDuplicatePairKey(a.mangaId, b.mangaId))) continue;
+          if (hasConflictingTitleQualifiers(getAllTitles(a), getAllTitles(b))) continue;
+          if (!alreadyGroupedIds.has(a.mangaId)) candidateIds.add(a.mangaId);
+          if (!alreadyGroupedIds.has(b.mangaId)) candidateIds.add(b.mangaId);
         }
       }
     }
@@ -247,10 +304,13 @@ const romajiLoose = (s: string) => s.replace(/wo/g, 'o').replace(/ou/g, 'o');
 
 export function detectDuplicateFavoriteGroups(
   favorites: FavoriteManga[],
-  enrichedMap?: Record<string, EnrichedFavMeta>
+  enrichedMap?: Record<string, EnrichedFavMeta>,
+  dismissedPairs?: string[]
 ): DuplicateGroup[] {
   const n = favorites.length;
   if (n < 2) return [];
+
+  const dismissedSet = new Set(dismissedPairs || []);
 
   const parent = new Int32Array(n);
   for (let i = 0; i < n; i++) parent[i] = i;
@@ -264,7 +324,39 @@ export function detectDuplicateFavoriteGroups(
     return i;
   };
 
+  interface PrecomputedSpaced {
+    spaced: string;
+    padded: string;
+    compactLen: number;
+    words: string[];
+    meaningfulWords: string[];
+  }
+
+  interface PrecomputedFav {
+    normPrimary: string;
+    altNorms: string[];
+    looseNorms: string[];
+    hasEnriched: boolean;
+    spacedEntries: PrecomputedSpaced[];
+    qualifiers: { hasYounger: boolean; hasOlder: boolean };
+  }
+
+  const precomputed: PrecomputedFav[] = new Array(n);
+
+  const canMergeIndices = (i: number, j: number): boolean => {
+    const idA = favorites[i].mangaId;
+    const idB = favorites[j].mangaId;
+    if (idA === idB) return false;
+    if (dismissedSet.has(makeDuplicatePairKey(idA, idB))) return false;
+    const qa = precomputed[i].qualifiers;
+    const qb = precomputed[j].qualifiers;
+    if (qa.hasYounger && !qa.hasOlder && qb.hasOlder && !qb.hasYounger) return false;
+    if (qa.hasOlder && !qa.hasYounger && qb.hasYounger && !qb.hasOlder) return false;
+    return true;
+  };
+
   const union = (i: number, j: number, reason: DuplicateGroup['reason'], reasonLabel: string) => {
+    if (!canMergeIndices(i, j)) return;
     const ri = find(i);
     const rj = find(j);
     if (ri !== rj) {
@@ -275,25 +367,9 @@ export function detectDuplicateFavoriteGroups(
     }
   };
 
-  interface PrecomputedSpaced {
-    spaced: string;
-    padded: string;
-    compactLen: number;
-    words: string[];
-  }
-
-  interface PrecomputedFav {
-    normPrimary: string;
-    altNorms: string[];
-    looseNorms: string[];
-    hasEnriched: boolean;
-    spacedEntries: PrecomputedSpaced[];
-  }
-
-  const precomputed: PrecomputedFav[] = new Array(n);
-  const exactPrimaryOwner = new Map<string, number>();
+  const exactPrimaryOwners = new Map<string, number[]>();
   const altOwners = new Map<string, number[]>();
-  const looseOwner = new Map<string, number>();
+  const looseOwners = new Map<string, number[]>();
   const wordIndex = new Map<string, number[]>();
 
   for (let i = 0; i < n; i++) {
@@ -334,12 +410,14 @@ export function detectDuplicateFavoriteGroups(
       if (!spaced || seenSpaced.has(spaced)) continue;
       seenSpaced.add(spaced);
       const words = spaced.split(' ').filter(Boolean);
+      const meaningfulWords = words.filter(w => !CONTAINMENT_NOISE_WORDS.has(w) && w.length >= 2);
       const compactLen = spaced.replace(/\s+/g, '').length;
       spacedEntries.push({
         spaced,
         padded: ` ${spaced} `,
         compactLen,
-        words
+        words,
+        meaningfulWords
       });
       for (const w of words) {
         itemWords.add(w);
@@ -361,18 +439,20 @@ export function detectDuplicateFavoriteGroups(
       altNorms,
       looseNorms,
       hasEnriched,
-      spacedEntries
+      spacedEntries,
+      qualifiers: extractQualifierBuckets(rawTitles)
     };
 
     // Pass 1: Exact primary title index
     if (normPrimary.length >= 3) {
-      const owner = exactPrimaryOwner.get(normPrimary);
-      if (owner !== undefined) {
-        if (favorites[owner].mangaId !== fav.mangaId) {
+      const owners = exactPrimaryOwners.get(normPrimary);
+      if (owners) {
+        for (const owner of owners) {
           union(owner, i, 'exact_title', 'Título idêntico em fontes diferentes');
         }
+        owners.push(i);
       } else {
-        exactPrimaryOwner.set(normPrimary, i);
+        exactPrimaryOwners.set(normPrimary, [i]);
       }
     }
 
@@ -395,8 +475,7 @@ export function detectDuplicateFavoriteGroups(
       const matchingAltOwners = altOwners.get(p.normPrimary);
       if (matchingAltOwners) {
         for (const j of matchingAltOwners) {
-          if (j === i || favorites[j].mangaId === favorites[i].mangaId) continue;
-          if (find(i) === find(j)) continue;
+          if (j === i || find(i) === find(j)) continue;
           const verified = p.hasEnriched || precomputed[j].hasEnriched;
           union(
             j,
@@ -411,31 +490,35 @@ export function detectDuplicateFavoriteGroups(
 
   altOwners.forEach((owners, alt) => {
     if (alt.length < 5 || owners.length < 2) return;
-    const first = owners[0];
-    for (let k = 1; k < owners.length; k++) {
-      const idx = owners[k];
-      if (favorites[first].mangaId === favorites[idx].mangaId) continue;
-      if (find(first) === find(idx)) continue;
-      const verified = precomputed[first].hasEnriched || precomputed[idx].hasEnriched;
-      union(
-        first,
-        idx,
-        verified ? 'verified_source' : 'alt_title',
-        'Mesma obra por título alternativo em comum'
-      );
+    for (let aIdx = 0; aIdx < owners.length; aIdx++) {
+      for (let bIdx = aIdx + 1; bIdx < owners.length; bIdx++) {
+        const first = owners[aIdx];
+        const idx = owners[bIdx];
+        if (find(first) === find(idx)) continue;
+        const verified = precomputed[first].hasEnriched || precomputed[idx].hasEnriched;
+        union(
+          first,
+          idx,
+          verified ? 'verified_source' : 'alt_title',
+          'Mesma obra por título alternativo em comum'
+        );
+      }
     }
   });
 
   // Pass 3: Romaji particle tolerance (O(N))
   for (let i = 0; i < n; i++) {
     for (const r of precomputed[i].looseNorms) {
-      const owner = looseOwner.get(r);
-      if (owner !== undefined) {
-        if (favorites[owner].mangaId !== favorites[i].mangaId && find(owner) !== find(i)) {
-          union(owner, i, 'alt_title', 'Título idêntico (variação de romanização)');
+      const owners = looseOwners.get(r);
+      if (owners) {
+        for (const owner of owners) {
+          if (find(owner) !== find(i)) {
+            union(owner, i, 'alt_title', 'Título idêntico (variação de romanização)');
+          }
         }
+        owners.push(i);
       } else {
-        looseOwner.set(r, i);
+        looseOwners.set(r, [i]);
       }
     }
   }
@@ -444,10 +527,10 @@ export function detectDuplicateFavoriteGroups(
   for (let i = 0; i < n; i++) {
     const p = precomputed[i];
     for (const entry of p.spacedEntries) {
-      if (entry.words.length < 2 || entry.compactLen < 9) continue;
+      if (entry.words.length < 2 || entry.meaningfulWords.length < 2 || entry.compactLen < 9) continue;
 
       let rarestList: number[] | undefined;
-      for (const w of entry.words) {
+      for (const w of entry.meaningfulWords) {
         const list = wordIndex.get(w);
         if (!list) {
           rarestList = undefined;
@@ -460,8 +543,8 @@ export function detectDuplicateFavoriteGroups(
       if (!rarestList || rarestList.length < 2) continue;
 
       for (const j of rarestList) {
-        if (j === i || favorites[j].mangaId === favorites[i].mangaId) continue;
-        if (find(i) === find(j)) continue;
+        if (j === i || find(i) === find(j)) continue;
+        if (!canMergeIndices(i, j)) continue;
         const targetEntries = precomputed[j].spacedEntries;
         for (const target of targetEntries) {
           if (target.spaced.length >= entry.spaced.length && target.padded.includes(entry.padded)) {
@@ -531,13 +614,20 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
   const [isMerging, setIsMerging] = useState(false);
   const [mergeResult, setMergeResult] = useState<{ mergedGroups: number; removedEntries: number } | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  const [dismissedPairs, setDismissedPairs] = useState<string[]>(() => HistoryService.getDismissedDuplicatePairs());
 
   const runTokenRef = useRef(0);
   const autoCheckedSuspectsRef = useRef(false);
 
+  useEffect(() => {
+    const syncDismissed = () => setDismissedPairs(HistoryService.getDismissedDuplicatePairs());
+    syncDismissed();
+    return HistoryService.subscribe(syncDismissed, ['duplicates', 'favorites']);
+  }, []);
+
   const groups = useMemo(
-    () => (isOpen ? detectDuplicateFavoriteGroups(favorites, enrichedMap) : []),
-    [isOpen, favorites, enrichedMap]
+    () => (isOpen ? detectDuplicateFavoriteGroups(favorites, enrichedMap, dismissedPairs) : []),
+    [isOpen, favorites, enrichedMap, dismissedPairs]
   );
 
   // Keep selected primary & checkbox map synced with discovered groups
@@ -602,7 +692,13 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
         for (const fav of chunk) {
           if (runTokenRef.current !== token) return;
           try {
-            const details: Manga = await fetchWithTimeout(MangaApi.getMangaDetails(fav.mangaId), 4500);
+            const details: Manga = await fetchWithTimeout(
+              MangaApi.getMangaDetails(fav.mangaId, {
+                title: fav.title,
+                altTitles: fav.altTitles
+              }),
+              4500
+            );
             if (runTokenRef.current !== token) return;
             const alts = Array.isArray(details.altTitles) ? details.altTitles : [];
             setEnrichedMap(prev => ({
@@ -833,16 +929,31 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={handleDeepScan}
-              disabled={isScanningSources || isMerging || favorites.length < 2}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-semibold transition-colors disabled:opacity-40 cursor-pointer shrink-0"
-              title="Consulta títulos alternativos nas fontes originais para encontrar duplicatas com nomes completamente diferentes (ex: japonês vs inglês)"
-            >
-              <Search className="h-3.5 w-3.5 text-rose-400" />
-              <span>{isDeepScanned ? 'Reverificar Fontes' : 'Varredura Profunda nas Fontes'}</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {dismissedPairs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => HistoryService.clearDismissedDuplicatePairs()}
+                  disabled={isMerging}
+                  className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-300 hover:text-white text-[11px] font-medium transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+                  title="Voltar a exibir pares marcados anteriormente como 'Não é duplicado'"
+                >
+                  <RotateCcw className="h-3 w-3 text-amber-400" />
+                  <span>Restaurar ignorados ({dismissedPairs.length})</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleDeepScan}
+                disabled={isScanningSources || isMerging || favorites.length < 2}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-[11px] font-semibold transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+                title="Consulta títulos alternativos nas fontes originais para encontrar duplicatas com nomes completamente diferentes (ex: japonês vs inglês)"
+              >
+                <Search className="h-3.5 w-3.5 text-rose-400" />
+                <span>{isDeepScanned ? 'Reverificar Fontes' : 'Varredura Profunda nas Fontes'}</span>
+              </button>
+            </div>
           </div>
 
           {mergeError && (
@@ -891,7 +1002,7 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
                         : 'bg-zinc-950/30 border-zinc-800/60 opacity-60'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <label className="flex items-center gap-2 cursor-pointer select-none">
                         <input
                           type="checkbox"
@@ -906,9 +1017,23 @@ export const DuplicateFavoritesModal: React.FC<DuplicateFavoritesModalProps> = (
                           {group.reasonLabel}
                         </span>
                       </label>
-                      <span className="text-[10px] font-mono text-zinc-500">
-                        {group.items.length} entradas
-                      </span>
+                      <div className="flex items-center gap-2 ml-auto">
+                        <button
+                          type="button"
+                          disabled={isMerging}
+                          onClick={() => {
+                            HistoryService.dismissDuplicateGroup(group.items.map(it => it.mangaId));
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/80 text-zinc-300 hover:text-white text-[10px] font-medium transition-colors cursor-pointer disabled:opacity-40"
+                          title="Marcar estas obras como diferentes para não sugerir mesclagem novamente"
+                        >
+                          <EyeOff className="h-3 w-3 text-zinc-400" />
+                          <span>Não é duplicado</span>
+                        </button>
+                        <span className="text-[10px] font-mono text-zinc-500">
+                          {group.items.length} entradas
+                        </span>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

@@ -657,6 +657,12 @@ export function getMangaType(manga: Manga): 'manga' | 'manhwa' | 'manhua' | 'com
     country === 'japão' ||
     country === 'japan'
   ) {
+    if (genres.includes('webtoon') || genres.some(g => g.includes('manhwa'))) {
+      return 'manhwa';
+    }
+    if (genres.some(g => g.includes('manhua'))) {
+      return 'manhua';
+    }
     return 'manga';
   }
 
@@ -895,6 +901,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const searchDirtyRef = useRef(false);
   const searchRequeryDirtyRef = useRef(false);
   const searchSourcesDirtyRef = useRef(false);
+  const searchSeqRef = useRef(0);
+  const selectedLanguageRef = useRef(selectedLanguage);
+  selectedLanguageRef.current = selectedLanguage;
 
   useEffect(() => {
     if (!isActive) return;
@@ -1137,15 +1146,14 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   // Subscribe to preferred language changes from Profile / other tabs
   useEffect(() => {
     return subscribePreferredLanguage((nextLang) => {
-      setSelectedLanguage(prev => {
-        if (prev === nextLang) return prev;
-        if (!isActiveRef.current) {
-          searchRequeryDirtyRef.current = true;
-          return nextLang;
-        }
-        executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, nextLang, sourceBrowseMode);
-        return nextLang;
-      });
+      if (selectedLanguageRef.current === nextLang) return;
+      selectedLanguageRef.current = nextLang;
+      setSelectedLanguage(nextLang);
+      if (!isActiveRef.current) {
+        searchRequeryDirtyRef.current = true;
+        return;
+      }
+      executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, nextLang, sourceBrowseMode);
     });
   }, [query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, sourceBrowseMode]);
 
@@ -1229,7 +1237,9 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     lang = selectedLanguage,
     browseMode: SourceBrowseMode = sourceBrowseMode
   ) => {
+    const seq = ++searchSeqRef.current;
     setLoading(true);
+    setLoadingMore(false);
     setSearchPage(1);
     setHasMore(true);
 
@@ -1265,6 +1275,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           includeAdult: !isSafe,
           onlyAvailable: availOnly
         });
+        if (searchSeqRef.current !== seq) return;
         const items = catalogRes.data || [];
         setResults(items);
         setSourcesQueried([src]);
@@ -1284,6 +1295,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         sources: activeSources,
         genre: primaryGenreEnglish,
         genres: incGenres,
+        excludedGenres: excGenres,
         demographic: demo === 'all' ? undefined : demo,
         type: typ === 'all' ? undefined : typ,
         status: stat === 'all' ? undefined : stat,
@@ -1293,6 +1305,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         includeAdult: !isSafe,
         onlyAvailable: availOnly
       });
+
+      if (searchSeqRef.current !== seq) return;
 
       let data = res.data || [];
 
@@ -1326,15 +1340,19 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         setHasMore(false);
       }
     } catch (err) {
+      if (searchSeqRef.current !== seq) return;
       console.error('Search failed:', err);
       setResults([]);
     } finally {
-      setLoading(false);
+      if (searchSeqRef.current === seq) {
+        setLoading(false);
+      }
     }
   };
 
   const handleLoadMore = async () => {
     if (loadingMore || !hasMore || loading) return;
+    const seqAtStart = searchSeqRef.current;
     setLoadingMore(true);
     const nextPage = searchPage + 1;
     try {
@@ -1346,6 +1364,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
           includeAdult: !safeSearch,
           onlyAvailable
         });
+        if (searchSeqRef.current !== seqAtStart) return;
         const newItems = catalogRes.data || [];
         if (newItems.length === 0 || !catalogRes.hasMore) {
           setHasMore(false);
@@ -1366,6 +1385,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         sources: activeSources,
         genre: primaryGenreEnglish,
         genres: includedGenres,
+        excludedGenres,
         demographic: selectedDemographic === 'all' ? undefined : selectedDemographic,
         type: selectedType === 'all' ? undefined : selectedType,
         status: selectedStatus === 'all' ? undefined : selectedStatus,
@@ -1375,6 +1395,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
         includeAdult: !safeSearch,
         onlyAvailable: onlyAvailable
       });
+
+      if (searchSeqRef.current !== seqAtStart) return;
 
       let newItems = res.data || [];
 
@@ -1401,12 +1423,18 @@ export const SearchPage: React.FC<SearchPageProps> = ({
       setResults(prev => appendUniqueSearchResults(prev, newItems));
       setSearchPage(nextPage);
     } catch (err) {
+      if (searchSeqRef.current !== seqAtStart) return;
       console.error('Load more failed:', err);
       setHasMore(false);
     } finally {
-      setLoadingMore(false);
+      if (searchSeqRef.current === seqAtStart) {
+        setLoadingMore(false);
+      }
     }
   };
+
+  const handleLoadMoreRef = useRef(handleLoadMore);
+  handleLoadMoreRef.current = handleLoadMore;
 
   // IntersectionObserver for seamless Infinite Scroll
   useEffect(() => {
@@ -1417,7 +1445,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting && hasMore && !loadingMore && !loading && results.length > 0) {
-          handleLoadMore();
+          handleLoadMoreRef.current();
         }
       },
       { rootMargin: '400px' }
@@ -1446,19 +1474,19 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   const handleStatusSelect = (stat: string) => {
     const nextStat = selectedStatus === stat ? 'all' : stat;
     setSelectedStatus(nextStat);
-    executeSearch(query, includedGenres, excludedGenres, nextStat, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, nextStat, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const handleDemographicSelect = (demo: string) => {
     const nextDemo = selectedDemographic === demo ? 'all' : demo;
     setSelectedDemographic(nextDemo);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, nextDemo, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, nextDemo, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const handleTypeSelect = (typ: string) => {
     const nextType = selectedType === typ ? 'all' : typ;
     setSelectedType(nextType);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, nextType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, nextType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const handleSourceSelect = (src: string) => {
@@ -1480,9 +1508,11 @@ export const SearchPage: React.FC<SearchPageProps> = ({
   };
 
   const handleLanguageSelect = (lang: string) => {
+    if (lang === selectedLanguageRef.current) return;
+    selectedLanguageRef.current = lang;
     setSelectedLanguage(lang);
     setPreferredLanguage(lang);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, lang);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, lang, sourceBrowseMode);
   };
 
   // 3-state cycle: 1st click = Include (+), 2nd click = Exclude (-), 3rd click = Reset
@@ -1504,31 +1534,31 @@ export const SearchPage: React.FC<SearchPageProps> = ({
 
     setIncludedGenres(nextInc);
     setExcludedGenres(nextExc);
-    executeSearch(query, nextInc, nextExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, nextInc, nextExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const handleClearGenres = () => {
     setIncludedGenres([]);
     setExcludedGenres([]);
-    executeSearch(query, [], [], selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, [], [], selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const toggleSafeSearch = () => {
     const nextSafe = !safeSearch;
     setSafeSearch(nextSafe);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, nextSafe, onlyAvailable, selectedSource, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, nextSafe, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const toggleOnlyAvailable = () => {
     const nextAvail = !onlyAvailable;
     setOnlyAvailable(nextAvail);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, nextAvail, selectedSource, deepSynopsisSearch);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, nextAvail, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
   };
 
   const toggleDeepSynopsis = () => {
     const nextDeep = !deepSynopsisSearch;
     setDeepSynopsisSearch(nextDeep);
-    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, nextDeep);
+    executeSearch(query, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, nextDeep, selectedLanguage, sourceBrowseMode);
   };
 
   const toggleHideLibrary = () => {
@@ -1843,7 +1873,8 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                   type="button"
                   onClick={() => {
                     setQuery(term);
-                    executeSearch(term, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+                    setSourceBrowseMode('search');
+                    executeSearch(term, includedGenres, excludedGenres, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, 'search');
                   }}
                   className="px-2.5 py-1 rounded-md bg-zinc-900/60 hover:bg-zinc-800 hover:text-zinc-200 border border-zinc-800/80 shrink-0 transition-colors cursor-pointer text-[11px]"
                 >
@@ -2130,7 +2161,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                           const remExc = excludedGenres.filter(g => !SPECIFIC_TROPES.some(t => t.id === g));
                           setIncludedGenres(remInc);
                           setExcludedGenres(remExc);
-                          executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+                          executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
                         }}
                         className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer shrink-0"
                       >
@@ -2206,7 +2237,7 @@ export const SearchPage: React.FC<SearchPageProps> = ({
                         const remExc = excludedGenres.filter(g => !CLASSIC_GENRES.includes(g));
                         setIncludedGenres(remInc);
                         setExcludedGenres(remExc);
-                        executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch);
+                        executeSearch(query, remInc, remExc, selectedStatus, selectedDemographic, selectedType, safeSearch, onlyAvailable, selectedSource, deepSynopsisSearch, selectedLanguage, sourceBrowseMode);
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 cursor-pointer"
                     >

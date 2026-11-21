@@ -8,12 +8,14 @@ const READ_CHAPTERS_KEY = 'manga_reader_read_chapters_v1';
 const PAGE_BOOKMARKS_KEY = 'manga_reader_page_bookmarks_v1';
 const CUSTOM_COLLECTIONS_KEY = 'manga_reader_custom_collections_v1';
 const IGNORED_KEY = 'manga_reader_ignored_v1';
+const DISMISSED_DUPLICATE_PAIRS_KEY = 'mr_dismissed_duplicate_pairs_v1';
 
 export type HistoryTopic =
   | 'history'
   | 'favorites'
   | 'readChapters'
   | 'ignored'
+  | 'duplicates'
   | 'collections'
   | 'pageBookmarks'
   | 'stats'
@@ -43,9 +45,14 @@ let cachedReadChapters: string[] | null = null;
 let cachedReadChaptersSet: Set<string> | null = null;
 let cachedIgnored: IgnoredManga[] | null = null;
 let cachedIgnoredSet: Set<string> | null = null;
+let cachedDismissedDuplicatePairs: string[] | null = null;
 let cachedCustomCollections: string[] | null = null;
 let cachedPageBookmarks: PageBookmark[] | null = null;
 let cachedStats: { totalSeconds: number; lastReadDate?: string } | null = null;
+
+export function makeDuplicatePairKey(idA: string, idB: string): string {
+  return idA < idB ? `${idA}||${idB}` : `${idB}||${idA}`;
+}
 
 function compactStringList(list: unknown, maxItems: number, maxLen = 120): string[] | undefined {
   if (!Array.isArray(list) || list.length === 0) return undefined;
@@ -153,6 +160,9 @@ function invalidateCacheForKey(key: string | null) {
   if (!key || key === IGNORED_KEY) {
     cachedIgnored = null;
     cachedIgnoredSet = null;
+  }
+  if (!key || key === DISMISSED_DUPLICATE_PAIRS_KEY) {
+    cachedDismissedDuplicatePairs = null;
   }
   if (!key || key === CUSTOM_COLLECTIONS_KEY) {
     cachedCustomCollections = null;
@@ -272,7 +282,8 @@ if (typeof window !== 'undefined') {
       event.key === READ_CHAPTERS_KEY ||
       event.key === PAGE_BOOKMARKS_KEY ||
       event.key === CUSTOM_COLLECTIONS_KEY ||
-      event.key === IGNORED_KEY
+      event.key === IGNORED_KEY ||
+      event.key === DISMISSED_DUPLICATE_PAIRS_KEY
     ) {
       invalidateCacheForKey(event.key);
       const topic: HistoryTopic =
@@ -280,10 +291,11 @@ if (typeof window !== 'undefined') {
         event.key === BOOKMARKS_KEY ? 'favorites' :
         event.key === READ_CHAPTERS_KEY ? 'readChapters' :
         event.key === IGNORED_KEY ? 'ignored' :
+        event.key === DISMISSED_DUPLICATE_PAIRS_KEY ? 'duplicates' :
         event.key === CUSTOM_COLLECTIONS_KEY ? 'collections' :
         event.key === PAGE_BOOKMARKS_KEY ? 'pageBookmarks' :
         event.key === STATS_KEY ? 'stats' : 'all';
-      notifyListeners(topic, topic === 'all' || topic === 'favorites' || topic === 'history' || topic === 'ignored' ? '*' : []);
+      notifyListeners(topic, topic === 'all' || topic === 'favorites' || topic === 'history' || topic === 'ignored' || topic === 'duplicates' ? '*' : []);
     }
   });
 }
@@ -309,6 +321,7 @@ export const HistoryService = {
       else if (topic === 'favorites') invalidateCacheForKey(BOOKMARKS_KEY);
       else if (topic === 'readChapters') invalidateCacheForKey(READ_CHAPTERS_KEY);
       else if (topic === 'ignored') invalidateCacheForKey(IGNORED_KEY);
+      else if (topic === 'duplicates') invalidateCacheForKey(DISMISSED_DUPLICATE_PAIRS_KEY);
       else if (topic === 'collections') invalidateCacheForKey(CUSTOM_COLLECTIONS_KEY);
       else if (topic === 'pageBookmarks') invalidateCacheForKey(PAGE_BOOKMARKS_KEY);
       else if (topic === 'stats') invalidateCacheForKey(STATS_KEY);
@@ -1508,6 +1521,56 @@ export const HistoryService = {
     }
   },
 
+  getDismissedDuplicatePairs(): string[] {
+    if (cachedDismissedDuplicatePairs) return cachedDismissedDuplicatePairs;
+    try {
+      const data = localStorage.getItem(DISMISSED_DUPLICATE_PAIRS_KEY);
+      if (!data) {
+        cachedDismissedDuplicatePairs = [];
+        return cachedDismissedDuplicatePairs;
+      }
+      const parsed = JSON.parse(data);
+      cachedDismissedDuplicatePairs = Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === 'string' && item.includes('||'))
+        : [];
+      return cachedDismissedDuplicatePairs;
+    } catch {
+      return [];
+    }
+  },
+
+  dismissDuplicateGroup(mangaIds: string[]): void {
+    const cleanIds = Array.from(new Set(mangaIds.filter(Boolean)));
+    if (cleanIds.length < 2) return;
+    try {
+      const existing = this.getDismissedDuplicatePairs();
+      const set = new Set<string>(existing);
+      for (let i = 0; i < cleanIds.length; i++) {
+        for (let j = i + 1; j < cleanIds.length; j++) {
+          set.add(makeDuplicatePairKey(cleanIds[i], cleanIds[j]));
+        }
+      }
+      const next = Array.from(set).slice(-5000);
+      localStorage.setItem(DISMISSED_DUPLICATE_PAIRS_KEY, JSON.stringify(next));
+      cachedDismissedDuplicatePairs = next;
+      notifyListeners('duplicates', cleanIds);
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to dismiss duplicate group', e);
+    }
+  },
+
+  clearDismissedDuplicatePairs(): void {
+    try {
+      localStorage.setItem(DISMISSED_DUPLICATE_PAIRS_KEY, JSON.stringify([]));
+      cachedDismissedDuplicatePairs = [];
+      notifyListeners('duplicates', '*');
+      syncBridge?.onLibraryStateChanged?.();
+    } catch (e) {
+      console.warn('Failed to clear dismissed duplicate pairs', e);
+    }
+  },
+
   /**
    * Export all user data (favorites + reading history) as a structured backup object
    */
@@ -1522,7 +1585,8 @@ export const HistoryService = {
       readChapters: this.getReadChapters(),
       pageBookmarks: this.getPageBookmarks(),
       customCollections: this.getCustomCollections(),
-      ignoredMangas: this.getIgnoredMangas()
+      ignoredMangas: this.getIgnoredMangas(),
+      dismissedDuplicatePairs: this.getDismissedDuplicatePairs()
     };
   },
 
@@ -1835,6 +1899,20 @@ export const HistoryService = {
         const nextIgnored = Array.from(igMap.values()).slice(0, 3000);
         localStorage.setItem(IGNORED_KEY, JSON.stringify(nextIgnored));
         setIgnoredCache(nextIgnored);
+      }
+
+      // Merge dismissed duplicate pairs if present
+      if (Array.isArray(data.dismissedDuplicatePairs)) {
+        const currentPairs = this.getDismissedDuplicatePairs();
+        const pairSet = new Set<string>(currentPairs);
+        data.dismissedDuplicatePairs.forEach((p: unknown) => {
+          if (typeof p === 'string' && p.includes('||')) {
+            pairSet.add(p);
+          }
+        });
+        const nextPairs = Array.from(pairSet).slice(-5000);
+        localStorage.setItem(DISMISSED_DUPLICATE_PAIRS_KEY, JSON.stringify(nextPairs));
+        cachedDismissedDuplicatePairs = nextPairs;
       }
 
       notifyListeners('all', '*');

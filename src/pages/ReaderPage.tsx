@@ -727,6 +727,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
   const loadReaderData = async () => {
     setLoading(true);
     setError(null);
+    const savedFav = HistoryService.getFavoriteById(mangaId);
+    const savedHist = HistoryService.getProgress(mangaId);
+    const baseTitleHint = (manga?.id === mangaId ? manga.title : undefined) || savedFav?.title || savedHist?.mangaTitle;
+    const baseAltTitlesHint = (manga?.id === mangaId ? manga.altTitles : undefined) || savedFav?.altTitles;
+
     try {
       const cachedPages = prefetchedChapterPagesCache.get(chapterId);
       const isMangaAlreadyLoaded = manga && manga.id === mangaId && chapters.length > 0;
@@ -735,33 +740,91 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       let chaptersData = isMangaAlreadyLoaded ? chapters : [];
       let pagesData: MangaPage[] = (cachedPages && cachedPages.length > 0) ? cachedPages : [];
 
+      const knownChapterForHint =
+        chaptersData.find(c => c.id === chapterId || c.variants?.some(v => v.id === chapterId)) ||
+        undefined;
+      const initialChapNumHint =
+        knownChapterForHint?.chapterNumber ||
+        (savedHist?.chapterId === chapterId ? savedHist.chapterNumber : undefined);
+
+      let pagesFetchError: Error | null = null;
+
       if (!mangaData || chaptersData.length === 0 || pagesData.length === 0) {
-        const [mDetails, cList, pList] = await Promise.all([
-          mangaData ? Promise.resolve(mangaData) : MangaApi.getMangaDetails(mangaId),
-          chaptersData.length > 0 ? Promise.resolve(chaptersData) : MangaApi.getChapters(mangaId, { order: 'asc' }),
-          pagesData.length > 0 ? Promise.resolve(pagesData) : MangaApi.getChapterPages(chapterId)
+        const [mRes, cRes, pRes] = await Promise.allSettled([
+          mangaData
+            ? Promise.resolve(mangaData)
+            : MangaApi.getMangaDetails(mangaId, {
+                title: baseTitleHint,
+                altTitles: baseAltTitlesHint
+              }),
+          chaptersData.length > 0
+            ? Promise.resolve(chaptersData)
+            : MangaApi.getChapters(mangaId, {
+                order: 'asc',
+                title: baseTitleHint,
+                altTitles: baseAltTitlesHint
+              }),
+          pagesData.length > 0
+            ? Promise.resolve(pagesData)
+            : MangaApi.getChapterPages(chapterId, {
+                title: baseTitleHint,
+                altTitles: baseAltTitlesHint,
+                chapterNumber: initialChapNumHint
+              })
         ]);
-        mangaData = mDetails;
-        chaptersData = cList;
-        pagesData = pList;
+
+        if (mRes.status === 'fulfilled') {
+          mangaData = mRes.value;
+        }
+        if (cRes.status === 'fulfilled') {
+          chaptersData = cRes.value;
+        }
+        if (pRes.status === 'fulfilled') {
+          pagesData = pRes.value;
+        } else {
+          pagesFetchError = pRes.reason instanceof Error ? pRes.reason : new Error(String(pRes.reason || 'Falha ao carregar páginas'));
+        }
       }
 
-      setManga(mangaData);
-      setChapters(chaptersData);
       let foundChapter = chaptersData.find(c => c.id === chapterId);
       if (!foundChapter) {
         foundChapter = chaptersData.find(c => c.variants?.some(v => v.id === chapterId));
       }
-      setCurrentChapter(foundChapter || null);
+
+      const resolvedTitleHint = mangaData?.title || baseTitleHint;
+      const resolvedAltTitlesHint = mangaData?.altTitles || baseAltTitlesHint;
+      const resolvedChapNumHint = foundChapter?.chapterNumber || initialChapNumHint;
 
       let effectivePages = pagesData;
+      // Retry primary chapterId once we resolve chapterNumber/title hints from chapter list
+      if (effectivePages.length === 0 && resolvedChapNumHint && resolvedChapNumHint !== initialChapNumHint) {
+        try {
+          const hintedPages = await MangaApi.getChapterPages(chapterId, {
+            title: resolvedTitleHint,
+            altTitles: resolvedAltTitlesHint,
+            chapterNumber: resolvedChapNumHint
+          });
+          if (hintedPages && hintedPages.length > 0) {
+            effectivePages = hintedPages;
+            pagesFetchError = null;
+          }
+        } catch (retryErr) {
+          pagesFetchError = retryErr instanceof Error ? retryErr : pagesFetchError;
+        }
+      }
+
       // Auto-recover pages from alternative versions/sources if primary returned 0 pages
       if (effectivePages.length === 0 && foundChapter?.variants && foundChapter.variants.length > 0) {
         for (const variant of foundChapter.variants) {
           try {
-            const altPages = await MangaApi.getChapterPages(variant.id);
+            const altPages = await MangaApi.getChapterPages(variant.id, {
+              title: resolvedTitleHint,
+              altTitles: resolvedAltTitlesHint,
+              chapterNumber: resolvedChapNumHint
+            });
             if (altPages && altPages.length > 0) {
               effectivePages = altPages;
+              pagesFetchError = null;
               showToast(`Alternado para versão ${variant.sourceName || variant.sourceId}`);
               break;
             }
@@ -770,6 +833,78 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           }
         }
       }
+
+      // Check offline chapter cache if online resolution yielded 0 pages
+      if (effectivePages.length === 0) {
+        const offlineItem = OfflineCacheService.getOfflineChapter(chapterId);
+        if (offlineItem && offlineItem.pages && offlineItem.pages.length > 0) {
+          effectivePages = offlineItem.pages;
+          setIsOfflineSaved(true);
+          if (!mangaData) {
+            mangaData = {
+              id: offlineItem.mangaId,
+              title: offlineItem.mangaTitle,
+              coverUrl: offlineItem.mangaCover,
+              altTitles: savedFav?.altTitles || [],
+              synopsis: savedFav?.synopsis || 'Lendo a partir do cache local salvo para leitura offline.',
+              authors: savedFav?.authors || [],
+              artists: [],
+              genres: savedFav?.genres || ['Offline'],
+              status: savedFav?.status || 'ongoing',
+              publicationInfo: {},
+              updatedAt: new Date(offlineItem.savedAt).toISOString(),
+              sources: []
+            };
+          }
+          if (!foundChapter) {
+            foundChapter = {
+              id: offlineItem.chapterId,
+              mangaId: offlineItem.mangaId,
+              chapterNumber: offlineItem.chapterNumber,
+              title: offlineItem.chapterTitle,
+              language: 'pt-br',
+              sourceId: 'offline',
+              externalChapterId: offlineItem.chapterId,
+              pagesCount: offlineItem.pageCount
+            };
+            chaptersData = [foundChapter];
+          }
+        } else if (pagesFetchError) {
+          throw pagesFetchError;
+        }
+      }
+
+      if (!mangaData) {
+        const fallbackSourceId =
+          savedFav?.sourceId ||
+          savedHist?.sourceId ||
+          (mangaId.startsWith('mr_') ? mangaId.split('_')[1] : 'unknown');
+        mangaData = {
+          id: mangaId,
+          title: resolvedTitleHint || 'Mangá',
+          coverUrl: savedFav?.coverUrl || savedHist?.mangaCover || '',
+          altTitles: resolvedAltTitlesHint || [],
+          synopsis: savedFav?.synopsis || '',
+          authors: savedFav?.authors || [],
+          artists: [],
+          genres: savedFav?.genres || [],
+          status: savedFav?.status || 'ongoing',
+          publicationInfo: {},
+          updatedAt: new Date().toISOString(),
+          sources: [
+            {
+              sourceId: fallbackSourceId,
+              sourceName: savedFav?.sourceName || fallbackSourceId.toUpperCase(),
+              externalId: mangaId
+            }
+          ]
+        };
+      }
+
+      setManga(mangaData);
+      setChapters(chaptersData);
+      setCurrentChapter(foundChapter || null);
+
       setPages(effectivePages);
       if (foundChapter) {
         setLoadedSections([{ chapter: foundChapter, pages: effectivePages }]);
@@ -778,7 +913,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
           chapter: {
             id: chapterId,
             mangaId,
-            chapterNumber: '1',
+            chapterNumber: resolvedChapNumHint || '1',
             title: '',
             language: preferredLang === 'en' ? 'en' : 'pt-br',
             sourceId: 'unknown',
@@ -802,7 +937,11 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
         const curIdx = langChapters.findIndex(c => c.id === foundChapter!.id || c.variants?.some(v => v.id === foundChapter!.id));
         const nextToPreload = curIdx >= 0 && curIdx < langChapters.length - 1 ? langChapters[curIdx + 1] : null;
         if (nextToPreload && !prefetchedChapterPagesCache.has(nextToPreload.id)) {
-          MangaApi.getChapterPages(nextToPreload.id).then(prePages => {
+          MangaApi.getChapterPages(nextToPreload.id, {
+            title: mangaData.title,
+            altTitles: mangaData.altTitles,
+            chapterNumber: nextToPreload.chapterNumber
+          }).then(prePages => {
             if (prePages && prePages.length > 0) {
               prefetchedChapterPagesCache.set(nextToPreload.id, prePages);
               prePages.slice(0, 6).forEach(p => {
@@ -817,7 +956,7 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
       }
 
       // Check saved progress & restore exact pixel scroll position
-      const saved = HistoryService.getProgress(mangaId);
+      const saved = savedHist || HistoryService.getProgress(mangaId);
       if (saved && saved.chapterId === chapterId && saved.pageNumber <= effectivePages.length) {
         setCurrentPageIndex(Math.max(0, saved.pageNumber - 1));
         if (readerMode === 'webtoon' && saved.scrollRatio && saved.scrollRatio > 0) {
@@ -1127,11 +1266,19 @@ export const ReaderPage: React.FC<ReaderPageProps> = ({
     setNextChapterError(null);
 
     try {
-      let nextPages = await MangaApi.getChapterPages(nextChap.id);
+      let nextPages = await MangaApi.getChapterPages(nextChap.id, {
+        title: manga?.title,
+        altTitles: manga?.altTitles,
+        chapterNumber: nextChap.chapterNumber
+      });
       if (nextPages.length === 0 && nextChap.variants && nextChap.variants.length > 0) {
         for (const variant of nextChap.variants) {
           try {
-            const altPages = await MangaApi.getChapterPages(variant.id);
+            const altPages = await MangaApi.getChapterPages(variant.id, {
+              title: manga?.title,
+              altTitles: manga?.altTitles,
+              chapterNumber: nextChap.chapterNumber
+            });
             if (altPages && altPages.length > 0) {
               nextPages = altPages;
               break;

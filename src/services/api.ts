@@ -350,6 +350,7 @@ export const MangaApi = {
     sources?: string[];
     genre?: string;
     genres?: string[];
+    excludedGenres?: string[];
     demographic?: string;
     type?: string;
     status?: string;
@@ -373,6 +374,9 @@ export const MangaApi = {
       params.set('genres', options.genres.join(','));
       if (!options?.genre) params.set('genre', options.genres[0]);
     }
+    if (options?.excludedGenres && options.excludedGenres.length > 0) {
+      params.set('excludedGenres', options.excludedGenres.join(','));
+    }
     if (options?.limit) params.set('limit', options.limit.toString());
     if (options?.offset !== undefined) params.set('offset', options.offset.toString());
     if (options?.page !== undefined) params.set('page', options.page.toString());
@@ -387,9 +391,22 @@ export const MangaApi = {
     });
   },
 
-  async getMangaDetails(internalId: string): Promise<Manga> {
+  async getMangaDetails(
+    internalId: string,
+    options?: {
+      title?: string;
+      altTitles?: string[];
+    }
+  ): Promise<Manga> {
+    const params = new URLSearchParams();
+    if (options?.title) params.set('title', options.title);
+    if (options?.altTitles && options.altTitles.length > 0) {
+      params.set('altTitles', options.altTitles.slice(0, 6).join('||'));
+    }
+    const qs = params.toString();
+    const url = qs ? `/api/manga/${encodeURIComponent(internalId)}?${qs}` : `/api/manga/${encodeURIComponent(internalId)}`;
     return coalesceGet(`details:${internalId}`, 45_000, async () => {
-      const res = await fetch(`/api/manga/${encodeURIComponent(internalId)}`);
+      const res = await fetch(url);
       if (!res.ok) {
         const errJson = await res.json().catch(() => null);
         throw new Error(errJson?.error || (res.status === 404 ? 'Mangá não encontrado' : `Falha ao carregar detalhes (código ${res.status})`));
@@ -434,9 +451,27 @@ export const MangaApi = {
     });
   },
 
-  async getChapterPages(internalChapterId: string): Promise<MangaPage[]> {
-    return coalesceGet(`pages:${internalChapterId}`, 60_000, async () => {
-      const res = await fetch(`/api/chapters/${encodeURIComponent(internalChapterId)}/pages`);
+  async getChapterPages(
+    internalChapterId: string,
+    options?: {
+      title?: string;
+      altTitles?: string[];
+      chapterNumber?: string;
+    }
+  ): Promise<MangaPage[]> {
+    const params = new URLSearchParams();
+    if (options?.title) params.set('title', options.title);
+    if (options?.altTitles && options.altTitles.length > 0) {
+      params.set('altTitles', options.altTitles.slice(0, 6).join('||'));
+    }
+    if (options?.chapterNumber) params.set('chapterNumber', options.chapterNumber);
+    const qs = params.toString();
+    const url = qs
+      ? `/api/chapters/${encodeURIComponent(internalChapterId)}/pages?${qs}`
+      : `/api/chapters/${encodeURIComponent(internalChapterId)}/pages`;
+
+    return coalesceGet(`pages:${internalChapterId}:${options?.chapterNumber || ''}`, 60_000, async () => {
+      const res = await fetch(url);
       if (!res.ok) {
         const errJson = await res.json().catch(() => null);
         throw new Error(errJson?.error || `Falha ao carregar páginas do capítulo (código ${res.status})`);

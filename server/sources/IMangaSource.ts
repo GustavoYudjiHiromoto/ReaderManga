@@ -6,6 +6,7 @@ export interface SourceSearchOptions {
   page?: number;
   genre?: string;
   genres?: string[];
+  excludedGenres?: string[];
   demographic?: string;
   type?: string;
   status?: string;

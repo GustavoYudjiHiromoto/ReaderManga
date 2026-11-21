@@ -20,6 +20,25 @@ export function parseWeebCentralAssociatedNames(html: string): string[] {
   return results.slice(0, 12);
 }
 
+function acceptsEnglishLanguage(language?: string): boolean {
+  if (!language) return true;
+  const tokens = language.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.some(t => t === 'all' || t === 'en' || t === 'en-us');
+}
+
+function mapWeebCentralTypeToCountry(rawType?: string, genresLower: string[] = []): string | undefined {
+  const t = (rawType || '').toLowerCase().trim();
+  if (t.includes('manhwa') || t.includes('webtoon') || t.includes('korean')) return 'KR';
+  if (t.includes('manhua') || t.includes('chinese')) return 'CN';
+  if (t.includes('oel') || t.includes('comic') || t.includes('western')) return 'US';
+  if (t.includes('manga') || t.includes('one-shot') || t.includes('oneshot') || t.includes('doujinshi')) return 'JP';
+  if (genresLower.includes('manhwa') || genresLower.includes('korean')) return 'KR';
+  if (genresLower.includes('manhua') || genresLower.includes('chinese')) return 'CN';
+  if (genresLower.includes('comic') || genresLower.includes('western')) return 'US';
+  return undefined;
+}
+
 const GENRE_MAP: Record<string, string> = {
   'ação': 'Action',
   'acao': 'Action',
@@ -216,11 +235,13 @@ export class WeebCentralProvider implements IMangaSource {
       else if (gLower.includes('shoujo') || gLower.includes('shojo')) demographic = 'shoujo';
       else if (gLower.includes('josei')) demographic = 'josei';
 
-      // Country / Type detection
-      let country = 'JP';
-      if (gLower.includes('manhwa') || gLower.includes('korean')) country = 'KR';
-      else if (gLower.includes('manhua') || gLower.includes('chinese')) country = 'CN';
-      else if (gLower.includes('comic') || gLower.includes('western')) country = 'US';
+      // Country / Type detection (extract explicit Type: badge first so Manhwa/Manhua aren't falsely marked as JP)
+      const typeMatch = articleHtml.match(/<strong[^>]*>\s*Type:?\s*<\/strong>\s*(?:<span[^>]*>|<a[^>]*>)?([^<]+)(?:<\/span>|<\/a>)?/i);
+      const rawTypeText = typeMatch ? decodeHtmlEntities(typeMatch[1]).trim() : '';
+      const country = mapWeebCentralTypeToCountry(rawTypeText, gLower);
+      if (rawTypeText && (rawTypeText.toLowerCase().includes('manhwa') || rawTypeText.toLowerCase().includes('manhua')) && !genres.some(g => g.toLowerCase() === rawTypeText.toLowerCase())) {
+        genres.push(rawTypeText);
+      }
 
       // Content rating & adult content
       const isAdult = genres.some(g => /adult|hentai|smut|erotica/i.test(g));
@@ -241,9 +262,10 @@ export class WeebCentralProvider implements IMangaSource {
         status,
         publicationInfo: {
           releaseYear,
-          country,
+          ...(country ? { country } : {}),
           demographic
         },
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -267,6 +289,10 @@ export class WeebCentralProvider implements IMangaSource {
    * Search mangas on WeebCentral
    */
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
+    if (!acceptsEnglishLanguage(options?.language)) {
+      return { mangaList: [], total: 0, hasMore: false };
+    }
+
     const trimmed = (query || '').trim();
     const limit = options?.limit || 24;
     const page = options?.page || 1;
@@ -329,6 +355,37 @@ export class WeebCentralProvider implements IMangaSource {
       params.append('included_tag', tag);
     }
 
+    const excludedTagsToSet = new Set<string>();
+    if (Array.isArray(options?.excludedGenres)) {
+      for (const eg of options.excludedGenres) {
+        const lower = eg.toLowerCase().trim();
+        const mapped = GENRE_MAP[lower];
+        if (mapped) excludedTagsToSet.add(mapped);
+        if (lower === 'fantasia' || lower === 'fantasy') {
+          excludedTagsToSet.add('Magic');
+        }
+      }
+    }
+    for (const exTag of excludedTagsToSet) {
+      params.append('excluded_tag', exTag);
+    }
+
+    if (options?.type && options.type !== 'all') {
+      const t = options.type.toLowerCase();
+      if (t === 'manga') params.append('included_type', 'Manga');
+      else if (t === 'manhwa') params.append('included_type', 'Manhwa');
+      else if (t === 'manhua') params.append('included_type', 'Manhua');
+      else if (t === 'comic') params.append('included_type', 'OEL');
+    }
+
+    if (options?.status && options.status !== 'all') {
+      const s = options.status.toLowerCase();
+      if (s === 'ongoing') params.append('included_status', 'Ongoing');
+      else if (s === 'completed') params.append('included_status', 'Complete');
+      else if (s === 'hiatus') params.append('included_status', 'Hiatus');
+      else if (s === 'cancelled') params.append('included_status', 'Canceled');
+    }
+
     // If a genre/subgenre was requested without text query and neither mapped to a WeebCentral tag nor keyword fallback, return empty instead of unfiltered popular dump
     if (!textQuery && tagsToSet.size === 0 && ((options?.genre && options.genre !== 'all') || (options?.genres && options.genres.length > 0))) {
       return { mangaList: [], total: 0, hasMore: false };
@@ -366,9 +423,26 @@ export class WeebCentralProvider implements IMangaSource {
       if (options?.onlyAvailable) {
         finalResults = finalResults.filter(m => m.hasAvailableChapters);
       }
+      if (options?.type && options.type !== 'all') {
+        const targetType = options.type.toLowerCase();
+        finalResults = finalResults.filter(m => {
+          const c = (m.publicationInfo?.country || '').toLowerCase();
+          if (targetType === 'manga') return !c || c === 'jp';
+          if (targetType === 'manhwa') return c === 'kr';
+          if (targetType === 'manhua') return c === 'cn';
+          if (targetType === 'comic') return c === 'us';
+          return true;
+        });
+      }
 
-      // If text query yielded 0 results from search/data, try quick-search fallback
-      if (finalResults.length === 0 && trimmed) {
+      const hasRestrictiveFilters =
+        tagsToSet.size > 0 ||
+        excludedTagsToSet.size > 0 ||
+        (Boolean(options?.type) && options?.type !== 'all') ||
+        (Boolean(options?.status) && options?.status !== 'all');
+
+      // Only use quick-search fallback for plain unfiltered title lookups
+      if (finalResults.length === 0 && trimmed && !hasRestrictiveFilters) {
         const quickResults = await this.quickSearch(trimmed);
         let filteredQuick = quickResults;
         if (!options?.includeAdult) {
@@ -445,7 +519,8 @@ export class WeebCentralProvider implements IMangaSource {
           artists: ['Artista Desconhecido'],
           genres: ['Mangá'],
           status: 'ongoing',
-          publicationInfo: { country: 'Japão' },
+          publicationInfo: {},
+          availableLanguages: ['en'],
           sources: [
             {
               sourceId: this.sourceId,
@@ -553,6 +628,13 @@ export class WeebCentralProvider implements IMangaSource {
         ? 'pornographic'
         : (isSuggestive ? 'suggestive' : 'safe');
 
+      const typeMatch = html.match(/<strong[^>]*>\s*Type:?\s*<\/strong>[\s\S]*?(?:<a[^>]*>|<span[^>]*>)([^<]+)(?:<\/a>|<\/span>)/i);
+      const rawTypeText = typeMatch ? decodeHtmlEntities(typeMatch[1]).trim() : '';
+      const resolvedCountry = mapWeebCentralTypeToCountry(rawTypeText, genres.map(g => g.toLowerCase()));
+      if (rawTypeText && (rawTypeText.toLowerCase().includes('manhwa') || rawTypeText.toLowerCase().includes('manhua')) && !genres.some(g => g.toLowerCase() === rawTypeText.toLowerCase())) {
+        genres.push(rawTypeText);
+      }
+
       const altTitles = parseWeebCentralAssociatedNames(html)
         .filter(a => a.toLowerCase() !== title.toLowerCase());
 
@@ -568,9 +650,10 @@ export class WeebCentralProvider implements IMangaSource {
         status,
         publicationInfo: {
           releaseYear,
-          country: 'Japão',
+          ...(resolvedCountry ? { country: resolvedCountry } : {}),
           demographic
         },
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -597,7 +680,11 @@ export class WeebCentralProvider implements IMangaSource {
   /**
    * Get all chapters for a manga
    */
-  async getChapters(externalMangaId: string, _language?: string): Promise<Chapter[]> {
+  async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
+    if (!acceptsEnglishLanguage(language)) {
+      return [];
+    }
+
     const cached = this.chaptersCache.get(externalMangaId);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       return cached.data;

@@ -584,9 +584,11 @@ export class MangaDexProvider implements IMangaSource {
       ...(options?.genre && options.genre !== 'all' ? [options.genre] : []),
       ...(Array.isArray(options?.genres) ? options.genres : [])
     ];
+    const excludedTagList = Array.isArray(options?.excludedGenres) ? options.excludedGenres : [];
     const cacheKey = [
       (query || '').trim().toLowerCase(),
       requestedTagList.map(g => g.toLowerCase()).sort().join(','),
+      excludedTagList.map(g => g.toLowerCase()).sort().join(','),
       options?.demographic || '',
       options?.status || '',
       options?.type || '',
@@ -650,6 +652,24 @@ export class MangaDexProvider implements IMangaSource {
         }
       }
 
+      const tagsToExclude = new Set<string>();
+      for (const rawEx of excludedTagList) {
+        const lower = rawEx.toLowerCase().trim();
+        if (!lower) continue;
+        const tagId = tagMap[lower];
+        if (tagId) tagsToExclude.add(tagId);
+        if (lower === 'fantasia' || lower === 'fantasy') {
+          if (tagMap['fantasy']) tagsToExclude.add(tagMap['fantasy']);
+          if (tagMap['magic']) tagsToExclude.add(tagMap['magic']);
+        }
+      }
+      if (tagsToExclude.size > 0) {
+        for (const exTagId of tagsToExclude) {
+          url += `&excludedTags[]=${encodeURIComponent(exTagId)}`;
+        }
+        url += '&excludedTagsMode=OR';
+      }
+
       if (options?.demographic && options.demographic !== 'all') {
         const demo = options.demographic.toLowerCase();
         if (['shounen', 'shoujo', 'seinen', 'josei'].includes(demo)) {
@@ -676,9 +696,11 @@ export class MangaDexProvider implements IMangaSource {
         const langParts = options.language.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
         const mdLangs = new Set<string>();
         for (const lp of langParts) {
-          if (lp === 'pt-br' || lp === 'pt') {
+          if (lp === 'pt-br' || lp === 'pt' || lp === 'pt_br') {
             mdLangs.add('pt-br');
             mdLangs.add('pt');
+          } else if (lp === 'en-us') {
+            mdLangs.add('en');
           } else {
             mdLangs.add(lp);
           }
@@ -853,17 +875,34 @@ export class MangaDexProvider implements IMangaSource {
       };
 
       let langQuery = '';
-      if (language) {
-        langQuery = `&translatedLanguage[]=${encodeURIComponent(language)}`;
+      const cleanLanguage = (language || '').toLowerCase().trim();
+      if (cleanLanguage === 'all') {
+        langQuery = '';
+      } else if (cleanLanguage) {
+        const langParts = cleanLanguage.split(',').map(s => s.trim()).filter(Boolean);
+        const mdLangs = new Set<string>();
+        for (const lp of langParts) {
+          if (lp === 'pt-br' || lp === 'pt' || lp === 'pt_br') {
+            mdLangs.add('pt-br');
+            mdLangs.add('pt');
+          } else if (lp === 'en-us') {
+            mdLangs.add('en');
+          } else {
+            mdLangs.add(lp);
+          }
+        }
+        langQuery = Array.from(mdLangs)
+          .map(ml => `&translatedLanguage[]=${encodeURIComponent(ml)}`)
+          .join('');
       } else {
         langQuery = '&translatedLanguage[]=pt-br&translatedLanguage[]=en';
       }
 
       let list = await fetchAllOffsets(langQuery);
 
-      // Fallback: If no language was explicitly requested and preferred languages (pt-br, en) returned no chapters,
+      // Fallback: If no explicit single-language restriction was requested and preferred languages returned no chapters,
       // fetch chapters without language restriction so available translations are displayed instead of empty list
-      if (!language && list.length === 0) {
+      if ((!cleanLanguage || cleanLanguage === 'all') && list.length === 0) {
         list = await fetchAllOffsets('');
       }
 

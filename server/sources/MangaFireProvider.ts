@@ -261,44 +261,65 @@ export class MangaFireProvider implements IMangaSource {
   }
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
-    const cached = this.chaptersCache.get(externalMangaId);
+    const normalizedLang = (language || '').toLowerCase().trim();
+    const cacheKey = `${externalMangaId}::raw`;
+    const cached = this.chaptersCache.get(cacheKey);
+    let rawChapters: Chapter[] = [];
+
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
-      return cached.data;
-    }
+      rawChapters = cached.data;
+    } else {
+      const url = `${this.baseUrl}/manga/${externalMangaId}`;
+      try {
+        const html = await this.fetchHtml(url);
+        const parsed: Chapter[] = [];
 
-    const url = `${this.baseUrl}/manga/${externalMangaId}`;
-    try {
-      const html = await this.fetchHtml(url);
-      const chapters: Chapter[] = [];
+        // Extract chapter links
+        const chRegex = /<li[^>]*data-number="([^"]+)"[^>]*>\s*<a href="\/manga\/[^/]+\/([a-zA-Z0-9_-]+)"[^>]*title="([^"]*)"/g;
+        let match: RegExpExecArray | null;
 
-      // Extract chapter links
-      const chRegex = /<li[^>]*data-number="([^"]+)"[^>]*>\s*<a href="\/manga\/[^/]+\/([a-zA-Z0-9_-]+)"[^>]*title="([^"]*)"/g;
-      let match: RegExpExecArray | null;
+        while ((match = chRegex.exec(html)) !== null) {
+          const chNumber = match[1];
+          const chSlug = match[2];
+          const chTitle = decodeHtmlEntities(match[3] || `Capítulo ${chNumber}`);
+          const slugPrefix = chSlug.split('-')[0]?.toLowerCase();
+          const detectedLang =
+            slugPrefix === 'pt' ? 'pt-br' : slugPrefix === 'es' || slugPrefix === 'fr' || slugPrefix === 'ja' ? slugPrefix : 'en';
 
-      while ((match = chRegex.exec(html)) !== null) {
-        const chNumber = match[1];
-        const chSlug = match[2];
-        const chTitle = decodeHtmlEntities(match[3] || `Capítulo ${chNumber}`);
+          parsed.push({
+            id: `ch_${this.sourceId}_${externalMangaId}_${chSlug}`,
+            sourceId: this.sourceId,
+            mangaId: `mr_${this.sourceId}_${externalMangaId}`,
+            externalChapterId: chSlug,
+            chapterNumber: chNumber,
+            title: chTitle,
+            language: detectedLang,
+            releaseDate: new Date().toISOString(),
+            scanlationGroup: 'MangaFire'
+          });
+        }
 
-        chapters.push({
-          id: `ch_${this.sourceId}_${externalMangaId}_${chSlug}`,
-          sourceId: this.sourceId,
-          mangaId: `mr_${this.sourceId}_${externalMangaId}`,
-          externalChapterId: chSlug,
-          chapterNumber: chNumber,
-          title: chTitle,
-          language: language || 'en',
-          releaseDate: new Date().toISOString(),
-          scanlationGroup: 'MangaFire'
-        });
+        this.chaptersCache.set(cacheKey, { data: parsed, timestamp: Date.now() });
+        rawChapters = parsed;
+      } catch (err) {
+        console.warn(`[MangaFire] Error fetching chapters for ${externalMangaId}:`, (err as Error).message);
+        return [];
       }
-
-      this.chaptersCache.set(externalMangaId, { data: chapters, timestamp: Date.now() });
-      return chapters;
-    } catch (err) {
-      console.warn(`[MangaFire] Error fetching chapters for ${externalMangaId}:`, (err as Error).message);
-      return [];
     }
+
+    if (!normalizedLang || normalizedLang === 'all') {
+      return rawChapters;
+    }
+
+    const allowedTokens = normalizedLang.split(',').map(s => s.trim()).filter(Boolean);
+    const acceptsPt = allowedTokens.some(t => t === 'pt' || t === 'pt-br' || t === 'pt_br');
+    const acceptsEn = allowedTokens.some(t => t === 'en' || t === 'en-us');
+    return rawChapters.filter(ch => {
+      const l = (ch.language || 'en').toLowerCase();
+      if (acceptsPt && (l === 'pt' || l === 'pt-br')) return true;
+      if (acceptsEn && (l === 'en' || l === 'en-us')) return true;
+      return allowedTokens.includes(l);
+    });
   }
 
   async getChapterPages(externalChapterId: string): Promise<MangaPage[]> {

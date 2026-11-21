@@ -164,6 +164,8 @@ export function extractAniListFilters(options?: SourceSearchOptions): {
   tagGroups: string[][];
   allTags: string[];
   requiredGenres: string[];
+  excludedTags: string[];
+  excludedGenres: string[];
   hasNicheTag: boolean;
 } {
   const requestedRaw = [
@@ -195,10 +197,28 @@ export function extractAniListFilters(options?: SourceSearchOptions): {
     }
   }
 
+  const excludedTags = new Set<string>();
+  const excludedGenres = new Set<string>();
+  if (Array.isArray(options?.excludedGenres)) {
+    for (const rawEx of options.excludedGenres) {
+      const lower = rawEx.toLowerCase().trim();
+      if (!lower) continue;
+      const mapped = UI_TO_ANILIST_MAP[lower];
+      if (mapped?.tags) mapped.tags.forEach(t => excludedTags.add(t));
+      if (mapped?.genres) mapped.genres.forEach(g => excludedGenres.add(g));
+      if (lower === 'fantasia' || lower === 'fantasy') {
+        excludedGenres.add('Fantasy');
+        excludedTags.add('Magic');
+      }
+    }
+  }
+
   return {
     tagGroups,
     allTags: Array.from(allTags),
     requiredGenres: Array.from(requiredGenres),
+    excludedTags: Array.from(excludedTags),
+    excludedGenres: Array.from(excludedGenres),
     hasNicheTag
   };
 }
@@ -231,17 +251,21 @@ async function fetchAniListMediaBatch(
   aniPage: number,
   allTags: string[],
   requiredGenres: string[],
+  excludedTags: string[],
+  excludedGenres: string[],
   country?: string,
   status?: string,
   includeAdult?: boolean
 ): Promise<any[]> {
   const query = `
-    query ($page: Int, $tags: [String], $genres: [String], $country: CountryCode, $status: MediaStatus, $isAdult: Boolean) {
+    query ($page: Int, $tags: [String], $genres: [String], $exTags: [String], $exGenres: [String], $country: CountryCode, $status: MediaStatus, $isAdult: Boolean) {
       Page(page: $page, perPage: 50) {
         media(
           type: MANGA,
           tag_in: $tags,
           genre_in: $genres,
+          tag_not_in: $exTags,
+          genre_not_in: $exGenres,
           countryOfOrigin: $country,
           status: $status,
           isAdult: $isAdult,
@@ -278,6 +302,8 @@ async function fetchAniListMediaBatch(
           page: aniPage,
           tags: allTags.length > 0 ? allTags : undefined,
           genres: requiredGenres.length > 0 ? requiredGenres : undefined,
+          exTags: excludedTags.length > 0 ? excludedTags : undefined,
+          exGenres: excludedGenres.length > 0 ? excludedGenres : undefined,
           country: country || undefined,
           status: status || undefined,
           isAdult: includeAdult ? undefined : false
@@ -299,7 +325,7 @@ async function fetchFilteredAniListCandidates(
   options: SourceSearchOptions,
   targetPage: number
 ): Promise<AniListCandidate[]> {
-  const { tagGroups, allTags, requiredGenres } = extractAniListFilters(options);
+  const { tagGroups, allTags, requiredGenres, excludedTags, excludedGenres } = extractAniListFilters(options);
   if (allTags.length === 0 && requiredGenres.length === 0) return [];
 
   const country = mapTypeToCountry(options.type);
@@ -307,7 +333,7 @@ async function fetchFilteredAniListCandidates(
   const includeAdult = Boolean(options.includeAdult);
   const demo = options.demographic && options.demographic !== 'all' ? options.demographic.toLowerCase() : undefined;
 
-  const cacheKey = `anilist_disc_v2:${allTags.join(',')}:${requiredGenres.join(',')}:${country || 'all'}:${status || 'all'}:${demo || 'all'}:${includeAdult}:p${targetPage}`;
+  const cacheKey = `anilist_disc_v3:${allTags.join(',')}:${requiredGenres.join(',')}:exg_${excludedGenres.join(',')}:ext_${excludedTags.join(',')}:${country || 'all'}:${status || 'all'}:${demo || 'all'}:${includeAdult}:p${targetPage}`;
   const cached = globalCache.get<AniListCandidate[]>(cacheKey);
   if (cached) return cached;
 
@@ -315,11 +341,13 @@ async function fetchFilteredAniListCandidates(
   const startAniPage = (targetPage - 1) * 2 + 1;
   const pagesToFetch = targetPage === 1 ? [1, 2] : [startAniPage, startAniPage + 1];
   const rawPages = await Promise.all(
-    pagesToFetch.map(p => fetchAniListMediaBatch(p, allTags, requiredGenres, country, status, includeAdult))
+    pagesToFetch.map(p => fetchAniListMediaBatch(p, allTags, requiredGenres, excludedTags, excludedGenres, country, status, includeAdult))
   );
 
   const seenIds = new Set<number>();
   const candidates: AniListCandidate[] = [];
+  const excludedGenresLower = new Set(excludedGenres.map(g => g.toLowerCase()));
+  const excludedTagsLower = new Set(excludedTags.map(t => t.toLowerCase()));
 
   for (const list of rawPages) {
     for (const m of list) {
@@ -339,10 +367,17 @@ async function fetchFilteredAniListCandidates(
       if (requiredGenres.some(rg => !genresLower.has(rg.toLowerCase()))) {
         continue;
       }
+      if (Array.from(excludedGenresLower).some(eg => genresLower.has(eg))) {
+        continue;
+      }
 
       const tagRankMap = new Map<string, number>();
       for (const t of tags) {
         tagRankMap.set(t.name.toLowerCase(), t.rank || 0);
+      }
+
+      if (Array.from(excludedTagsLower).some(et => (tagRankMap.get(et) || 0) >= 40)) {
+        continue;
       }
 
       if (demo && !tagRankMap.has(demo) && !genresLower.has(demo)) {
@@ -477,6 +512,7 @@ async function resolveCandidateInSources(
   const cleanOptions: SourceSearchOptions = {
     language: options.language,
     type: options.type,
+    excludedGenres: options.excludedGenres,
     onlyAvailable: options.onlyAvailable,
     includeAdult: options.includeAdult,
     limit: 4,

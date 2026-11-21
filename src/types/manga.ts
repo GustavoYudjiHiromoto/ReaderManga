@@ -259,6 +259,7 @@ export interface LibraryBackup {
   pageBookmarks?: PageBookmark[];
   customCollections?: string[];
   ignoredMangas?: IgnoredManga[];
+  dismissedDuplicatePairs?: string[];
 }
 
 export interface MangaUpdateInfo {

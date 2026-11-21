@@ -1,12 +1,27 @@
 import { IMangaSource, SourceSearchOptions, SourceSearchResult } from './IMangaSource.js';
 import { Manga, Chapter, MangaPage, MangaSourceInfo } from '../../src/types/manga.js';
 import { HttpError } from '../errors/HttpError.js';
+import { residentialRelayService } from '../services/ResidentialRelayService.js';
 
 export class ComickProvider implements IMangaSource {
   private readonly baseUrl = 'https://api.comick.dev';
   private readonly cdnUrl = 'https://meo.comick.pictures';
   private readonly sourceId = 'comick';
   private readonly sourceName = 'Comick (Live API)';
+
+  private searchCache: Map<string, { data: SourceSearchResult; timestamp: number }> = new Map();
+  private detailsCache: Map<string, { data: Manga; timestamp: number }> = new Map();
+  private chaptersCache: Map<string, { data: Chapter[]; timestamp: number }> = new Map();
+  private pagesCache: Map<string, { data: { pages: MangaPage[]; mdid?: string; comicSlug?: string; chapNum?: string }; timestamp: number }> = new Map();
+  private inFlightJson: Map<string, Promise<any>> = new Map();
+  private upstreamCooldownUntil = 0;
+  private lastCooldownLogAt = 0;
+
+  private readonly SEARCH_CACHE_TTL_MS = 3 * 60 * 1000;
+  private readonly DETAILS_CACHE_TTL_MS = 10 * 60 * 1000;
+  private readonly CHAPTERS_CACHE_TTL_MS = 5 * 60 * 1000;
+  private readonly PAGES_CACHE_TTL_MS = 15 * 60 * 1000;
+  private readonly UPSTREAM_COOLDOWN_MS = 20 * 1000;
 
   private readonly headers: Record<string, string> = {
     'User-Agent': 'Tachiyomi/1.10.5',
@@ -39,48 +54,134 @@ export class ComickProvider implements IMangaSource {
     };
   }
 
-  private async fetchWithTimeout(url: string, timeoutMs = 8000): Promise<any> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  private setBoundedCache<T>(cache: Map<string, { data: T; timestamp: number }>, key: string, data: T, maxSize = 150): void {
+    if (cache.size >= maxSize) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey) cache.delete(oldestKey);
+    }
+    cache.set(key, { data, timestamp: Date.now() });
+  }
+
+  private logUpstreamUnavailable(scope: string, err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastCooldownLogAt >= this.UPSTREAM_COOLDOWN_MS) {
+      this.lastCooldownLogAt = now;
+      console.info(`[ComickProvider] Upstream temporarily unavailable during ${scope} (${(err as Error).message}); serving cache/failover.`);
+    }
+  }
+
+  private async fetchWithTimeout(url: string, timeoutMs = 8000, maxRetries = 2): Promise<any> {
+    const existing = this.inFlightJson.get(url);
+    if (existing) {
+      return existing;
+    }
+
+    const task = (async () => {
+      let lastError: any;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const reqHeaders: Record<string, string> = { ...this.headers };
+          if (attempt > 0) {
+            reqHeaders['Connection'] = 'close';
+            reqHeaders['Cache-Control'] = 'no-cache';
+          }
+
+          const response = await fetch(url, {
+            signal: controller.signal,
+            headers: reqHeaders
+          });
+
+          if (!response.ok) {
+            if (response.status === 404) {
+              throw new HttpError(404, `Recurso não encontrado na API Comick (HTTP 404).`);
+            }
+            if (response.status === 403) {
+              throw new HttpError(403, `Acesso bloqueado temporariamente pela proteção Comick (HTTP 403).`);
+            }
+            if (response.status === 429) {
+              throw new HttpError(429, `Limite de requisições excedido na API Comick (Rate limit 429). Aguarde alguns instantes.`);
+            }
+            if (response.status === 503) {
+              throw new HttpError(503, `Serviço Comick temporariamente indisponível (HTTP 503).`);
+            }
+            if (response.status === 502 || response.status >= 500) {
+              throw new HttpError(502, `Falha no provedor externo Comick: HTTP ${response.status} ${response.statusText}`);
+            }
+            throw new HttpError(502, `Falha de comunicação com a API Comick: HTTP ${response.status}`);
+          }
+
+          const json = await response.json();
+          this.upstreamCooldownUntil = 0;
+          return json;
+        } catch (err) {
+          lastError = err;
+          if (err instanceof HttpError && err.status === 404) {
+            throw err;
+          }
+
+          const errMsg = ((err as Error)?.message || '').toLowerCase();
+          const errName = (err as Error)?.name || '';
+          const isHttpTransient =
+            err instanceof HttpError && (err.status === 429 || err.status >= 500);
+          const isNetworkTransient =
+            errName === 'AbortError' ||
+            errMsg.includes('terminated') ||
+            errMsg.includes('socket') ||
+            errMsg.includes('econnreset') ||
+            errMsg.includes('etimedout') ||
+            errMsg.includes('enotfound') ||
+            errMsg.includes('fetch failed');
+
+          if (attempt < maxRetries && (isHttpTransient || isNetworkTransient)) {
+            const backoffMs = 300 * (attempt + 1) + Math.floor(Math.random() * 150);
+            await new Promise(r => setTimeout(r, backoffMs));
+            continue;
+          }
+
+          if (residentialRelayService.isRelayReady()) {
+            try {
+              const relayed = await residentialRelayService.fetchThroughRelay(url, {
+                headers: this.headers,
+                responseType: 'text'
+              });
+              if (relayed.ok && relayed.bodyText) {
+                const parsed = JSON.parse(relayed.bodyText);
+                this.upstreamCooldownUntil = 0;
+                return parsed;
+              }
+            } catch {
+              // Ignore relay failure and fall through
+            }
+          }
+
+          if (err instanceof HttpError) {
+            if (err.status >= 500 || err.status === 429 || err.status === 403) {
+              this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+            }
+            throw err;
+          }
+
+          this.upstreamCooldownUntil = Date.now() + this.UPSTREAM_COOLDOWN_MS;
+          if (errName === 'AbortError') {
+            throw new HttpError(504, 'Tempo limite de comunicação esgotado com a API Comick (Gateway Timeout).');
+          }
+          throw new HttpError(502, `Erro ao conectar com a API Comick: ${(err as Error).message}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      throw lastError;
+    })();
+
+    this.inFlightJson.set(url, task);
     try {
-      let response = await fetch(url, {
-        signal: controller.signal,
-        headers: this.headers
-      });
-
-      // Retry on initial Cloudflare connection challenge if 403 is received on new TLS connection
-      if (response.status === 403) {
-        response = await fetch(url, {
-          signal: controller.signal,
-          headers: this.headers
-        });
-      }
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new HttpError(404, `Recurso não encontrado na API Comick (HTTP 404).`);
-        }
-        if (response.status === 429) {
-          throw new HttpError(429, `Limite de requisições excedido na API Comick (Rate limit 429). Aguarde alguns instantes.`);
-        }
-        if (response.status === 503) {
-          throw new HttpError(503, `Serviço Comick temporariamente indisponível (HTTP 503).`);
-        }
-        if (response.status === 502 || response.status >= 500) {
-          throw new HttpError(502, `Falha no provedor externo Comick: HTTP ${response.status} ${response.statusText}`);
-        }
-        throw new HttpError(502, `Falha de comunicação com a API Comick: HTTP ${response.status}`);
-      }
-
-      return await response.json();
-    } catch (err) {
-      if (err instanceof HttpError) throw err;
-      if ((err as Error).name === 'AbortError') {
-        throw new HttpError(504, 'Tempo limite de comunicação esgotado com a API Comick (Gateway Timeout).');
-      }
-      throw new HttpError(502, `Erro ao conectar com a API Comick: ${(err as Error).message}`);
+      return await task;
     } finally {
-      clearTimeout(timeout);
+      this.inFlightJson.delete(url);
     }
   }
 
@@ -516,9 +617,34 @@ export class ComickProvider implements IMangaSource {
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
+    const limit = Math.min(options?.limit || 24, 60);
+    const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
+    const excludedList = Array.isArray(options?.excludedGenres) ? options.excludedGenres : [];
+    const cacheKey = [
+      (query || '').trim().toLowerCase(),
+      options?.genre || '',
+      Array.isArray(options?.genres) ? options.genres.map(g => g.toLowerCase()).sort().join(',') : '',
+      excludedList.map(g => g.toLowerCase()).sort().join(','),
+      options?.demographic || '',
+      options?.type || '',
+      options?.status || '',
+      options?.language || '',
+      limit,
+      page,
+      Boolean(options?.includeAdult),
+      Boolean(options?.onlyAvailable)
+    ].join('|');
+
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : { mangaList: [], total: 0, hasMore: false };
+    }
+
     try {
-      const limit = Math.min(options?.limit || 24, 60);
-      const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
       let url = `${this.baseUrl}/v1.0/search?limit=${limit}&page=${page}`;
 
       let effectiveQuery = query.trim();
@@ -551,6 +677,15 @@ export class ComickProvider implements IMangaSource {
       }
       if (slugs.size > 0) {
         url += `&genres=${encodeURIComponent(Array.from(slugs).join(','))}`;
+      }
+
+      const excludedSlugs = new Set<string>();
+      for (const eg of excludedList) {
+        const slug = ComickProvider.resolveGenreSlug(eg);
+        if (slug) excludedSlugs.add(slug);
+      }
+      if (excludedSlugs.size > 0) {
+        url += `&excludes=${encodeURIComponent(Array.from(excludedSlugs).join(','))}`;
       }
 
       if (options?.demographic && options.demographic !== 'all') {
@@ -588,18 +723,24 @@ export class ComickProvider implements IMangaSource {
         mangaList = mangaList.filter((m: Manga) => m.hasAvailableChapters);
       }
 
-      return {
+      const result: SourceSearchResult = {
         mangaList,
         total: mangaList.length,
         hasMore: mangaList.length >= limit
       };
+      this.setBoundedCache(this.searchCache, cacheKey, result);
+      return result;
     } catch (err) {
-      console.warn(`[ComickProvider] search failed:`, (err as Error).message);
-      return { mangaList: [], total: 0, hasMore: false };
+      this.logUpstreamUnavailable('search', err);
+      return cached ? cached.data : { mangaList: [], total: 0, hasMore: false };
     }
   }
 
   async getPopular(options?: SourceSearchOptions): Promise<Manga[]> {
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return [];
+    }
+
     try {
       const limit = Math.min(options?.limit || 24, 60);
       const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
@@ -626,12 +767,16 @@ export class ComickProvider implements IMangaSource {
 
       return mangaList;
     } catch (err) {
-      console.warn(`[ComickProvider] getPopular failed:`, (err as Error).message);
+      this.logUpstreamUnavailable('getPopular', err);
       return [];
     }
   }
 
   async getLatest(options?: SourceSearchOptions): Promise<Manga[]> {
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return [];
+    }
+
     try {
       const limit = Math.min(options?.limit || 24, 60);
       const page = options?.page || (options?.offset ? Math.floor(options.offset / limit) + 1 : 1);
@@ -658,26 +803,48 @@ export class ComickProvider implements IMangaSource {
 
       return mangaList;
     } catch (err) {
-      console.warn(`[ComickProvider] getLatest failed:`, (err as Error).message);
+      this.logUpstreamUnavailable('getLatest', err);
       return [];
     }
   }
 
   async getMangaDetails(externalId: string): Promise<Manga | null> {
+    const cached = this.detailsCache.get(externalId);
+    if (cached && Date.now() - cached.timestamp < this.DETAILS_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : null;
+    }
+
     try {
       const url = `${this.baseUrl}/comic/${externalId}?tachiyomi=true`;
       const res = await this.fetchWithTimeout(url);
       if (!res.comic) return null;
-      return this.normalizeComickItem(res.comic, res);
+      const manga = this.normalizeComickItem(res.comic, res);
+      this.setBoundedCache(this.detailsCache, externalId, manga, 200);
+      return manga;
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) return null;
-      if (err instanceof HttpError) throw err;
-      console.warn(`[ComickProvider] getMangaDetails failed for ${externalId}:`, (err as Error).message);
+      if (cached) return cached.data;
+      this.logUpstreamUnavailable(`getMangaDetails:${externalId}`, err);
       return null;
     }
   }
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
+    const normalizedLangKey = (language || 'default').toLowerCase().trim() || 'default';
+    const cacheKey = `${externalMangaId}::${normalizedLangKey}`;
+    const cached = this.chaptersCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CHAPTERS_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : [];
+    }
+
     try {
       const PAGE_LIMIT = 100;
       const MAX_PAGES = 35; // up to 3,500 chapter entries per language
@@ -735,9 +902,28 @@ export class ComickProvider implements IMangaSource {
       };
 
       let list: any[] = [];
+      const cleanLang = (language || '').toLowerCase().trim();
 
-      if (language) {
-        list = await fetchAllPages(language);
+      if (cleanLang === 'all') {
+        list = await fetchAllPages(undefined);
+      } else if (cleanLang) {
+        const langParts = Array.from(
+          new Set(
+            cleanLang
+              .split(',')
+              .map(s => s.trim())
+              .filter(Boolean)
+              .map(s => (s === 'pt_br' ? 'pt-br' : s === 'en-us' ? 'en' : s))
+          )
+        );
+        if (langParts.length > 1) {
+          const buckets = await Promise.all(
+            langParts.map(lp => fetchAllPages(lp).catch(() => []))
+          );
+          list = buckets.flat();
+        } else if (langParts.length === 1) {
+          list = await fetchAllPages(langParts[0]);
+        }
       } else {
         // Default: query pt-br and en preferred translations with full pagination
         const [ptList, enList] = await Promise.all([
@@ -753,33 +939,50 @@ export class ComickProvider implements IMangaSource {
         }
       }
 
-      return list.map((item: any) => {
+      const seenHids = new Set<string>();
+      const chapters: Chapter[] = [];
+      for (const item of list) {
+        if (!item?.hid || seenHids.has(item.hid)) continue;
+        seenHids.add(item.hid);
         const mdSuffix = item.mdid ? `__md_${item.mdid}` : '';
         const scanGroup = Array.isArray(item.group_name)
           ? item.group_name[0]
           : (item.group_name || (Array.isArray(item.group_names) ? item.group_names[0] : undefined));
-        return {
+        chapters.push({
           id: `ch_${this.sourceId}_${externalMangaId}_${item.hid}${mdSuffix}`,
           mangaId: `mr_${this.sourceId}_${externalMangaId}`,
           chapterNumber: item.chap ? String(item.chap) : '1',
           volume: item.vol ? String(item.vol) : undefined,
           title: item.title || undefined,
           releaseDate: item.created_at ? item.created_at.substring(0, 10) : undefined,
-          language: item.lang || language || 'en',
+          language: item.lang || 'en',
           sourceId: this.sourceId,
           externalChapterId: item.hid,
           pagesCount: undefined,
           scanlationGroup: scanGroup || undefined
-        };
-      });
+        });
+      }
+
+      this.setBoundedCache(this.chaptersCache, cacheKey, chapters, 200);
+      return chapters;
     } catch (err) {
+      if (cached) return cached.data;
       if (err instanceof HttpError) throw err;
-      console.error(`[ComickProvider] Erro ao buscar capítulos para ${externalMangaId}:`, (err as Error).message);
+      this.logUpstreamUnavailable(`getChapters:${externalMangaId}`, err);
       throw new HttpError(502, `Falha ao obter capítulos da fonte Comick: ${(err as Error).message}`);
     }
   }
 
   async getChapterPagesResult(externalChapterId: string): Promise<{ pages: MangaPage[]; mdid?: string; comicSlug?: string; chapNum?: string }> {
+    const cached = this.pagesCache.get(externalChapterId);
+    if (cached && Date.now() - cached.timestamp < this.PAGES_CACHE_TTL_MS && cached.data.pages.length > 0) {
+      return cached.data;
+    }
+
+    if (Date.now() < this.upstreamCooldownUntil) {
+      return cached ? cached.data : { pages: [] };
+    }
+
     try {
       let imagesList: Array<{ b2key?: string }> = [];
       let mdid: string | undefined;
@@ -806,7 +1009,8 @@ export class ComickProvider implements IMangaSource {
           imagesList = res.images;
         }
       } catch (err) {
-        if (err instanceof HttpError && (err.status === 404 || err.status === 429)) {
+        if (err instanceof HttpError && (err.status === 403 || err.status === 404 || err.status === 429)) {
+          if (cached && cached.data.pages.length > 0) return cached.data;
           throw err;
         }
       }
@@ -819,7 +1023,8 @@ export class ComickProvider implements IMangaSource {
             imagesList = imgRes;
           }
         } catch (err) {
-          if (err instanceof HttpError && (err.status === 404 || err.status === 429)) {
+          if (err instanceof HttpError && (err.status === 403 || err.status === 404 || err.status === 429)) {
+            if (cached && cached.data.pages.length > 0) return cached.data;
             throw err;
           }
         }
@@ -866,15 +1071,20 @@ export class ComickProvider implements IMangaSource {
         }
       });
 
-      return {
+      const result = {
         pages,
         mdid,
         comicSlug,
         chapNum
       };
+      if (pages.length > 0) {
+        this.setBoundedCache(this.pagesCache, externalChapterId, result, 100);
+      }
+      return result;
     } catch (err) {
+      if (cached && cached.data.pages.length > 0) return cached.data;
       if (err instanceof HttpError) throw err;
-      console.warn(`[ComickProvider] getChapterPages failed for ${externalChapterId}:`, (err as Error).message);
+      this.logUpstreamUnavailable(`getChapterPages:${externalChapterId}`, err);
       throw new HttpError(502, `Falha ao obter páginas do capítulo no Comick: ${(err as Error).message}`);
     }
   }

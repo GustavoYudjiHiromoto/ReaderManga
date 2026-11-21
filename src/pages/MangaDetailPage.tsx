@@ -554,8 +554,18 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const loadChapters = async (isDeduplicated = deduplicate) => {
     setChaptersLoading(true);
     setChaptersError(null);
+    const savedFav = HistoryService.getFavoriteById(mangaId);
+    const savedHist = HistoryService.getProgress(mangaId);
+    const titleHint = mangaRef.current?.title || savedFav?.title || savedHist?.mangaTitle;
+    const altTitlesHint = mangaRef.current?.altTitles || savedFav?.altTitles;
+
     try {
-      const chaptersData = await MangaApi.getChapters(mangaId, { order: chapterOrder, deduplicate: isDeduplicated });
+      const chaptersData = await MangaApi.getChapters(mangaId, {
+        order: chapterOrder,
+        deduplicate: isDeduplicated,
+        title: titleHint,
+        altTitles: altTitlesHint
+      });
       setChapters(chaptersData);
     } catch (err) {
       console.warn('Failed to load chapters online, checking offline cache:', err);
@@ -643,8 +653,16 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
   const loadMangaDetails = async () => {
     setLoading(true);
     setError(null);
+    const savedFav = HistoryService.getFavoriteById(mangaId);
+    const savedHist = HistoryService.getProgress(mangaId);
+    const titleHint = savedFav?.title || savedHist?.mangaTitle;
+    const altTitlesHint = savedFav?.altTitles;
+
     try {
-      const mangaData = await MangaApi.getMangaDetails(mangaId);
+      const mangaData = await MangaApi.getMangaDetails(mangaId, {
+        title: titleHint,
+        altTitles: altTitlesHint
+      });
       setManga(mangaData);
       RecommendationService.rememberMangaMetadata(mangaData);
       loadRecommendations(mangaData);
@@ -656,22 +674,54 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
           id: mangaId,
           title: offlineChapters[0].mangaTitle,
           coverUrl: offlineChapters[0].mangaCover,
-          altTitles: [],
-          synopsis: 'Obra visualizada no modo offline com capítulos salvos no armazenamento local.',
-          authors: ['Offline'],
+          altTitles: savedFav?.altTitles || [],
+          synopsis: savedFav?.synopsis || 'Obra visualizada no modo offline com capítulos salvos no armazenamento local.',
+          authors: savedFav?.authors?.length ? savedFav.authors : ['Offline'],
           artists: [],
-          genres: ['Offline'],
-          status: 'ongoing',
+          genres: savedFav?.genres?.length ? savedFav.genres : ['Offline'],
+          status: savedFav?.status || 'ongoing',
           publicationInfo: {},
           updatedAt: new Date(offlineChapters[0].savedAt).toISOString(),
           sources: [
             {
-              sourceId: 'offline',
-              sourceName: 'Cache Offline',
+              sourceId: savedFav?.sourceId || 'offline',
+              sourceName: savedFav?.sourceName || 'Cache Offline',
               externalId: mangaId
             }
           ]
         });
+        setError(null);
+      } else if (savedFav || savedHist) {
+        const inferredSourceId =
+          savedFav?.sourceId ||
+          savedHist?.sourceId ||
+          (mangaId.startsWith('mr_') ? mangaId.split('_')[1] : 'library');
+        const fallbackManga: Manga = {
+          id: mangaId,
+          title: savedFav?.title || savedHist?.mangaTitle || 'Obra da Biblioteca',
+          coverUrl: savedFav?.coverUrl || savedHist?.mangaCover || '',
+          altTitles: savedFav?.altTitles || [],
+          synopsis:
+            savedFav?.synopsis ||
+            'Detalhes originais temporariamente indisponíveis na fonte primária; exibindo metadados locais.',
+          authors: savedFav?.authors?.length ? savedFav.authors : ['Fonte Alternativa'],
+          artists: [],
+          genres: savedFav?.genres?.length ? savedFav.genres : [],
+          status: savedFav?.status || 'ongoing',
+          rating: savedFav?.rating,
+          publicationInfo: {},
+          updatedAt: new Date(savedFav?.updatedAt || savedHist?.updatedAt || Date.now()).toISOString(),
+          sources: [
+            {
+              sourceId: inferredSourceId,
+              sourceName: savedFav?.sourceName || inferredSourceId.toUpperCase(),
+              externalId: mangaId
+            }
+          ]
+        };
+        setManga(fallbackManga);
+        RecommendationService.rememberMangaMetadata(fallbackManga);
+        loadRecommendations(fallbackManga);
         setError(null);
       } else {
         setError((err as Error).message || 'Erro ao carregar detalhes do mangá.');
@@ -707,8 +757,12 @@ export const MangaDetailPage: React.FC<MangaDetailPageProps> = ({
     } else {
       setCachingOfflineIds(prev => ({ ...prev, [chapter.id]: true }));
       try {
-        const pages = await MangaApi.getChapterPages(chapter.id);
         const currentManga = mangaRef.current;
+        const pages = await MangaApi.getChapterPages(chapter.id, {
+          title: currentManga?.title,
+          altTitles: currentManga?.altTitles,
+          chapterNumber: chapter.chapterNumber
+        });
         await OfflineCacheService.cacheChapter(chapter.id, pages, {
           mangaId: currentManga?.id || mangaId,
           mangaTitle: currentManga?.title || 'Mangá',

@@ -256,40 +256,58 @@ export class MangaBallProvider implements IMangaSource {
   }
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
-    const cached = this.chaptersCache.get(externalMangaId);
-    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
-      return cached.data;
-    }
+    const normalizedLang = (language || '').toLowerCase().trim();
+    const cacheKey = `${externalMangaId}::raw`;
+    const cached = this.chaptersCache.get(cacheKey);
+    let rawList: Chapter[] = [];
 
-    try {
-      const data = await this.fetchApi(`/api/v1/title/${externalMangaId}/chapters/`);
-      if (!data || !Array.isArray(data.items || data.chapters || data)) {
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
+      rawList = cached.data;
+    } else {
+      try {
+        const data = await this.fetchApi(`/api/v1/title/${externalMangaId}/chapters/`);
+        if (!data || !Array.isArray(data.items || data.chapters || data)) {
+          return [];
+        }
+
+        const rawChapters = (data.items || data.chapters || data) as any[];
+        rawList = rawChapters.map(ch => {
+          const chId = String(ch.id || ch.slug || ch._id);
+          const chNum = String(ch.chapter_number || ch.number || '1');
+          const chLang = String(ch.language || ch.lang || 'en').toLowerCase().trim() || 'en';
+          return {
+            id: `ch_${this.sourceId}_${externalMangaId}_${chId}`,
+            sourceId: this.sourceId,
+            mangaId: `mr_${this.sourceId}_${externalMangaId}`,
+            externalChapterId: chId,
+            chapterNumber: chNum,
+            title: ch.title ? decodeHtmlEntities(ch.title) : `Capítulo ${chNum}`,
+            language: chLang,
+            releaseDate: ch.created_at || new Date().toISOString(),
+            scanlationGroup: 'MangaBall'
+          };
+        });
+
+        this.chaptersCache.set(cacheKey, { data: rawList, timestamp: Date.now() });
+      } catch (err) {
+        console.warn(`[MangaBall] Error getting chapters for ${externalMangaId}:`, (err as Error).message);
         return [];
       }
-
-      const rawChapters = (data.items || data.chapters || data) as any[];
-      const chapters: Chapter[] = rawChapters.map(ch => {
-        const chId = String(ch.id || ch.slug || ch._id);
-        const chNum = String(ch.chapter_number || ch.number || '1');
-        return {
-          id: `ch_${this.sourceId}_${externalMangaId}_${chId}`,
-          sourceId: this.sourceId,
-          mangaId: `mr_${this.sourceId}_${externalMangaId}`,
-          externalChapterId: chId,
-          chapterNumber: chNum,
-          title: ch.title ? decodeHtmlEntities(ch.title) : `Capítulo ${chNum}`,
-          language: language || ch.language || 'en',
-          releaseDate: ch.created_at || new Date().toISOString(),
-          scanlationGroup: 'MangaBall'
-        };
-      });
-
-      this.chaptersCache.set(externalMangaId, { data: chapters, timestamp: Date.now() });
-      return chapters;
-    } catch (err) {
-      console.warn(`[MangaBall] Error getting chapters for ${externalMangaId}:`, (err as Error).message);
-      return [];
     }
+
+    if (!normalizedLang || normalizedLang === 'all') {
+      return rawList;
+    }
+
+    const allowedTokens = normalizedLang.split(',').map(s => s.trim()).filter(Boolean);
+    const acceptsPt = allowedTokens.some(t => t === 'pt' || t === 'pt-br' || t === 'pt_br');
+    const acceptsEn = allowedTokens.some(t => t === 'en' || t === 'en-us');
+    return rawList.filter(ch => {
+      const l = (ch.language || 'en').toLowerCase();
+      if (acceptsPt && (l === 'pt' || l === 'pt-br')) return true;
+      if (acceptsEn && (l === 'en' || l === 'en-us')) return true;
+      return allowedTokens.includes(l);
+    });
   }
 
   async getChapterPages(externalChapterId: string): Promise<MangaPage[]> {

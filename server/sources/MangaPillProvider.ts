@@ -89,6 +89,13 @@ function mapGenre(rawGenre?: string | null): string | null {
   return GENRE_MAP[lower] || null;
 }
 
+function acceptsEnglishLanguage(language?: string): boolean {
+  if (!language) return true;
+  const tokens = language.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.some(t => t === 'all' || t === 'en' || t === 'en-us');
+}
+
 export class MangaPillProvider implements IMangaSource {
   private readonly baseUrl = 'https://mangapill.com';
   private readonly sourceId = 'mangapill';
@@ -340,6 +347,7 @@ export class MangaPillProvider implements IMangaSource {
           country: 'JP',
           demographic
         },
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -360,6 +368,10 @@ export class MangaPillProvider implements IMangaSource {
   }
 
   async search(query: string, options?: SourceSearchOptions): Promise<SourceSearchResult> {
+    if (!acceptsEnglishLanguage(options?.language)) {
+      return { mangaList: [], total: 0, hasMore: false };
+    }
+
     const rawQuery = (query || '').trim();
     const q = rawQuery;
     const limit = options?.limit || 24;
@@ -379,7 +391,10 @@ export class MangaPillProvider implements IMangaSource {
       return { mangaList: [], total: 0, hasMore: false };
     }
 
-    const cacheKey = `${q.toLowerCase()}|${mappedGenre || ''}|${page}|${limit}|${Boolean(options?.includeAdult)}|${Boolean(options?.onlyAvailable)}`;
+    const excludedList = Array.isArray(options?.excludedGenres)
+      ? options.excludedGenres.map(g => g.toLowerCase().trim()).filter(Boolean).sort()
+      : [];
+    const cacheKey = `${q.toLowerCase()}|${mappedGenre || ''}|ex:${excludedList.join(',')}|${options?.language || ''}|${page}|${limit}|${Boolean(options?.includeAdult)}|${Boolean(options?.onlyAvailable)}`;
     const cached = this.searchCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL_MS) {
       return cached.data;
@@ -579,6 +594,7 @@ export class MangaPillProvider implements IMangaSource {
         },
         hasAvailableChapters: true,
         availabilityStatus: 'available',
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -608,6 +624,7 @@ export class MangaPillProvider implements IMangaSource {
         },
         hasAvailableChapters: true,
         availabilityStatus: 'available',
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -637,6 +654,7 @@ export class MangaPillProvider implements IMangaSource {
         },
         hasAvailableChapters: true,
         availabilityStatus: 'available',
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -666,6 +684,7 @@ export class MangaPillProvider implements IMangaSource {
         },
         hasAvailableChapters: true,
         availabilityStatus: 'available',
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -755,6 +774,7 @@ export class MangaPillProvider implements IMangaSource {
           country: 'JP',
           demographic
         },
+        availableLanguages: ['en'],
         sources: [
           {
             sourceId: this.sourceId,
@@ -786,7 +806,7 @@ export class MangaPillProvider implements IMangaSource {
 
   async getChapters(externalMangaId: string, language?: string): Promise<Chapter[]> {
     // MangaPill only provides English scanlations
-    if (language && !['en', 'en-us', 'all'].includes(language.toLowerCase().trim())) {
+    if (!acceptsEnglishLanguage(language)) {
       return [];
     }
 

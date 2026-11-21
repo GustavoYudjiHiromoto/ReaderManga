@@ -774,6 +774,8 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const genre = req.query.genre as string;
     const genresRaw = req.query.genres as string;
     const genres = genresRaw ? genresRaw.split(',').map(s => s.trim()).filter(Boolean) : (genre && genre !== 'all' ? [genre] : undefined);
+    const excludedGenresRaw = (req.query.excludedGenres as string) || (req.query.excluded_genres as string);
+    const excludedGenres = excludedGenresRaw ? excludedGenresRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
     const demographic = req.query.demographic as string;
     const mangaType = (req.query.type as string) || (req.query.format as string);
     const status = req.query.status as string;
@@ -785,7 +787,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     const includeAdult = req.query.includeAdult === 'true';
     const onlyAvailable = req.query.onlyAvailable !== 'false';
 
-    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
+    const cacheKey = `search:${q}:${sourceId || 'all'}:${enabledSourcesRaw || 'all'}:${genre || 'all'}:${genresRaw || 'all'}:ex_${excludedGenresRaw || 'none'}:${demographic || 'all'}:${mangaType || 'all'}:${status || 'all'}:${language || 'all'}:${limit}:${offset || 0}:${page || 1}:${includeAdult}:${onlyAvailable}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
@@ -797,6 +799,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       enabledSources,
       genre,
       genres,
+      excludedGenres,
       demographic,
       type: mangaType,
       status,
@@ -928,6 +931,12 @@ apiRouter.post('/recommendations/personalized', async (req: Request, res: Respon
 apiRouter.get('/manga/:id', async (req: Request, res: Response) => {
   try {
     const internalId = req.params.id;
+    const titleHint = typeof req.query.title === 'string' ? req.query.title.trim() : undefined;
+    const altTitlesRaw = typeof req.query.altTitles === 'string' ? req.query.altTitles : '';
+    const altTitlesHint = altTitlesRaw
+      ? altTitlesRaw.split('||').map(s => s.trim()).filter(Boolean).slice(0, 6)
+      : undefined;
+
     const cacheKey = `manga:${internalId}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
@@ -935,7 +944,10 @@ apiRouter.get('/manga/:id', async (req: Request, res: Response) => {
       return res.json(cached);
     }
 
-    const manga = await sourceRegistry.getMangaById(internalId);
+    const manga = await sourceRegistry.getMangaById(internalId, {
+      titleHint,
+      altTitlesHint
+    });
 
     if (!manga) {
       return res.status(404).json({
@@ -1014,6 +1026,13 @@ apiRouter.get('/manga/:id/chapters', async (req: Request, res: Response) => {
 apiRouter.get(/^\/chapters\/(.+)\/pages$/, async (req: Request, res: Response) => {
   try {
     const internalChapterId = req.params[0] || (req.params as any).id;
+    const titleHint = typeof req.query.title === 'string' ? req.query.title.trim() : undefined;
+    const altTitlesRaw = typeof req.query.altTitles === 'string' ? req.query.altTitles : '';
+    const altTitlesHint = altTitlesRaw
+      ? altTitlesRaw.split('||').map(s => s.trim()).filter(Boolean).slice(0, 6)
+      : undefined;
+    const chapterNumberHint = typeof req.query.chapterNumber === 'string' ? req.query.chapterNumber.trim() : undefined;
+
     const cacheKey = `pages:${internalChapterId}`;
     const cached = globalCache.get(cacheKey);
     if (cached) {
@@ -1021,7 +1040,11 @@ apiRouter.get(/^\/chapters\/(.+)\/pages$/, async (req: Request, res: Response) =
       return res.json(cached);
     }
 
-    const pages = await sourceRegistry.getChapterPages(internalChapterId);
+    const pages = await sourceRegistry.getChapterPages(internalChapterId, {
+      titleHint,
+      altTitlesHint,
+      chapterNumberHint
+    });
 
     const payload = {
       success: true,
@@ -1243,9 +1266,37 @@ async function fetchAnilistSynonymsForTitle(rawTitle: string): Promise<string[]>
       .map(s => s.trim());
 
     // Guard: ensure AniList actually matched the requested work before returning its synonyms
+    const tokenize = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+    const qTokens = new Set(tokenize(cleanTitle));
+    const hasYoungerQ = qTokens.has('imouto') || qTokens.has('otouto') || qTokens.has('little') || qTokens.has('younger');
+    const hasOlderQ = qTokens.has('ane') || qTokens.has('ani') || qTokens.has('onee') || qTokens.has('onii') || qTokens.has('older') || qTokens.has('elder');
+    const hasConflictingQualifiers = candidates.some(c => {
+      const cTokens = new Set(tokenize(c));
+      const cYounger = cTokens.has('imouto') || cTokens.has('otouto') || cTokens.has('little') || cTokens.has('younger');
+      const cOlder = cTokens.has('ane') || cTokens.has('ani') || cTokens.has('onee') || cTokens.has('onii') || cTokens.has('older') || cTokens.has('elder');
+      return (hasYoungerQ && !hasOlderQ && cOlder && !cYounger) || (hasOlderQ && !hasYoungerQ && cYounger && !cOlder);
+    });
+
     const normCandidates = candidates.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
-    const isVerifiedMatch = normCandidates.some(
-      nc => nc === normQuery || (normQuery.length >= 8 && nc.includes(normQuery)) || (nc.length >= 8 && normQuery.includes(nc))
+    const tokenBoundaryMatch = (longerStr: string, shorterStr: string): boolean => {
+      const escaped = shorterStr.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i').test(longerStr);
+    };
+    const isVerifiedMatch = !hasConflictingQualifiers && (
+      normCandidates.some(nc => nc === normQuery) ||
+      candidates.some(c => {
+        const nc = c.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return (normQuery.length >= 9 && nc.includes(normQuery) && tokenBoundaryMatch(c, cleanTitle)) ||
+               (nc.length >= 9 && normQuery.includes(nc) && tokenBoundaryMatch(cleanTitle, c));
+      })
     );
     const result = isVerifiedMatch
       ? Array.from(new Set(candidates)).filter(c => c.toLowerCase() !== rawTitle.toLowerCase()).slice(0, 12)
@@ -1282,7 +1333,10 @@ apiRouter.post('/library/resolve-titles', async (req: Request, res: Response) =>
 
         try {
           const details = await Promise.race([
-            sourceRegistry.getMangaById(item.mangaId),
+            sourceRegistry.getMangaById(item.mangaId, {
+              titleHint: item.title,
+              skipFailover: true
+            }),
             new Promise<null>(resolve => setTimeout(() => resolve(null), 3500))
           ]);
           if (details) {
